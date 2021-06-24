@@ -9,27 +9,21 @@
 #include <string>
 #include <vector>
 
-#include "base/callback_forward.h"
 #include "build/build_config.h"
 #include "content/common/content_export.h"
-#include "services/service_manager/embedder/process_type.h"
 
-namespace base {
-class CommandLine;
+namespace variations {
+class VariationsIdsProvider;
 }
-
-namespace service_manager {
-class BackgroundServiceManager;
-class Identity;
-class ZygoteForkDelegate;
-}  // namespace service_manager
 
 namespace content {
 
 class ContentBrowserClient;
+class ContentClient;
 class ContentGpuClient;
 class ContentRendererClient;
 class ContentUtilityClient;
+class ZygoteForkDelegate;
 struct MainFunctionParams;
 
 class CONTENT_EXPORT ContentMainDelegate {
@@ -59,62 +53,26 @@ class CONTENT_EXPORT ContentMainDelegate {
   // Called right before the process exits.
   virtual void ProcessExiting(const std::string& process_type) {}
 
-#if defined(OS_MACOSX)
-  // Returns true if the process registers with the system monitor, so that we
-  // can allocate an IO port for it before the sandbox is initialized. Embedders
-  // are called only for process types that content doesn't know about.
-  virtual bool ProcessRegistersWithSystemProcess(
-      const std::string& process_type);
-
-  // Used to determine if we should send the mach port to the parent process or
-  // not. The embedder usually sends it for all child processes, use this to
-  // override this behavior.
-  virtual bool ShouldSendMachPort(const std::string& process_type);
-
-  // Allows the embedder to override initializing the sandbox. This is needed
-  // because some processes might not want to enable it right away or might not
-  // want it at all.
-  virtual bool DelaySandboxInitialization(const std::string& process_type);
-
-#elif defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   // Tells the embedder that the zygote process is starting, and allows it to
   // specify one or more zygote delegates if it wishes by storing them in
   // |*delegates|.
   virtual void ZygoteStarting(
-      std::vector<std::unique_ptr<service_manager::ZygoteForkDelegate>>*
-          delegates);
+      std::vector<std::unique_ptr<ZygoteForkDelegate>>* delegates);
 
   // Called every time the zygote process forks.
   virtual void ZygoteForked() {}
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
   // Fatal errors during initialization are reported by this function, so that
   // the embedder can implement graceful exit by displaying some message and
   // returning initialization error code. Default behavior is CHECK(false).
   virtual int TerminateForFatalInitializationError();
 
-  // Overrides the Service Manager process type to use for the currently running
-  // process.
-  virtual service_manager::ProcessType OverrideProcessType();
-
-  // Allows the content embedder to adjust arbitrary command line arguments for
-  // any service process started by the Service Manager.
-  virtual void AdjustServiceProcessCommandLine(
-      const service_manager::Identity& identity,
-      base::CommandLine* command_line);
-
-  // Allows the embedder to perform arbitrary initialization within the Service
-  // Manager process immediately before the Service Manager runs its main loop.
-  //
-  // |quit_closure| is a callback the embedder may retain and invoke at any time
-  // to cleanly terminate Service Manager execution.
-  virtual void OnServiceManagerInitialized(
-      const base::Closure& quit_closure,
-      service_manager::BackgroundServiceManager* service_manager);
-
-  // Allows the embedder to perform platform-specific initializatioion before
-  // creating the main message loop.
-  virtual void PreCreateMainMessageLoop() {}
+  // Allows the embedder to perform platform-specific initialization before
+  // BrowserMain() is invoked (i.e. before BrowserMainRunner, BrowserMainLoop,
+  // BrowserMainParts, etc. are created).
+  virtual void PreBrowserMain() {}
 
   // Returns true if content should create field trials and initialize the
   // FeatureList instance for this process. Default implementation returns true.
@@ -122,24 +80,49 @@ class CONTENT_EXPORT ContentMainDelegate {
   // created should override and return false.
   virtual bool ShouldCreateFeatureList();
 
-  // Allows the embedder to perform its own initialization after content
-  // performed its own and already brought up MessageLoop, ThreadPool, field
-  // trials and FeatureList (by default).
-  // |is_running_tests| indicates whether it is running in tests.
-  virtual void PostEarlyInitialization(bool is_running_tests) {}
+  // Creates and returns the VariationsIdsProvider. If null is returned,
+  // a VariationsIdsProvider is created with a mode of `kUseSignedInState`.
+  // VariationsIdsProvider is a singleton.
+  virtual variations::VariationsIdsProvider* CreateVariationsIdsProvider();
 
   // Allows the embedder to perform initialization once field trials/FeatureList
   // initialization has completed if ShouldCreateFeatureList() returns true.
   // Otherwise, the embedder is responsible for calling this method once feature
-  // list initialization is complete.
+  // list initialization is complete. Called in every process.
   virtual void PostFieldTrialInitialization() {}
 
+  // Allows the embedder to perform its own initialization after early content
+  // initialization. At this point, it is possible to post to base::ThreadPool
+  // or to the main thread loop via base::ThreadTaskRunnerHandle, but the tasks
+  // won't run immediately.
+  //
+  // If ShouldCreateFeatureList() returns true, the field trials and FeatureList
+  // have been initialized. Otherwise, the implementation must initialize the
+  // field trials and FeatureList and call PostFieldTrialInitialization().
+  //
+  // |is_running_tests| indicates whether it is running in tests.
+  virtual void PostEarlyInitialization(bool is_running_tests) {}
+
+#if defined(OS_WIN)
+  // Allows the embedder to indicate that console control events (e.g., Ctrl-C,
+  // Ctrl-break, or closure of the console) are to be handled. By default, these
+  // events are not handled, leading to process termination. When an embedder
+  // returns true to indicate that these events are to be handled, the
+  // embedder's ContentBrowserClient::SessionEnding function will be called
+  // when a console control event is received. All non-browser processes will
+  // swallow the event.
+  virtual bool ShouldHandleConsoleControlEvents();
+#endif
+
  protected:
+  friend class ContentClientCreator;
   friend class ContentClientInitializer;
+  friend class BrowserTestBase;
 
   // Called once per relevant process type to allow the embedder to customize
   // content. If an embedder wants the default (empty) implementation, don't
   // override this.
+  virtual ContentClient* CreateContentClient();
   virtual ContentBrowserClient* CreateContentBrowserClient();
   virtual ContentGpuClient* CreateContentGpuClient();
   virtual ContentRendererClient* CreateContentRendererClient();

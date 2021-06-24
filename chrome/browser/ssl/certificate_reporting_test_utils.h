@@ -9,11 +9,14 @@
 #include <string>
 
 #include "base/macros.h"
-#include "chrome/browser/ssl/cert_logger.pb.h"
+#include "build/build_config.h"
 #include "chrome/browser/ssl/certificate_error_reporter.h"
-#include "chrome/browser/ssl/ssl_cert_reporter.h"
+#include "components/security_interstitials/content/cert_logger.pb.h"
+#include "components/security_interstitials/content/ssl_cert_reporter.h"
 
+#if !defined(OS_ANDROID)
 class Browser;
+#endif
 
 namespace base {
 class RunLoop;
@@ -53,17 +56,19 @@ class SSLCertReporterCallback {
   DISALLOW_COPY_AND_ASSIGN(SSLCertReporterCallback);
 };
 
+#if !defined(OS_ANDROID)
 // Sets the browser preference to enable or disable extended reporting.
 void SetCertReportingOptIn(Browser* browser, OptIn opt_in);
+#endif
 
 // Creates a mock SSLCertReporter and return a pointer to it, which will
 // be owned by the caller. The mock SSLCertReporter will call
 // |report_sent_callback| when a report is sent. It also checks that a
 // report is sent or not sent according to |expect_report|.
 std::unique_ptr<SSLCertReporter> CreateMockSSLCertReporter(
-    const base::Callback<
+    base::RepeatingCallback<
         void(const std::string&,
-             const chrome_browser_ssl::CertLoggerRequest_ChromeChannel)>&
+             const chrome_browser_ssl::CertLoggerRequest_ChromeChannel)>
         report_sent_callback,
     ExpectReport expect_report);
 

@@ -131,21 +131,19 @@ bool FakeLog::Emptied() const {
 
 std::unique_ptr<base::DictionaryValue> ParseDictionary(
     const std::string& json) {
-  std::string error;
-  std::unique_ptr<base::Value> value =
-      base::JSONReader::ReadAndReturnErrorDeprecated(json, base::JSON_PARSE_RFC,
-                                                     nullptr, &error);
-  if (value == nullptr) {
+  base::JSONReader::ValueWithError parsed_json =
+      base::JSONReader::ReadAndReturnValueWithError(json);
+  if (!parsed_json.value) {
     SCOPED_TRACE(json.c_str());
-    SCOPED_TRACE(error.c_str());
+    SCOPED_TRACE(parsed_json.error_message.c_str());
     ADD_FAILURE();
-    return std::unique_ptr<base::DictionaryValue>();
+    return nullptr;
   }
   base::DictionaryValue* dict = nullptr;
-  if (!value->GetAsDictionary(&dict)) {
+  if (!parsed_json.value->GetAsDictionary(&dict)) {
     SCOPED_TRACE("JSON object is not a dictionary");
     ADD_FAILURE();
-    return std::unique_ptr<base::DictionaryValue>();
+    return nullptr;
   }
   return std::unique_ptr<base::DictionaryValue>(dict->DeepCopy());
 }
@@ -331,14 +329,14 @@ TEST(PerformanceLogger, RecordTraceEvents) {
   client.AddListener(&logger);
   logger.OnConnected(&client);
   base::DictionaryValue params;
-  auto trace_events = std::make_unique<base::ListValue>();
+  base::ListValue trace_events;
   auto event1 = std::make_unique<base::DictionaryValue>();
   event1->SetString("cat", "foo");
-  trace_events->GetList().push_back(event1->Clone());
+  trace_events.Append(event1->Clone());
   auto event2 = std::make_unique<base::DictionaryValue>();
   event2->SetString("cat", "bar");
-  trace_events->GetList().push_back(event2->Clone());
-  params.Set("value", std::move(trace_events));
+  trace_events.Append(event2->Clone());
+  params.SetKey("value", std::move(trace_events));
   ASSERT_EQ(kOk, client.TriggerEvent("Tracing.dataCollected", params).code());
 
   ASSERT_EQ(2u, log.GetEntries().size());

@@ -15,12 +15,11 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
-#include "base/stl_util.h"
+#include "base/check_op.h"
+#include "base/cxx17_backports.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/error_utils.h"
@@ -45,8 +44,6 @@ const char kNoneSource[] = "'none'";
 
 const char kDirectiveSeparator = ';';
 
-const char kPluginTypes[] = "plugin-types";
-
 const char kObjectSrcDefaultDirective[] = "object-src 'self';";
 const char kScriptSrcDefaultDirective[] = "script-src 'self';";
 
@@ -57,14 +54,6 @@ const char kAppSandboxScriptSrcDefaultDirective[] =
 const char kSandboxDirectiveName[] = "sandbox";
 const char kAllowSameOriginToken[] = "allow-same-origin";
 const char kAllowTopNavigation[] = "allow-top-navigation";
-
-// This is the list of plugin types which are fully sandboxed and are safe to
-// load up in an extension, regardless of the URL they are navigated to.
-const char* const kSandboxedPluginTypes[] = {
-  "application/pdf",
-  "application/x-google-chrome-pdf",
-  "application/x-pnacl"
-};
 
 // List of CSP hash-source prefixes that are accepted. Blink is a bit more
 // lenient, but we only accept standard hashes to be forward-compatible.
@@ -261,29 +250,22 @@ std::string GetSecureDirectiveValues(
     } else if ((options & OPTIONS_ALLOW_UNSAFE_EVAL) &&
                source_lower == "'unsafe-eval'") {
       is_secure_csp_token = true;
-    } else if (base::StartsWith(source_lower, "chrome-extension-resource:",
-                                base::CompareCase::SENSITIVE)) {
-      // The "chrome-extension-resource" scheme has been removed from the
-      // codebase, but it may still appear in existing CSPs. We continue to
-      // allow it here for compatibility. Requests on this scheme will not
-      // return any kind of network response.
-      is_secure_csp_token = true;
     }
 
     if (is_secure_csp_token) {
       sane_csp_parts.push_back(source_literal);
     } else if (warnings) {
-      warnings->push_back(InstallWarning(
-          ErrorUtils::FormatErrorMessage(
-              manifest_errors::kInvalidCSPInsecureValueIgnored, manifest_key,
-              source_literal.as_string(), directive_name),
-          manifest_key));
+      warnings->push_back(
+          InstallWarning(ErrorUtils::FormatErrorMessage(
+                             manifest_errors::kInvalidCSPInsecureValueIgnored,
+                             manifest_key, source_literal, directive_name),
+                         manifest_key));
     }
   }
   // End of CSP directive that was started at the beginning of this method. If
   // none of the values are secure, the policy will be empty and default to
   // 'none', which is secure.
-  std::string last_part = sane_csp_parts.back().as_string();
+  std::string last_part(sane_csp_parts.back());
   last_part.push_back(kDirectiveSeparator);
   sane_csp_parts.back() = last_part;
   return base::JoinString(sane_csp_parts, " ");
@@ -311,11 +293,11 @@ std::string GetAppSandboxSecureDirectiveValues(
       seen_self_or_none |= source_lower == "'none'" || source_lower == "'self'";
       sane_csp_parts.push_back(source_lower);
     } else if (warnings) {
-      warnings->push_back(InstallWarning(
-          ErrorUtils::FormatErrorMessage(
-              manifest_errors::kInvalidCSPInsecureValueIgnored, manifest_key,
-              source_literal.as_string(), directive_name),
-          manifest_key));
+      warnings->push_back(
+          InstallWarning(ErrorUtils::FormatErrorMessage(
+                             manifest_errors::kInvalidCSPInsecureValueIgnored,
+                             manifest_key, source_literal, directive_name),
+                         manifest_key));
     }
   }
 
@@ -328,38 +310,7 @@ std::string GetAppSandboxSecureDirectiveValues(
   return base::JoinString(sane_csp_parts, " ");
 }
 
-// Returns true if the |plugin_type| is one of the fully sandboxed plugin types.
-bool PluginTypeAllowed(base::StringPiece plugin_type) {
-  for (size_t i = 0; i < base::size(kSandboxedPluginTypes); ++i) {
-    if (plugin_type == kSandboxedPluginTypes[i])
-      return true;
-  }
-  return false;
-}
-
-// Returns true if the policy is allowed to contain an insecure object-src
-// directive. This requires OPTIONS_ALLOW_INSECURE_OBJECT_SRC to be specified
-// as an option and the plugin-types that can be loaded must be restricted to
-// the set specified in kSandboxedPluginTypes.
-bool AllowedToHaveInsecureObjectSrc(int options,
-                                    const DirectiveList& directives) {
-  if (!(options & OPTIONS_ALLOW_INSECURE_OBJECT_SRC))
-    return false;
-
-  auto it = std::find_if(directives.begin(), directives.end(),
-                         [](const Directive& directive) {
-                           return directive.directive_name == kPluginTypes;
-                         });
-
-  // plugin-types not specified.
-  if (it == directives.end())
-    return false;
-
-  return std::all_of(it->directive_values.begin(), it->directive_values.end(),
-                     PluginTypeAllowed);
-}
-
-using SecureDirectiveValueFunction = base::Callback<std::string(
+using SecureDirectiveValueFunction = base::RepeatingCallback<std::string(
     const std::string& directive_name,
     const std::vector<base::StringPiece>& directive_values,
     const std::string& manifest_key,
@@ -400,12 +351,12 @@ class CSPDirectiveToken {
     if (secure_value_)
       return secure_value_.value();
     // This token didn't require modification.
-    return directive_.directive_string.as_string() + kDirectiveSeparator;
+    return std::string(directive_.directive_string) + kDirectiveSeparator;
   }
 
  private:
   const Directive& directive_;
-  base::Optional<std::string> secure_value_;
+  absl::optional<std::string> secure_value_;
 
   DISALLOW_COPY_AND_ASSIGN(CSPDirectiveToken);
 };
@@ -521,7 +472,7 @@ class ExtensionCSPEnforcer : public CSPEnforcer {
                        int options)
       : CSPEnforcer(std::move(manifest_key),
                     true,
-                    base::Bind(&GetSecureDirectiveValues, options)) {
+                    base::BindRepeating(&GetSecureDirectiveValues, options)) {
     secure_directives_.emplace_back(new DirectiveStatus({kScriptSrc}));
     if (!allow_insecure_object_src)
       secure_directives_.emplace_back(new DirectiveStatus({kObjectSrc}));
@@ -544,7 +495,7 @@ class AppSandboxPageCSPEnforcer : public CSPEnforcer {
   AppSandboxPageCSPEnforcer(std::string manifest_key)
       : CSPEnforcer(std::move(manifest_key),
                     false,
-                    base::Bind(&GetAppSandboxSecureDirectiveValues)) {
+                    base::BindRepeating(&GetAppSandboxSecureDirectiveValues)) {
     secure_directives_.emplace_back(
         new DirectiveStatus({kChildSrc, kFrameSrc}));
     secure_directives_.emplace_back(new DirectiveStatus({kScriptSrc}));
@@ -626,9 +577,7 @@ std::string SanitizeContentSecurityPolicy(
     std::vector<InstallWarning>* warnings) {
   CSPParser csp_parser(policy);
 
-  bool allow_insecure_object_src =
-      AllowedToHaveInsecureObjectSrc(options, csp_parser.directives());
-
+  bool allow_insecure_object_src = options & OPTIONS_ALLOW_INSECURE_OBJECT_SRC;
   ExtensionCSPEnforcer csp_enforcer(std::move(manifest_key),
                                     allow_insecure_object_src, options);
   return csp_enforcer.Enforce(csp_parser.directives(), warnings);
@@ -670,8 +619,9 @@ bool ContentSecurityPolicyIsSandboxed(
   return seen_sandbox;
 }
 
-bool IsSecureIsolatedWorldCSP(const std::string& isolated_world_csp,
-                              base::string16* error) {
+bool DoesCSPDisallowRemoteCode(const std::string& content_security_policy,
+                               base::StringPiece manifest_key,
+                               std::u16string* error) {
   DCHECK(error);
 
   struct DirectiveMapping {
@@ -694,7 +644,7 @@ bool IsSecureIsolatedWorldCSP(const std::string& isolated_world_csp,
   };
 
   // Populate |directive_mappings|.
-  CSPParser csp_parser(isolated_world_csp);
+  CSPParser csp_parser(content_security_policy);
   for (DirectiveMapping* mapping : directive_mappings) {
     // Find the first matching directive. As per
     // http://www.w3.org/TR/CSP/#parse-a-csp-policy, duplicate directive names
@@ -730,12 +680,11 @@ bool IsSecureIsolatedWorldCSP(const std::string& isolated_world_csp,
   // "default-src".
   fallback_if_necessary(&worker_src_mapping, script_src_mapping);
 
-  auto is_secure_directive = [](const DirectiveMapping& mapping,
-                                base::string16* error) {
+  auto is_secure_directive = [manifest_key](const DirectiveMapping& mapping,
+                                            std::u16string* error) {
     if (!mapping.directive) {
       *error = ErrorUtils::FormatErrorMessageUTF16(
-          manifest_errors::kInvalidCSPMissingSecureSrc,
-          manifest_keys::kContentSecurityPolicy_IsolatedWorldPath,
+          manifest_errors::kInvalidCSPMissingSecureSrc, manifest_key,
           mapping.status.name());
       return false;
     }
@@ -753,8 +702,7 @@ bool IsSecureIsolatedWorldCSP(const std::string& isolated_world_csp,
       return true;
 
     *error = ErrorUtils::FormatErrorMessageUTF16(
-        manifest_errors::kInvalidCSPInsecureValueError,
-        manifest_keys::kContentSecurityPolicy_IsolatedWorldPath, *it,
+        manifest_errors::kInvalidCSPInsecureValueError, manifest_key, *it,
         mapping.status.name());
     return false;
   };

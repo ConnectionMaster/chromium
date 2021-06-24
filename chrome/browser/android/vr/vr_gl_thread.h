@@ -22,7 +22,6 @@
 #include "chrome/browser/vr/text_input_delegate.h"
 #include "chrome/browser/vr/ui_browser_interface.h"
 #include "chrome/browser/vr/ui_test_input.h"
-#include "third_party/gvr-android-sdk/src/libraries/headers/vr/gvr/capi/include/gvr_types.h"
 
 namespace base {
 class Version;
@@ -67,11 +66,10 @@ class VrGLThread : public base::android::JavaHandlerThread,
                              gl::SurfaceTexture* texture) override;
   void ContentOverlaySurfaceCreated(jobject surface,
                                     gl::SurfaceTexture* texture) override;
-  void GvrDelegateReady(gvr::ViewerType viewer_type) override;
+  void GvrDelegateReady() override;
   void SendRequestPresentReply(device::mojom::XRSessionPtr) override;
   void DialogSurfaceCreated(jobject surface,
                             gl::SurfaceTexture* texture) override;
-  void UpdateGamepadData(device::GvrGamepadData) override;
   void ToggleCardboardGamepad(bool enabled) override;
 
   // BrowserRendererBrowserInterface implementation (BrowserRenderer calling to
@@ -132,7 +130,7 @@ class VrGLThread : public base::android::JavaHandlerThread,
   void SetSpeechRecognitionEnabled(bool enabled) override;
   void SetHasOrCanRequestRecordAudioPermission(
       bool has_or_can_request_record_audio) override;
-  void SetRecognitionResult(const base::string16& result) override;
+  void SetRecognitionResult(const std::u16string& result) override;
   void OnSpeechRecognitionStateChanged(int new_state) override;
   void SetOmniboxSuggestions(std::vector<OmniboxSuggestion> result) override;
   void OnAssetsLoaded(AssetsLoadStatus status,
@@ -151,7 +149,7 @@ class VrGLThread : public base::android::JavaHandlerThread,
   void OnSwapContents(int new_content_id) override;
   void SetDialogLocation(float x, float y) override;
   void SetDialogFloating(bool floating) override;
-  void ShowPlatformToast(const base::string16& text) override;
+  void ShowPlatformToast(const std::u16string& text) override;
   void CancelPlatformToast() override;
   void OnContentBoundsChanged(int width, int height) override;
   void PerformKeyboardInputForTesting(

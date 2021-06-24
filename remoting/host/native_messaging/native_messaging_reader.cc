@@ -5,6 +5,7 @@
 #include "remoting/host/native_messaging/native_messaging_reader.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -12,8 +13,9 @@
 #include "base/files/file.h"
 #include "base/json/json_reader.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/sequenced_task_runner.h"
 #include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
@@ -144,14 +146,14 @@ void NativeMessagingReader::Core::NotifyEof() {
 }
 
 NativeMessagingReader::NativeMessagingReader(base::File file)
-    : reader_thread_("Reader"),
-      weak_factory_(this) {
+    : reader_thread_("Reader") {
   reader_thread_.StartWithOptions(
-      base::Thread::Options(base::MessageLoop::TYPE_IO, /*size=*/0));
+      base::Thread::Options(base::MessagePumpType::IO, /*size=*/0));
 
   read_task_runner_ = reader_thread_.task_runner();
-  core_.reset(new Core(std::move(file), base::ThreadTaskRunnerHandle::Get(),
-                       read_task_runner_, weak_factory_.GetWeakPtr()));
+  core_ = std::make_unique<Core>(std::move(file),
+                                 base::ThreadTaskRunnerHandle::Get(),
+                                 read_task_runner_, weak_factory_.GetWeakPtr());
 }
 
 NativeMessagingReader::~NativeMessagingReader() {
@@ -181,10 +183,10 @@ NativeMessagingReader::~NativeMessagingReader() {
 #endif  // defined(OS_WIN)
 }
 
-void NativeMessagingReader::Start(MessageCallback message_callback,
-                                  base::Closure eof_callback) {
+void NativeMessagingReader::Start(const MessageCallback& message_callback,
+                                  base::OnceClosure eof_callback) {
   message_callback_ = message_callback;
-  eof_callback_ = eof_callback;
+  eof_callback_ = std::move(eof_callback);
 
   // base::Unretained is safe since |core_| is only deleted via the
   // DeleteSoon task which is posted from this class's dtor.
@@ -199,7 +201,7 @@ void NativeMessagingReader::InvokeMessageCallback(
 }
 
 void NativeMessagingReader::InvokeEofCallback() {
-  eof_callback_.Run();
+  std::move(eof_callback_).Run();
 }
 
 }  // namespace remoting

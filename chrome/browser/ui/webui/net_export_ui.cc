@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/bind.h"
@@ -15,14 +16,13 @@
 #include "base/lazy_instance.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_prefs.h"
-#include "chrome/browser/io_thread.h"
 #include "chrome/browser/net/net_export_helper.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/platform_util.h"
@@ -30,7 +30,7 @@
 #include "chrome/browser/ui/chrome_select_file_policy.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/url_constants.h"
-#include "components/grit/components_resources.h"
+#include "components/grit/dev_ui_components_resources.h"
 #include "components/net_log/net_export_file_writer.h"
 #include "components/net_log/net_export_ui_constants.h"
 #include "content/public/browser/browser_thread.h"
@@ -62,10 +62,10 @@ content::WebUIDataSource* CreateNetExportHTMLSource() {
   content::WebUIDataSource* source =
       content::WebUIDataSource::Create(chrome::kChromeUINetExportHost);
 
-  source->SetJsonPath("strings.js");
+  source->UseStringsJs();
+  source->AddResourcePath(net_log::kNetExportUICSS, IDR_NET_LOG_NET_EXPORT_CSS);
   source->AddResourcePath(net_log::kNetExportUIJS, IDR_NET_LOG_NET_EXPORT_JS);
   source->SetDefaultResource(IDR_NET_LOG_NET_EXPORT_HTML);
-  source->UseGzip();
   return source;
 }
 
@@ -129,7 +129,7 @@ class NetExportMessageHandler
   // UI.
   static bool UsingMobileUI();
 
-  // Calls NetExportView.onExportNetLogInfoChanged JavaScript function in the
+  // Fires net-log-info-changed event to update the JavaScript UI in the
   // renderer.
   void NotifyUIWithState(std::unique_ptr<base::DictionaryValue> state);
 
@@ -140,9 +140,9 @@ class NetExportMessageHandler
   // Cached pointer to SystemNetworkContextManager's NetExportFileWriter.
   net_log::NetExportFileWriter* file_writer_;
 
-  ScopedObserver<net_log::NetExportFileWriter,
-                 net_log::NetExportFileWriter::StateObserver>
-      state_observer_manager_;
+  base::ScopedObservation<net_log::NetExportFileWriter,
+                          net_log::NetExportFileWriter::StateObserver>
+      state_observation_manager_{this};
 
   // The capture mode and file size bound that the user chose in the UI when
   // logging started is cached here and is read after a file path is chosen in
@@ -153,16 +153,14 @@ class NetExportMessageHandler
 
   scoped_refptr<ui::SelectFileDialog> select_file_dialog_;
 
-  base::WeakPtrFactory<NetExportMessageHandler> weak_ptr_factory_;
+  base::WeakPtrFactory<NetExportMessageHandler> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(NetExportMessageHandler);
 };
 
 NetExportMessageHandler::NetExportMessageHandler()
     : file_writer_(g_browser_process->system_network_context_manager()
-                       ->GetNetExportFileWriter()),
-      state_observer_manager_(this),
-      weak_ptr_factory_(this) {
+                       ->GetNetExportFileWriter()) {
   file_writer_->Initialize();
 }
 
@@ -205,9 +203,10 @@ void NetExportMessageHandler::RegisterMessages() {
 // state changes.
 void NetExportMessageHandler::OnEnableNotifyUIWithState(
     const base::ListValue* list) {
+  AllowJavascript();
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (!state_observer_manager_.IsObservingSources()) {
-    state_observer_manager_.Add(file_writer_);
+  if (!state_observation_manager_.IsObserving()) {
+    state_observation_manager_.Observe(file_writer_);
   }
   NotifyUIWithState(file_writer_->GetState());
 }
@@ -215,10 +214,10 @@ void NetExportMessageHandler::OnEnableNotifyUIWithState(
 void NetExportMessageHandler::OnStartNetLog(const base::ListValue* list) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  const base::Value::ListStorage& params = list->GetList();
+  base::Value::ConstListView params = list->GetList();
 
   // Determine the capture mode.
-  capture_mode_ = net::NetLogCaptureMode::Default();
+  capture_mode_ = net::NetLogCaptureMode::kDefault;
   if (!params.empty() && params[0].is_string()) {
     capture_mode_ = net_log::NetExportFileWriter::CaptureModeFromString(
         params[0].GetString());
@@ -265,13 +264,13 @@ void NetExportMessageHandler::OnStopNetLog(const base::ListValue* list) {
 void NetExportMessageHandler::OnSendNetLog(const base::ListValue* list) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   file_writer_->GetFilePathToCompletedLog(
-      base::Bind(&NetExportMessageHandler::SendEmail));
+      base::BindOnce(&NetExportMessageHandler::SendEmail));
 }
 
 void NetExportMessageHandler::OnShowFile(const base::ListValue* list) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   file_writer_->GetFilePathToCompletedLog(
-      base::Bind(&NetExportMessageHandler::ShowFileInShell, AsWeakPtr()));
+      base::BindOnce(&NetExportMessageHandler::ShowFileInShell, AsWeakPtr()));
 }
 
 void NetExportMessageHandler::FileSelected(const base::FilePath& path,
@@ -322,9 +321,9 @@ void NetExportMessageHandler::StartNetLog(const base::FilePath& path) {
   file_writer_->StartNetLog(
       path, capture_mode_, max_log_file_size_,
       base::CommandLine::ForCurrentProcess()->GetCommandLineString(),
-      chrome::GetChannelName(),
-      content::BrowserContext::GetDefaultStoragePartition(
-          Profile::FromWebUI(web_ui()))
+      chrome::GetChannelName(chrome::WithExtendedStable(true)),
+      Profile::FromWebUI(web_ui())
+          ->GetDefaultStoragePartition()
           ->GetNetworkContext());
 }
 
@@ -352,8 +351,7 @@ void NetExportMessageHandler::NotifyUIWithState(
     std::unique_ptr<base::DictionaryValue> state) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(web_ui());
-  web_ui()->CallJavascriptFunctionUnsafe(net_log::kOnExportNetLogInfoChanged,
-                                         *state);
+  FireWebUIListener(net_log::kNetLogInfoChangedEvent, *state);
 }
 
 void NetExportMessageHandler::ShowSelectFileDialog(
@@ -371,7 +369,7 @@ void NetExportMessageHandler::ShowSelectFileDialog(
   file_type_info.extensions = {{FILE_PATH_LITERAL("json")}};
   gfx::NativeWindow owning_window = webcontents->GetTopLevelNativeWindow();
   select_file_dialog_->SelectFile(
-      ui::SelectFileDialog::SELECT_SAVEAS_FILE, base::string16(), default_path,
+      ui::SelectFileDialog::SELECT_SAVEAS_FILE, std::u16string(), default_path,
       &file_type_info, 0, base::FilePath::StringType(), owning_window, nullptr);
 }
 

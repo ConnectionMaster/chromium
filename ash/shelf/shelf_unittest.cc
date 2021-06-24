@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
 #include <utility>
 
 #include "ash/public/cpp/shelf_model.h"
 #include "ash/root_window_controller.h"
-#include "ash/session/session_controller.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/session/test_session_controller_client.h"
-#include "ash/shelf/overflow_button.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shelf/shelf_app_button.h"
 #include "ash/shelf/shelf_controller.h"
@@ -17,10 +17,11 @@
 #include "ash/shelf/shelf_widget.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
+#include "base/bind.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "components/session_manager/session_manager_types.h"
-#include "mojo/public/cpp/bindings/associated_binding.h"
 
 namespace ash {
 namespace {
@@ -36,7 +37,7 @@ class ShelfTest : public AshTestBase {
     shelf_view_ = GetPrimaryShelf()->GetShelfViewForTesting();
     shelf_model_ = shelf_view_->model();
 
-    test_.reset(new ShelfViewTestAPI(shelf_view_));
+    test_ = std::make_unique<ShelfViewTestAPI>(shelf_view_);
   }
 
   ShelfView* shelf_view() { return shelf_view_; }
@@ -100,32 +101,6 @@ TEST_F(ShelfTest, CheckHoverAfterMenu) {
 
   // Remove it.
   shelf_model()->RemoveItemAt(index);
-}
-
-TEST_F(ShelfTest, ShowOverflowBubble) {
-  ShelfWidget* shelf_widget = GetPrimaryShelf()->shelf_widget();
-
-  // Add app buttons until overflow occurs.
-  ShelfItem item;
-  item.type = TYPE_APP;
-  item.status = STATUS_RUNNING;
-  while (!shelf_view()->GetOverflowButton()->visible()) {
-    item.id = ShelfID(base::NumberToString(shelf_model()->item_count()));
-    shelf_model()->Add(item);
-    ASSERT_LT(shelf_model()->item_count(), 10000);
-  }
-
-  // Shows overflow bubble.
-  test_api()->ShowOverflowBubble();
-  EXPECT_TRUE(shelf_widget->IsShowingOverflowBubble());
-
-  // Remove one of the first items in the main shelf view.
-  ASSERT_GT(shelf_model()->item_count(), 2);
-  shelf_model()->RemoveItemAt(2);
-
-  // Waits for all transitions to finish and there should be no crash.
-  test_api()->RunMessageLoopUntilAnimationsDone();
-  EXPECT_FALSE(shelf_widget->IsShowingOverflowBubble());
 }
 
 // Tests if shelf is hidden on secondary display after the primary display is

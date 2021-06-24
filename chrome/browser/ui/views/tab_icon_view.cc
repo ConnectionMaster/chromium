@@ -12,16 +12,19 @@
 #endif
 
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/views/tab_icon_view_model.h"
 #include "chrome/grit/theme_resources.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/theme_provider.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/paint_throbber.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/views/image_model_utils.h"
 
 #if defined(OS_WIN)
 #include "chrome/browser/win/app_icon.h"
@@ -30,37 +33,44 @@
 
 namespace {
 
-bool g_initialized = false;
-gfx::ImageSkia* g_default_favicon = nullptr;
+gfx::ImageSkia CreateDefaultFavicon() {
+  gfx::ImageSkia icon;
+#if defined(OS_WIN)
+  // The default window icon is the application icon, not the default favicon.
+  HICON app_icon = GetAppIcon();
+  icon = gfx::ImageSkia::CreateFromBitmap(
+      IconUtil::CreateSkBitmapFromHICON(app_icon, gfx::Size(16, 16)), 1.0f);
+  DestroyIcon(app_icon);
+#else
+  ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
+  icon = *rb.GetImageSkiaNamed(IDR_PRODUCT_LOGO_16);
+#endif
+  return icon;
+}
+
+class DefaultFavicon {
+ public:
+  static const DefaultFavicon& GetInstance() {
+    static base::NoDestructor<DefaultFavicon> default_favicon;
+    return *default_favicon;
+  }
+
+  gfx::ImageSkia icon() const { return icon_; }
+
+ private:
+  friend class base::NoDestructor<DefaultFavicon>;
+
+  DefaultFavicon() : icon_(CreateDefaultFavicon()) {}
+
+  const gfx::ImageSkia icon_;
+
+  DISALLOW_COPY_AND_ASSIGN(DefaultFavicon);
+};
 
 }  // namespace
 
-// static
-void TabIconView::InitializeIfNeeded() {
-  if (!g_initialized) {
-    g_initialized = true;
-
-#if defined(OS_WIN)
-    // The default window icon is the application icon, not the default
-    // favicon.
-    HICON app_icon = GetAppIcon();
-    g_default_favicon = new gfx::ImageSkia(gfx::ImageSkiaRep(
-        IconUtil::CreateSkBitmapFromHICON(app_icon, gfx::Size(16, 16)), 1.0f));
-    DestroyIcon(app_icon);
-#else
-    ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
-    g_default_favicon = rb.GetImageSkiaNamed(IDR_PRODUCT_LOGO_16);
-#endif
-  }
-}
-
-TabIconView::TabIconView(TabIconViewModel* model,
-                         views::MenuButtonListener* listener)
-    : views::MenuButton(base::string16(), listener),
-      model_(model),
-      is_light_(false) {
-  InitializeIfNeeded();
-  // Inheriting from Button causes this View to be focusable, but it us
+TabIconView::TabIconView() {
+  // Inheriting from Button causes this View to be focusable, but it is
   // purely decorative and should not be exposed as focusable in accessibility.
   SetFocusBehavior(FocusBehavior::NEVER);
 }
@@ -68,8 +78,13 @@ TabIconView::TabIconView(TabIconViewModel* model,
 TabIconView::~TabIconView() {
 }
 
+void TabIconView::SetModel(TabIconViewModel* model) {
+  model_ = model;
+  Update();
+}
+
 void TabIconView::Update() {
-  if (!model_->ShouldTabIconViewAnimate())
+  if (!model_ || !model_->ShouldTabIconViewAnimate())
     throbber_start_time_ = base::TimeTicks();
 
   SchedulePaint();
@@ -82,8 +97,7 @@ void TabIconView::PaintThrobber(gfx::Canvas* canvas) {
   gfx::PaintThrobberSpinning(
       canvas, GetLocalBounds(),
       GetNativeTheme()->GetSystemColor(
-          is_light_ ? ui::NativeTheme::kColorId_ThrobberLightColor
-                    : ui::NativeTheme::kColorId_ThrobberSpinningColor),
+          ui::NativeTheme::kColorId_ThrobberSpinningColor),
       base::TimeTicks::Now() - throbber_start_time_);
 }
 
@@ -119,24 +133,23 @@ gfx::Size TabIconView::CalculatePreferredSize() const {
   return gfx::Size(gfx::kFaviconSize, gfx::kFaviconSize);
 }
 
-const char* TabIconView::GetClassName() const {
-  return "TabIconView";
-}
-
 void TabIconView::PaintButtonContents(gfx::Canvas* canvas) {
-  bool rendered = false;
+  if (model_) {
+    if (model_->ShouldTabIconViewAnimate()) {
+      PaintThrobber(canvas);
+      return;
+    }
 
-  if (model_->ShouldTabIconViewAnimate()) {
-    rendered = true;
-    PaintThrobber(canvas);
-  } else {
-    gfx::ImageSkia favicon = model_->GetFaviconForTabIconView();
+    gfx::ImageSkia favicon = views::GetImageSkiaFromImageModel(
+        model_->GetFaviconForTabIconView(), GetNativeTheme());
     if (!favicon.isNull()) {
-      rendered = true;
       PaintFavicon(canvas, favicon);
+      return;
     }
   }
 
-  if (!rendered)
-    PaintFavicon(canvas, *g_default_favicon);
+  PaintFavicon(canvas, DefaultFavicon::GetInstance().icon());
 }
+
+BEGIN_METADATA(TabIconView, views::MenuButton)
+END_METADATA

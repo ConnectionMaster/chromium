@@ -32,12 +32,16 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TESTING_DUMMY_PAGE_HOLDER_H_
 
 #include <memory>
-#include "base/macros.h"
+
+#include "base/callback.h"
+#include "base/callback_helpers.h"
+#include "base/time/default_tick_clock.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/core/testing/scoped_mock_overlay_scrollbars.h"
 #include "third_party/blink/renderer/platform/geometry/int_size.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -46,8 +50,6 @@ class IntSize;
 class LocalFrame;
 class LocalFrameView;
 class Settings;
-
-typedef void (*FrameSettingOverrideFunction)(Settings&);
 
 // Creates a dummy Page, LocalFrame, and LocalFrameView whose clients are all
 // no-op.
@@ -66,10 +68,15 @@ class DummyPageHolder {
   USING_FAST_MALLOC(DummyPageHolder);
 
  public:
-  DummyPageHolder(const IntSize& initial_view_size = IntSize(),
-                  Page::PageClients* = nullptr,
-                  LocalFrameClient* = nullptr,
-                  FrameSettingOverrideFunction setting_overrider = nullptr);
+  DummyPageHolder(
+      const IntSize& initial_view_size = IntSize(),
+      ChromeClient* = nullptr,
+      LocalFrameClient* = nullptr,
+      base::OnceCallback<void(Settings&)> setting_overrider =
+          base::NullCallback(),
+      const base::TickClock* clock = base::DefaultTickClock::GetInstance());
+  DummyPageHolder(const DummyPageHolder&) = delete;
+  DummyPageHolder& operator=(const DummyPageHolder&) = delete;
   ~DummyPageHolder();
 
   Page& GetPage() const;
@@ -80,6 +87,11 @@ class DummyPageHolder {
  private:
   Persistent<Page> page_;
 
+  // Unit tests need to run with a mock theme enabled. This is necessitated
+  // particularly by Android on which unit tests run without a platform theme
+  // engine.
+  ScopedMockOverlayScrollbars enable_mock_scrollbars_;
+
   // The LocalFrame is accessed from worker threads by unit tests
   // (ThreadableLoaderTest), hence we need to allow cross-thread
   // usage of |m_frame|.
@@ -88,7 +100,7 @@ class DummyPageHolder {
   CrossThreadPersistent<LocalFrame> frame_;
 
   Persistent<LocalFrameClient> local_frame_client_;
-  DISALLOW_COPY_AND_ASSIGN(DummyPageHolder);
+  std::unique_ptr<scheduler::WebAgentGroupScheduler> agent_group_scheduler_;
 };
 
 }  // namespace blink

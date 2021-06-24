@@ -8,24 +8,32 @@
 
 #include <utility>
 
+#include "ash/constants/ash_switches.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task_runner_util.h"
 #include "base/values.h"
+#include "chrome/browser/ash/accessibility/accessibility_manager.h"
+#include "chrome/browser/ash/accessibility/magnification_manager.h"
+#include "chrome/browser/ash/login/demo_mode/demo_session.h"
+#include "chrome/browser/ash/login/screens/welcome_screen.h"
+#include "chrome/browser/ash/login/ui/input_events_blocker.h"
+#include "chrome/browser/ash/login/ui/login_display_host.h"
+#include "chrome/browser/ash/system/input_device_settings.h"
+#include "chrome/browser/ash/system/timezone_util.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/login/demo_mode/demo_session.h"
-#include "chrome/browser/chromeos/login/screens/core_oobe_view.h"
-#include "chrome/browser/chromeos/login/screens/welcome_screen.h"
-#include "chrome/browser/chromeos/login/ui/input_events_blocker.h"
-#include "chrome/browser/chromeos/system/input_device_settings.h"
-#include "chrome/browser/chromeos/system/timezone_util.h"
+#include "chrome/browser/chromeos/policy/enrollment/enrollment_requisition_manager.h"
+#include "chrome/browser/ui/webui/chromeos/login/core_oobe_handler.h"
 #include "chrome/browser/ui/webui/chromeos/login/l10n_util.h"
 #include "chrome/browser/ui/webui/chromeos/login/oobe_ui.h"
+#include "chrome/browser/ui/webui/chromeos/login/reset_screen_handler.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/grit/chromium_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "chromeos/constants/chromeos_switches.h"
+#include "chromeos/dbus/constants/dbus_switches.h"
 #include "components/login/localized_values_builder.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
@@ -34,8 +42,14 @@
 #include "ui/base/ime/chromeos/component_extension_ime_manager.h"
 #include "ui/base/ime/chromeos/extension_ime_util.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
+#include "ui/chromeos/devicetype_utils.h"
 
 namespace chromeos {
+
+using ::ash::AccessibilityManager;
+using ::ash::MagnificationManager;
+
+constexpr StaticOobeScreenId WelcomeView::kScreenId;
 
 // WelcomeScreenHandler, public: -----------------------------------------------
 
@@ -45,6 +59,12 @@ WelcomeScreenHandler::WelcomeScreenHandler(JSCallsContainer* js_calls_container,
       core_oobe_view_(core_oobe_view) {
   set_user_acted_method_path("login.WelcomeScreen.userActed");
   DCHECK(core_oobe_view_);
+
+  AccessibilityManager* accessibility_manager = AccessibilityManager::Get();
+  CHECK(accessibility_manager);
+  accessibility_subscription_ = accessibility_manager->RegisterCallback(
+      base::BindRepeating(&WelcomeScreenHandler::OnAccessibilityStatusChanged,
+                          base::Unretained(this)));
 }
 
 WelcomeScreenHandler::~WelcomeScreenHandler() {
@@ -60,16 +80,11 @@ void WelcomeScreenHandler::Show() {
     return;
   }
 
+  // TODO(crbug.com/1105387): Part of initial screen logic.
   PrefService* prefs = g_browser_process->local_state();
   if (prefs->GetBoolean(prefs::kFactoryResetRequested)) {
-    if (core_oobe_view_)
-      core_oobe_view_->ShowDeviceResetScreen();
-
-    return;
-  } else if (prefs->GetBoolean(prefs::kDebuggingFeaturesRequested)) {
-    if (core_oobe_view_)
-      core_oobe_view_->ShowEnableDebuggingScreen();
-
+    DCHECK(LoginDisplayHost::default_host());
+    LoginDisplayHost::default_host()->StartWizard(ResetView::kScreenId);
     return;
   }
 
@@ -78,7 +93,6 @@ void WelcomeScreenHandler::Show() {
       "isDeveloperMode", base::CommandLine::ForCurrentProcess()->HasSwitch(
                              chromeos::switches::kSystemDevMode));
   ShowScreenWithData(kScreenId, &welcome_screen_params);
-  core_oobe_view_->InitDemoModeDetection();
 }
 
 void WelcomeScreenHandler::Hide() {}
@@ -93,10 +107,6 @@ void WelcomeScreenHandler::Unbind() {
   BaseScreenHandler::SetBaseScreen(nullptr);
 }
 
-void WelcomeScreenHandler::StopDemoModeDetection() {
-  core_oobe_view_->StopDemoModeDetection();
-}
-
 void WelcomeScreenHandler::ReloadLocalizedContent() {
   base::DictionaryValue localized_strings;
   GetOobeUI()->GetLocalizedStrings(&localized_strings);
@@ -108,16 +118,39 @@ void WelcomeScreenHandler::SetInputMethodId(
   CallJS("login.WelcomeScreen.onInputMethodIdSetFromBackend", input_method_id);
 }
 
+void WelcomeScreenHandler::ShowDemoModeConfirmationDialog() {
+  CallJS("login.WelcomeScreen.showDemoModeConfirmationDialog");
+}
+
+void WelcomeScreenHandler::ShowEditRequisitionDialog(
+    const std::string& requisition) {
+  CallJS("login.WelcomeScreen.showEditRequisitionDialog", requisition);
+}
+
+void WelcomeScreenHandler::ShowRemoraRequisitionDialog() {
+  CallJS("login.WelcomeScreen.showRemoraRequisitionDialog");
+}
+
 // WelcomeScreenHandler, BaseScreenHandler implementation: --------------------
 
 void WelcomeScreenHandler::DeclareLocalizedValues(
     ::login::LocalizedValuesBuilder* builder) {
-  if (system::InputDeviceSettings::Get()->ForceKeyboardDrivenUINavigation())
+  if (policy::EnrollmentRequisitionManager::IsRemoraRequisition()) {
+    builder->Add("newWelcomeScreenGreeting", IDS_REMORA_CONFIRM_MESSAGE);
+    builder->Add("newWelcomeScreenGreetingSubtitle", IDS_EMPTY_STRING);
     builder->Add("welcomeScreenGreeting", IDS_REMORA_CONFIRM_MESSAGE);
-  else
+  } else {
+    builder->AddF("newWelcomeScreenGreeting", IDS_NEW_WELCOME_SCREEN_GREETING,
+                  ui::GetChromeOSDeviceTypeResourceId());
+    builder->Add("newWelcomeScreenGreetingSubtitle",
+                 IDS_WELCOME_SCREEN_GREETING_SUBTITLE);
     builder->Add("welcomeScreenGreeting", IDS_WELCOME_SCREEN_GREETING);
+  }
 
-  // MD-OOBE (oobe-welcome-md)
+  builder->Add("welcomeScreenGetStarted", IDS_LOGIN_GET_STARTED);
+  builder->Add("welcomeScreenOsInstall", IDS_OOBE_WELCOME_START_OS_INSTALL);
+
+  // MD-OOBE (oobe-welcome-element)
   builder->Add("debuggingFeaturesLink", IDS_WELCOME_ENABLE_DEV_FEATURES_LINK);
   builder->Add("timezoneDropdownLabel", IDS_TIMEZONE_DROPDOWN_LABEL);
   builder->Add("oobeOKButtonText", IDS_OOBE_OK_BUTTON_TEXT);
@@ -143,6 +176,17 @@ void WelcomeScreenHandler::DeclareLocalizedValues(
   builder->Add("keyboardDropdownTitle", IDS_KEYBOARD_DROPDOWN_TITLE);
   builder->Add("keyboardDropdownLabel", IDS_KEYBOARD_DROPDOWN_LABEL);
 
+  // OOBE accessibility options menu strings shown on each screen.
+  builder->Add("accessibilityLink", IDS_OOBE_ACCESSIBILITY_LINK);
+  builder->Add("spokenFeedbackOption", IDS_OOBE_SPOKEN_FEEDBACK_OPTION);
+  builder->Add("selectToSpeakOption", IDS_OOBE_SELECT_TO_SPEAK_OPTION);
+  builder->Add("largeCursorOption", IDS_OOBE_LARGE_CURSOR_OPTION);
+  builder->Add("highContrastOption", IDS_OOBE_HIGH_CONTRAST_MODE_OPTION);
+  builder->Add("screenMagnifierOption", IDS_OOBE_SCREEN_MAGNIFIER_OPTION);
+  builder->Add("dockedMagnifierOption", IDS_OOBE_DOCKED_MAGNIFIER_OPTION);
+  builder->Add("virtualKeyboardOption", IDS_OOBE_VIRTUAL_KEYBOARD_OPTION);
+  builder->Add("closeAccessibilityMenu", IDS_OOBE_CLOSE_ACCESSIBILITY_MENU);
+
   builder->Add("a11ySettingToggleOptionOff",
                IDS_A11Y_SETTING_TOGGLE_OPTION_OFF);
   builder->Add("a11ySettingToggleOptionOn", IDS_A11Y_SETTING_TOGGLE_OPTION_ON);
@@ -151,6 +195,39 @@ void WelcomeScreenHandler::DeclareLocalizedValues(
 
   builder->Add("timezoneDropdownTitle", IDS_TIMEZONE_DROPDOWN_TITLE);
   builder->Add("timezoneButtonText", IDS_TIMEZONE_BUTTON_TEXT);
+
+  // Strings for enable demo mode dialog.
+  builder->Add("enableDemoModeDialogTitle", IDS_ENABLE_DEMO_MODE_DIALOG_TITLE);
+  builder->Add("enableDemoModeDialogText", IDS_ENABLE_DEMO_MODE_DIALOG_TEXT);
+  builder->Add("enableDemoModeDialogConfirm",
+               IDS_ENABLE_DEMO_MODE_DIALOG_CONFIRM);
+  builder->Add("enableDemoModeDialogCancel",
+               IDS_ENABLE_DEMO_MODE_DIALOG_CANCEL);
+
+  // Strings for ChromeVox hint.
+  builder->Add("activateChromeVox", IDS_OOBE_ACTIVATE_CHROMEVOX);
+  builder->Add("continueWithoutChromeVox", IDS_OOBE_CONTINUE_WITHOUT_CHROMEVOX);
+  builder->Add("chromeVoxHintText", IDS_OOBE_CHROMEVOX_HINT_TEXT);
+  builder->Add("chromeVoxHintAnnouncementTextLaptop",
+               IDS_OOBE_CHROMEVOX_HINT_ANNOUNCEMENT_TEXT_LAPTOP);
+  builder->Add("chromeVoxHintAnnouncementTextTablet",
+               IDS_OOBE_CHROMEVOX_HINT_ANNOUNCEMENT_TEXT_TABLET);
+
+  // Strings for the device requisition prompt.
+  builder->Add("deviceRequisitionPromptCancel",
+               IDS_ENTERPRISE_DEVICE_REQUISITION_PROMPT_CANCEL);
+  builder->Add("deviceRequisitionPromptOk",
+               IDS_ENTERPRISE_DEVICE_REQUISITION_PROMPT_OK);
+  builder->Add("deviceRequisitionPromptText",
+               IDS_ENTERPRISE_DEVICE_REQUISITION_PROMPT_TEXT);
+  builder->Add("deviceRequisitionRemoraPromptCancel",
+               IDS_CONFIRM_MESSAGEBOX_NO_BUTTON_LABEL);
+  builder->Add("deviceRequisitionRemoraPromptOk",
+               IDS_CONFIRM_MESSAGEBOX_YES_BUTTON_LABEL);
+  builder->Add("deviceRequisitionRemoraPromptText",
+               IDS_ENTERPRISE_DEVICE_REQUISITION_REMORA_PROMPT_TEXT);
+  builder->Add("deviceRequisitionSharkPromptText",
+               IDS_ENTERPRISE_DEVICE_REQUISITION_SHARK_PROMPT_TEXT);
 }
 
 void WelcomeScreenHandler::DeclareJSCallbacks() {
@@ -160,10 +237,33 @@ void WelcomeScreenHandler::DeclareJSCallbacks() {
               &WelcomeScreenHandler::HandleSetInputMethodId);
   AddCallback("WelcomeScreen.setTimezoneId",
               &WelcomeScreenHandler::HandleSetTimezoneId);
+  AddCallback("WelcomeScreen.setDeviceRequisition",
+              &WelcomeScreenHandler::HandleSetDeviceRequisition);
+  AddCallback("WelcomeScreen.recordChromeVoxHintSpokenSuccess",
+              &WelcomeScreenHandler::HandleRecordChromeVoxHintSpokenSuccess);
 }
 
 void WelcomeScreenHandler::GetAdditionalParameters(
     base::DictionaryValue* dict) {
+  // GetAdditionalParameters() is called when OOBE language is updated.
+  // This happens in two different cases:
+  //
+  // 1) User selects new locale on OOBE screen. We need to sync active input
+  // methods with locale.
+  //
+  // 2) After user session started and user preferences applied.
+  // Either signin to public session: user has selected some locale & input
+  // method on "Public Session User pod". After "Login" button is pressed,
+  // new user session is created, locale & input method are changed (both
+  // asynchronously).
+  // Or signin to Gaia account which might trigger language change from the
+  // user locale or synced application locale.
+  // For the case 2) we might just skip this setup - welcome screen is not
+  // needed anymore.
+
+  if (user_manager::UserManager::Get()->IsUserLoggedIn())
+    return;
+
   const std::string application_locale =
       g_browser_process->GetApplicationLocale();
   const std::string selected_input_method =
@@ -185,35 +285,19 @@ void WelcomeScreenHandler::GetAdditionalParameters(
   if (!language_list)
     language_list = GetMinimalUILanguageList();
 
-  // GetAdditionalParameters() is called when OOBE language is updated.
-  // This happens in two different cases:
-  //
-  // 1) User selects new locale on OOBE screen. We need to sync active input
-  // methods with locale, so EnableLoginLayouts() is needed.
-  //
-  // 2) This is signin to public session. User has selected some locale & input
-  // method on "Public Session User POD". After "Login" button is pressed,
-  // new user session is created, locale & input method are changed (both
-  // asynchronously).
-  // But after public user session is started, "Terms of Service" dialog is
-  // shown. It is a part of OOBE UI screens, so it initiates reload of UI
-  // strings in new locale. It also happens asynchronously, that leads to race
-  // between "locale change", "input method change" and
-  // "EnableLoginLayouts()".  This way EnableLoginLayouts() happens after user
-  // input method has been changed, resetting input method to hardware default.
-  //
-  // So we need to disable activation of login layouts if we are already in
-  // active user session.
-  const bool enable_layouts =
-      !user_manager::UserManager::Get()->IsUserLoggedIn();
+  const bool enable_layouts = true;
 
-  dict->Set("languageList", std::move(language_list));
-  dict->Set("inputMethodsList",
-            GetAndActivateLoginKeyboardLayouts(
-                application_locale, selected_input_method, enable_layouts));
-  dict->Set("timezoneList", GetTimezoneList());
-  dict->Set("demoModeCountryList",
-            base::Value::ToUniquePtrValue(DemoSession::GetCountryList()));
+  dict->SetKey("languageList",
+               base::Value::FromUniquePtrValue(std::move(language_list)));
+  dict->SetKey("inputMethodsList",
+               GetAndActivateLoginKeyboardLayouts(
+                   application_locale, selected_input_method, enable_layouts));
+  dict->SetKey("timezoneList", GetTimezoneList());
+  dict->SetKey("demoModeCountryList", DemoSession::GetCountryList());
+
+  // This switch is set by the session manager if the OS install
+  // service is enabled and the OS is running from a USB installer.
+  dict->SetKey("osInstallEnabled", base::Value(switches::IsOsInstallAllowed()));
 }
 
 void WelcomeScreenHandler::Initialize() {
@@ -225,7 +309,10 @@ void WelcomeScreenHandler::Initialize() {
   // Reload localized strings if they are already resolved.
   if (screen_ && screen_->language_list())
     ReloadLocalizedContent();
+  UpdateA11yState();
 }
+
+// WelcomeScreenHandler, private: ----------------------------------------------
 
 void WelcomeScreenHandler::HandleSetLocaleId(const std::string& locale_id) {
   if (screen_)
@@ -243,14 +330,65 @@ void WelcomeScreenHandler::HandleSetTimezoneId(const std::string& timezone_id) {
     screen_->SetTimezone(timezone_id);
 }
 
-// WelcomeScreenHandler, private: ----------------------------------------------
+void WelcomeScreenHandler::HandleSetDeviceRequisition(
+    const std::string& requisition) {
+  if (screen_)
+    screen_->SetDeviceRequisition(requisition);
+}
+
+void WelcomeScreenHandler::GiveChromeVoxHint() {
+  // Show the ChromeVox hint dialog and give a spoken announcement with
+  // instructions for activating ChromeVox.
+  CallJS("login.WelcomeScreen.maybeGiveChromeVoxHint");
+}
+
+void WelcomeScreenHandler::CancelChromeVoxHintIdleDetection() {
+  screen_->CancelChromeVoxHintIdleDetection();
+}
+
+void WelcomeScreenHandler::HandleRecordChromeVoxHintSpokenSuccess() {
+  base::UmaHistogramBoolean("OOBE.WelcomeScreen.ChromeVoxHintSpokenSuccess",
+                            true);
+}
+
+void WelcomeScreenHandler::OnAccessibilityStatusChanged(
+    const ash::AccessibilityStatusEventDetails& details) {
+  if (details.notification_type ==
+      ash::AccessibilityNotificationType::kManagerShutdown) {
+    accessibility_subscription_ = {};
+  } else {
+    UpdateA11yState();
+  }
+}
+
+void WelcomeScreenHandler::UpdateA11yState() {
+  base::DictionaryValue a11y_info;
+  a11y_info.SetBoolean("highContrastEnabled",
+                       AccessibilityManager::Get()->IsHighContrastEnabled());
+  a11y_info.SetBoolean("largeCursorEnabled",
+                       AccessibilityManager::Get()->IsLargeCursorEnabled());
+  a11y_info.SetBoolean("spokenFeedbackEnabled",
+                       AccessibilityManager::Get()->IsSpokenFeedbackEnabled());
+  a11y_info.SetBoolean("selectToSpeakEnabled",
+                       AccessibilityManager::Get()->IsSelectToSpeakEnabled());
+  DCHECK(MagnificationManager::Get());
+  a11y_info.SetBoolean("screenMagnifierEnabled",
+                       MagnificationManager::Get()->IsMagnifierEnabled());
+  a11y_info.SetBoolean("dockedMagnifierEnabled",
+                       MagnificationManager::Get()->IsDockedMagnifierEnabled());
+  a11y_info.SetBoolean("virtualKeyboardEnabled",
+                       AccessibilityManager::Get()->IsVirtualKeyboardEnabled());
+  if (screen_ && AccessibilityManager::Get()->IsSpokenFeedbackEnabled())
+    CancelChromeVoxHintIdleDetection();
+  CallJS("login.WelcomeScreen.refreshA11yInfo", a11y_info);
+}
 
 // static
-std::unique_ptr<base::ListValue> WelcomeScreenHandler::GetTimezoneList() {
+base::ListValue WelcomeScreenHandler::GetTimezoneList() {
   std::string current_timezone_id;
   CrosSettings::Get()->GetString(kSystemTimezone, &current_timezone_id);
 
-  std::unique_ptr<base::ListValue> timezone_list(new base::ListValue);
+  base::ListValue timezone_list;
   std::unique_ptr<base::ListValue> timezones = system::GetTimezoneList();
   for (size_t i = 0; i < timezones->GetSize(); ++i) {
     const base::ListValue* timezone = NULL;
@@ -267,7 +405,7 @@ std::unique_ptr<base::ListValue> WelcomeScreenHandler::GetTimezoneList() {
     timezone_option->SetString("value", timezone_id);
     timezone_option->SetString("title", timezone_name);
     timezone_option->SetBoolean("selected", timezone_id == current_timezone_id);
-    timezone_list->Append(std::move(timezone_option));
+    timezone_list.Append(std::move(timezone_option));
   }
 
   return timezone_list;

@@ -6,7 +6,6 @@
 #define MEDIA_AUDIO_AUDIO_OUTPUT_DELEGATE_H_
 
 #include <memory>
-#include <string>
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
@@ -44,6 +43,7 @@ class MEDIA_EXPORT AudioOutputDelegate {
   // Stream control:
   virtual void OnPlayStream() = 0;
   virtual void OnPauseStream() = 0;
+  virtual void OnFlushStream() = 0;
   virtual void OnSetVolume(double volume) = 0;
 };
 

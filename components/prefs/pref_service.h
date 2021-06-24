@@ -23,19 +23,26 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/observer_list.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "components/prefs/persistent_pref_store.h"
 #include "components/prefs/pref_value_store.h"
 #include "components/prefs/prefs_export.h"
+
+#if defined(OS_ANDROID)
+#include "base/android/scoped_java_ref.h"
+#endif
 
 class PrefNotifier;
 class PrefNotifierImpl;
 class PrefObserver;
 class PrefRegistry;
 class PrefStore;
+#if defined(OS_ANDROID)
+class PrefServiceAndroid;
+#endif
 
 namespace base {
 class FilePath;
@@ -48,6 +55,10 @@ class ScopedDictionaryPrefUpdate;
 namespace subtle {
 class PrefMemberBase;
 class ScopedUserPrefUpdateBase;
+}
+
+namespace variations {
+class VariationsFieldTrialCreator;
 }
 
 // Base class for PrefServices. You can use the base class to read and
@@ -187,7 +198,7 @@ class COMPONENTS_PREFS_EXPORT PrefService {
       base::OnceClosure reply_callback = base::OnceClosure(),
       base::OnceClosure synchronous_done_callback = base::OnceClosure());
 
-  // Schedule a write if there is any lossy data pending. Unlike
+  // Schedules a write if there is any lossy data pending. Unlike
   // CommitPendingWrite() this does not immediately sync to disk, instead it
   // triggers an eventual write if there is lossy data pending and if there
   // isn't one scheduled already.
@@ -227,6 +238,9 @@ class COMPONENTS_PREFS_EXPORT PrefService {
 
   // Removes a user pref and restores the pref to its default value.
   void ClearPref(const std::string& path);
+
+  // Removes user prefs that start with |prefix|.
+  void ClearPrefsWithPrefixSilently(const std::string& prefix);
 
   // If the path is valid (i.e., registered), update the pref value in the user
   // prefs.
@@ -295,8 +309,7 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // If INCLUDE_DEFAULTS is requested, preferences set to their default values
   // will be included. Otherwise, these will be omitted from the returned
   // dictionary.
-  std::unique_ptr<base::DictionaryValue> GetPreferenceValues(
-      IncludeDefaults include_defaults) const;
+  base::Value GetPreferenceValues(IncludeDefaults include_defaults) const;
 
   bool ReadOnly() const;
 
@@ -367,6 +380,10 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   void AddPrefObserverAllPrefs(PrefObserver* obs);
   void RemovePrefObserverAllPrefs(PrefObserver* obs);
 
+#if defined(OS_ANDROID)
+  base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
+#endif
+
  protected:
   // The PrefNotifier handles registering and notifying preference observers.
   // It is created and owned by this PrefService. Subclasses may access it for
@@ -406,6 +423,10 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   friend class PrefChangeRegistrar;
   friend class subtle::PrefMemberBase;
 
+  // Give access to CommitPendingWriteSynchronously().
+  // TODO(crbug/1218908): Limit VariationsFieldTrialCreator's access.
+  friend class variations::VariationsFieldTrialCreator;
+
   // These are protected so they can only be accessed by the friend
   // classes listed above.
   //
@@ -428,8 +449,7 @@ class COMPONENTS_PREFS_EXPORT PrefService {
 
   // Sets the value for this pref path in the user pref store and informs the
   // PrefNotifier of the change.
-  void SetUserPrefValue(const std::string& path,
-                        std::unique_ptr<base::Value> new_value);
+  void SetUserPrefValue(const std::string& path, base::Value new_value);
 
   // Load preferences from storage, attempting to diagnose and handle errors.
   // This should only be called from the constructor.
@@ -446,11 +466,18 @@ class COMPONENTS_PREFS_EXPORT PrefService {
                                   base::Value::Type type);
 
   // GetPreferenceValue is the equivalent of FindPreference(path)->GetValue(),
-  // it has been added for performance. If is faster because it does
+  // it has been added for performance. It is faster because it does
   // not need to find or create a Preference object to get the
   // value (GetValue() calls back though the preference service to
   // actually get the value.).
   const base::Value* GetPreferenceValue(const std::string& path) const;
+  const base::Value* GetPreferenceValueChecked(const std::string& path) const;
+
+  // Like CommitPendingWrite(), but writes to disk on this thread synchronously
+  // rather than scheduling a write. CommitPendingWriteSynchronously() is
+  // appropriate to call only in the exceptional situation in which you need to
+  // write to disk early on during startup before threads have been started.
+  void CommitPendingWriteSynchronously();
 
   const scoped_refptr<PrefRegistry> pref_registry_;
 
@@ -458,6 +485,12 @@ class COMPONENTS_PREFS_EXPORT PrefService {
   // is authoritative with respect to what the types and default values
   // of registered preferences are.
   mutable PreferenceMap prefs_map_;
+
+#if defined(OS_ANDROID)
+  // Manage and fetch the java object that wraps this PrefService on
+  // android.
+  std::unique_ptr<PrefServiceAndroid> pref_service_android_;
+#endif
 
   SEQUENCE_CHECKER(sequence_checker_);
 

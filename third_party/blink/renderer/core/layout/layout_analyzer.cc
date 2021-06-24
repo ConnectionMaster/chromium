@@ -47,7 +47,6 @@ LayoutAnalyzer::BlockScope::~BlockScope() {
 }
 
 void LayoutAnalyzer::Reset() {
-  start_ms_ = CurrentTimeMS();
   depth_ = 0;
   for (size_t i = 0; i < kNumCounters; ++i) {
     counters_[i] = 0;
@@ -75,11 +74,10 @@ void LayoutAnalyzer::Push(const LayoutObject& o) {
   if (o.IsLayoutInline() && o.AlwaysCreateLineBoxesForLayoutInline())
     Increment(kLayoutInlineObjectsThatAlwaysCreateLineBoxes);
   if (o.IsText()) {
-    const LayoutText& t = *ToLayoutText(&o);
     Increment(kLayoutObjectsThatAreTextAndCanNotUseTheSimpleFontCodePath);
     Increment(
         kCharactersInLayoutObjectsThatAreTextAndCanNotUseTheSimpleFontCodePath,
-        t.TextLength());
+        To<LayoutText>(o).TextLength());
   }
 
   ++depth_;

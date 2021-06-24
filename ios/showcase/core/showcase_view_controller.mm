@@ -4,7 +4,7 @@
 
 #import "ios/showcase/core/showcase_view_controller.h"
 
-#include "base/logging.h"
+#include "base/notreached.h"
 #import "ios/showcase/common/coordinator.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -59,14 +59,13 @@ NSString* const kUseCaseKey = @"useCase";
   [super viewDidLoad];
 
   self.title = @"SC";
-  self.tableView.tableFooterView = [[UIView alloc] init];
   self.tableView.rowHeight = 70.0;
   self.tableView.accessibilityIdentifier = @"showcase_home_collection";
 
   self.searchController =
       [[UISearchController alloc] initWithSearchResultsController:nil];
   self.searchController.searchResultsUpdater = self;
-  self.searchController.dimsBackgroundDuringPresentation = NO;
+  self.searchController.obscuresBackgroundDuringPresentation = NO;
   self.tableView.tableHeaderView = self.searchController.searchBar;
   self.navigationController.navigationBar.translucent = NO;
 

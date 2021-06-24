@@ -6,6 +6,7 @@
 
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
+#include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -28,6 +29,10 @@ bool SimpleThreadScheduler::CanExceedIdleDeadlineIfRequired() const {
 void SimpleThreadScheduler::PostIdleTask(const base::Location& location,
                                          Thread::IdleTask task) {}
 
+void SimpleThreadScheduler::PostDelayedIdleTask(const base::Location&,
+                                                base::TimeDelta delay,
+                                                Thread::IdleTask) {}
+
 void SimpleThreadScheduler::PostNonNestableIdleTask(
     const base::Location& location,
     Thread::IdleTask task) {}
@@ -48,17 +53,21 @@ SimpleThreadScheduler::CompositorTaskRunner() {
 }
 
 scoped_refptr<base::SingleThreadTaskRunner>
-SimpleThreadScheduler::IPCTaskRunner() {
-  return base::ThreadTaskRunnerHandle::Get();
-}
-
-scoped_refptr<base::SingleThreadTaskRunner>
 SimpleThreadScheduler::DeprecatedDefaultTaskRunner() {
   return base::ThreadTaskRunnerHandle::Get();
 }
 
-std::unique_ptr<PageScheduler> SimpleThreadScheduler::CreatePageScheduler(
-    PageScheduler::Delegate* delegate) {
+scoped_refptr<base::SingleThreadTaskRunner>
+SimpleThreadScheduler::NonWakingTaskRunner() {
+  return base::ThreadTaskRunnerHandle::Get();
+}
+
+std::unique_ptr<WebAgentGroupScheduler>
+SimpleThreadScheduler::CreateAgentGroupScheduler() {
+  return nullptr;
+}
+
+WebAgentGroupScheduler* SimpleThreadScheduler::GetCurrentAgentGroupScheduler() {
   return nullptr;
 }
 
@@ -71,11 +80,11 @@ base::TimeTicks SimpleThreadScheduler::MonotonicallyIncreasingVirtualTime() {
   return base::TimeTicks::Now();
 }
 
-void SimpleThreadScheduler::AddTaskObserver(
-    base::MessageLoop::TaskObserver* task_observer) {}
+void SimpleThreadScheduler::AddTaskObserver(base::TaskObserver* task_observer) {
+}
 
 void SimpleThreadScheduler::RemoveTaskObserver(
-    base::MessageLoop::TaskObserver* task_observer) {}
+    base::TaskObserver* task_observer) {}
 
 NonMainThreadSchedulerImpl* SimpleThreadScheduler::AsNonMainThreadScheduler() {
   return nullptr;

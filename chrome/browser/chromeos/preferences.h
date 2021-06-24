@@ -7,17 +7,18 @@
 
 #include <string>
 
-#include "ash/public/interfaces/cros_display_config.mojom.h"
+#include "ash/public/mojom/cros_display_config.mojom.h"
 #include "base/macros.h"
 #include "chrome/browser/chromeos/language_preferences.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_member.h"
 #include "components/sync_preferences/pref_service_syncable_observer.h"
 #include "components/user_manager/user_manager.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "ui/base/ime/chromeos/input_method_manager.h"
 
+class ContentTracingManager;
 class PrefRegistrySimple;
-class TracingManager;
 
 namespace sync_preferences {
 class PrefServiceSyncable;
@@ -75,6 +76,19 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
   // Callback method for preference changes.
   void OnPreferenceChanged(const std::string& pref_name);
 
+  // Add a sample to the appropriate UMA histogram for a boolean preference.
+  void ReportBooleanPrefApplication(ApplyReason reason,
+                                    const std::string& changed_histogram_name,
+                                    const std::string& started_histogram_name,
+                                    bool sample);
+
+  // Add a sample to the appropriate UMA histogram for a sensitivity preference.
+  void ReportSensitivityPrefApplication(
+      ApplyReason reason,
+      const std::string& changed_histogram_name,
+      const std::string& started_histogram_name,
+      int sensitivity_int);
+
   // This will set the OS settings when the preference changed or the user
   // owning these preferences became active. Also this method is called on
   // initialization. The reason of the call is stored as the |reason| parameter.
@@ -105,12 +119,12 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
   void OnIsSyncingChanged() override;
 
   // Overriden form user_manager::UserManager::UserSessionStateObserver.
-  void ActiveUserChanged(const user_manager::User* active_user) override;
+  void ActiveUserChanged(user_manager::User* active_user) override;
 
   sync_preferences::PrefServiceSyncable* prefs_;
 
   input_method::InputMethodManager* input_method_manager_;
-  std::unique_ptr<TracingManager> tracing_manager_;
+  std::unique_ptr<ContentTracingManager> tracing_manager_;
 
   BooleanPrefMember performance_tracing_enabled_;
   BooleanPrefMember tap_to_click_enabled_;
@@ -120,9 +134,18 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
   BooleanPrefMember vert_edge_scroll_enabled_;
   IntegerPrefMember speed_factor_;
   IntegerPrefMember mouse_sensitivity_;
+  IntegerPrefMember mouse_scroll_sensitivity_;
+  IntegerPrefMember pointing_stick_sensitivity_;
   IntegerPrefMember touchpad_sensitivity_;
+  IntegerPrefMember touchpad_scroll_sensitivity_;
   BooleanPrefMember primary_mouse_button_right_;
+  BooleanPrefMember primary_pointing_stick_button_right_;
   BooleanPrefMember mouse_reverse_scroll_;
+  BooleanPrefMember mouse_acceleration_;
+  BooleanPrefMember mouse_scroll_acceleration_;
+  BooleanPrefMember pointing_stick_acceleration_;
+  BooleanPrefMember touchpad_acceleration_;
+  BooleanPrefMember touchpad_scroll_acceleration_;
   FilePathPrefMember download_default_directory_;
 
   StringListPrefMember allowed_languages_;
@@ -141,7 +164,7 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
   IntegerPrefMember xkb_auto_repeat_delay_pref_;
   IntegerPrefMember xkb_auto_repeat_interval_pref_;
 
-  BooleanPrefMember wake_on_wifi_darkconnect_;
+  BooleanPrefMember pci_data_access_enabled_pref_;
 
   PrefChangeRegistrar pref_change_registrar_;
 
@@ -156,7 +179,7 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
 
   std::unique_ptr<input_method::InputMethodSyncer> input_method_syncer_;
 
-  ash::mojom::CrosDisplayConfigControllerPtr cros_display_config_ptr_;
+  mojo::Remote<ash::mojom::CrosDisplayConfigController> cros_display_config_;
 
   DISALLOW_COPY_AND_ASSIGN(Preferences);
 };

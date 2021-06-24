@@ -16,8 +16,8 @@
 #include "gpu/command_buffer/client/gpu_memory_buffer_manager.h"
 #include "gpu/command_buffer/common/context_creation_attribs.h"
 #include "gpu/ipc/client/gpu_channel_host.h"
-#include "mojo/public/cpp/system/handle.h"
-#include "services/ws/public/cpp/gpu/context_provider_command_buffer.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
+#include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace gpu {
@@ -42,10 +42,9 @@ class GraphicsDelegateWin : public GraphicsDelegate {
   // Called on background GL thread.
   void InitializeOnGLThread();
   void SetVRDisplayInfo(device::mojom::VRDisplayInfoPtr info);
-  void Cleanup();
-  void PreRender();
+  bool PreRender();
   void PostRender();
-  mojo::ScopedHandle GetTexture();
+  mojo::PlatformHandle GetTexture();
   gfx::RectF GetLeft();
   gfx::RectF GetRight();
   void ResetMemoryBuffer();
@@ -83,9 +82,10 @@ class GraphicsDelegateWin : public GraphicsDelegate {
   bool EnsureMemoryBuffer(int width, int height);
   gfx::Rect GetTextureSize();
 
-  device::mojom::VRDisplayInfoPtr info_;
+  device::mojom::XRViewPtr left_;
+  device::mojom::XRViewPtr right_;
 
-  scoped_refptr<ws::ContextProviderCommandBuffer> context_provider_;
+  scoped_refptr<viz::ContextProviderCommandBuffer> context_provider_;
   gpu::gles2::GLES2Interface* gl_ = nullptr;
   int last_width_ = 0;
   int last_height_ = 0;

@@ -8,12 +8,12 @@
 #include <vector>
 
 #include "base/macros.h"
-#include "chrome/browser/ui/frame_button_display_types.h"
 #include "chrome/browser/ui/views/frame/opaque_browser_frame_view.h"
 #include "ui/views/layout/layout_manager.h"
 #include "ui/views/window/frame_buttons.h"
 
-class HostedAppButtonContainer;
+class CaptionButtonPlaceholderContainer;
+class WebAppFrameToolbarView;
 class OpaqueBrowserFrameViewLayoutDelegate;
 
 namespace views {
@@ -52,7 +52,7 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
       const std::vector<views::FrameButton>& leading_buttons,
       const std::vector<views::FrameButton>& trailing_buttons);
 
-  gfx::Rect GetBoundsForTabStripRegion(const gfx::Size& tabstrip_preferred_size,
+  gfx::Rect GetBoundsForTabStripRegion(const gfx::Size& tabstrip_minimum_size,
                                        int total_width) const;
 
   // Returns the bounds of the window required to display the content area at
@@ -84,8 +84,7 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
 
   // Returns the y-coordinate of button |button_id|.  If |restored| is true,
   // acts as if the window is restored regardless of the real mode.
-  virtual int CaptionButtonY(chrome::FrameButtonDisplayType button_id,
-                             bool restored) const;
+  virtual int CaptionButtonY(views::FrameButton button_id, bool restored) const;
 
   // Returns the thickness of the top 3D edge of the window frame.  If
   // |restored| is true, acts as if the window is restored regardless of the
@@ -104,11 +103,6 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
   // Returns the bounds of the client area for the specified view size.
   gfx::Rect CalculateClientAreaBounds(int width, int height) const;
 
-  // Converts a FrameButton to a FrameButtonDisplayType, taking into
-  // consideration the maximized state of the browser window.
-  chrome::FrameButtonDisplayType GetButtonDisplayType(
-      views::FrameButton button_id) const;
-
   // Returns the margin around button |button_id|.  If |leading_spacing| is
   // true, returns the left margin (in RTL), otherwise returns the right margin
   // (in RTL).  Extra margin may be added if |is_leading_button| is true.
@@ -126,10 +120,14 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
   // Returns the extra thickness of the area above the tabs.
   int GetNonClientRestoredExtraThickness() const;
 
+  // Enables or disables WCO and updates child views accordingly.
+  void SetWindowControlsOverlayEnabled(bool enabled, views::View* host);
+
   // views::LayoutManager:
   // Called explicitly from OpaqueBrowserFrameView so we can't group it with
   // the other overrides.
   gfx::Size GetMinimumSize(const views::View* host) const override;
+
 
  protected:
   // Whether a specific button should be inserted on the leading or trailing
@@ -185,6 +183,8 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
   // frame buttons.
   TopAreaPadding GetTopAreaPadding() const;
 
+  void LayoutTitleBarForWindowControlsOverlay(const views::View* host);
+
   // Returns true if a 3D edge should be drawn around the window frame.  If
   // |restored| is true, acts as if the window is restored regardless of the
   // real mode.
@@ -219,10 +219,15 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
   views::View* window_icon_;
   views::Label* window_title_;
 
-  HostedAppButtonContainer* hosted_app_button_container_ = nullptr;
+  WebAppFrameToolbarView* web_app_frame_toolbar_ = nullptr;
 
   std::vector<views::FrameButton> leading_buttons_;
   std::vector<views::FrameButton> trailing_buttons_;
+
+  views::ClientView* client_view_ = nullptr;
+
+  bool is_window_controls_overlay_enabled_ = false;
+  CaptionButtonPlaceholderContainer* caption_button_placeholder_container_;
 
   DISALLOW_COPY_AND_ASSIGN(OpaqueBrowserFrameViewLayout);
 };

@@ -10,8 +10,7 @@
 
 #include "base/callback.h"
 #include "base/macros.h"
-#include "base/observer_list.h"
-#include "base/values.h"
+#include "base/observer_list_types.h"
 #include "dbus/object_path.h"
 #include "device/bluetooth/bluetooth_export.h"
 #include "device/bluetooth/dbus/bluez_dbus_client.h"
@@ -46,8 +45,9 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAgentManagerClient
   // The ErrorCallback is used by agent manager methods to indicate failure.
   // It receives two arguments: the name of the error in |error_name| and
   // an optional message in |error_message|.
-  typedef base::Callback<void(const std::string& error_name,
-                              const std::string& error_message)> ErrorCallback;
+  typedef base::OnceCallback<void(const std::string& error_name,
+                                  const std::string& error_message)>
+      ErrorCallback;
 
   // Registers an agent within the local process at the D-bus object path
   // |agent_path| with the remote agent manager. The agent is used for pairing
@@ -56,20 +56,20 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAgentManagerClient
   // one of the constants declared in the bluetooth_agent_manager:: namespace.
   virtual void RegisterAgent(const dbus::ObjectPath& agent_path,
                              const std::string& capability,
-                             const base::Closure& callback,
-                             const ErrorCallback& error_callback) = 0;
+                             base::OnceClosure callback,
+                             ErrorCallback error_callback) = 0;
 
   // Unregisters the agent with the D-Bus object path |agent_path| from the
   // remote agent manager.
   virtual void UnregisterAgent(const dbus::ObjectPath& agent_path,
-                               const base::Closure& callback,
-                               const ErrorCallback& error_callback) = 0;
+                               base::OnceClosure callback,
+                               ErrorCallback error_callback) = 0;
 
   // Requests that the agent with the D-Bus object path |agent_path| be made
   // the default.
   virtual void RequestDefaultAgent(const dbus::ObjectPath& agent_path,
-                                   const base::Closure& callback,
-                                   const ErrorCallback& error_callback) = 0;
+                                   base::OnceClosure callback,
+                                   ErrorCallback error_callback) = 0;
 
   // Creates the instance.
   static BluetoothAgentManagerClient* Create();

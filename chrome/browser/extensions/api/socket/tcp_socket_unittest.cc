@@ -6,12 +6,14 @@
 
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/test_storage_partition.h"
 #include "extensions/browser/api/socket/tcp_socket.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/address_list.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -89,10 +91,10 @@ class TCPSocketUnitTestBase : public extensions::ExtensionServiceTestBase {
   void Initialize() {
     url_request_context_.Init();
     network_context_ = std::make_unique<network::NetworkContext>(
-        nullptr, mojo::MakeRequest(&network_context_ptr_),
+        nullptr, network_context_remote_.BindNewPipeAndPassReceiver(),
         &url_request_context_,
         /*cors_exempt_header_list=*/std::vector<std::string>());
-    partition_.set_network_context(network_context_ptr_.get());
+    partition_.set_network_context(network_context_remote_.get());
   }
 
   net::TestURLRequestContext url_request_context_;
@@ -101,7 +103,7 @@ class TCPSocketUnitTestBase : public extensions::ExtensionServiceTestBase {
   TestingProfile profile_;
   content::TestStoragePartition partition_;
   std::unique_ptr<network::NetworkContext> network_context_;
-  network::mojom::NetworkContextPtr network_context_ptr_;
+  mojo::Remote<network::mojom::NetworkContext> network_context_remote_;
 };
 
 }  // namespace
@@ -125,7 +127,7 @@ class TCPSocketUnitTest : public TCPSocketUnitTestBase,
   net::MockClientSocketFactory mock_client_socket_factory_;
 };
 
-INSTANTIATE_TEST_SUITE_P(/* no prefix */,
+INSTANTIATE_TEST_SUITE_P(All,
                          TCPSocketUnitTest,
                          testing::Values(net::SYNCHRONOUS, net::ASYNC));
 
@@ -503,6 +505,7 @@ class TestSocketFactory : public net::ClientSocketFactory {
   std::unique_ptr<net::TransportClientSocket> CreateTransportClientSocket(
       const net::AddressList&,
       std::unique_ptr<net::SocketPerformanceWatcher>,
+      net::NetworkQualityEstimator* network_quality_estimator,
       net::NetLog*,
       const net::NetLogSource&) override {
     providers_.push_back(std::make_unique<net::StaticSocketDataProvider>(
@@ -511,12 +514,12 @@ class TestSocketFactory : public net::ClientSocketFactory {
                                                         success_);
   }
   std::unique_ptr<net::SSLClientSocket> CreateSSLClientSocket(
+      net::SSLClientContext*,
       std::unique_ptr<net::StreamSocket>,
       const net::HostPortPair&,
-      const net::SSLConfig&,
-      const net::SSLClientSocketContext&) override {
+      const net::SSLConfig&) override {
     NOTIMPLEMENTED();
-    return std::unique_ptr<net::SSLClientSocket>();
+    return nullptr;
   }
   std::unique_ptr<net::ProxyClientSocket> CreateProxyClientSocket(
       std::unique_ptr<net::StreamSocket> stream_socket,
@@ -528,7 +531,6 @@ class TestSocketFactory : public net::ClientSocketFactory {
       bool using_spdy,
       net::NextProto negotiated_protocol,
       net::ProxyDelegate* proxy_delegate,
-      bool is_https_proxy,
       const net::NetworkTrafficAnnotationTag& traffic_annotation) override {
     NOTIMPLEMENTED();
     return nullptr;
@@ -559,7 +561,7 @@ class TCPSocketSettingsTest : public TCPSocketUnitTestBase,
   TestSocketFactory client_socket_factory_;
 };
 
-INSTANTIATE_TEST_SUITE_P(/* no prefix */,
+INSTANTIATE_TEST_SUITE_P(All,
                          TCPSocketSettingsTest,
                          testing::Bool());
 
@@ -636,8 +638,10 @@ TEST_F(TCPSocketServerTest, ListenAccept) {
   base::RunLoop accept_run_loop;
   net::IPEndPoint accept_client_addr;
   socket->Accept(base::BindLambdaForTesting(
-      [&](int result, network::mojom::TCPConnectedSocketPtr accepted_socket,
-          const base::Optional<net::IPEndPoint>& remote_addr,
+      [&](int result,
+          mojo::PendingRemote<network::mojom::TCPConnectedSocket>
+              accepted_socket,
+          const absl::optional<net::IPEndPoint>& remote_addr,
           mojo::ScopedDataPipeConsumerHandle receive_handle,
           mojo::ScopedDataPipeProducerHandle send_handle) {
         EXPECT_EQ(net::OK, result);
@@ -691,8 +695,10 @@ TEST_F(TCPSocketServerTest, ReadAndWrite) {
   std::unique_ptr<TCPSocket> accepted_socket;
 
   socket->Accept(base::BindLambdaForTesting(
-      [&](int result, network::mojom::TCPConnectedSocketPtr connected_socket,
-          const base::Optional<net::IPEndPoint>& remote_addr,
+      [&](int result,
+          mojo::PendingRemote<network::mojom::TCPConnectedSocket>
+              connected_socket,
+          const absl::optional<net::IPEndPoint>& remote_addr,
           mojo::ScopedDataPipeConsumerHandle receive_handle,
           mojo::ScopedDataPipeProducerHandle send_handle) {
         EXPECT_EQ(net::OK, result);

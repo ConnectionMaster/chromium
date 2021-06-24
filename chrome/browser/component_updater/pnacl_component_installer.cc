@@ -23,6 +23,7 @@
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/values.h"
@@ -183,13 +184,12 @@ class PnaclComponentInstallerPolicy : public ComponentInstallerPolicy {
   void GetHash(std::vector<uint8_t>* hash) const override;
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
-  std::vector<std::string> GetMimeTypes() const override;
 
   DISALLOW_COPY_AND_ASSIGN(PnaclComponentInstallerPolicy);
 };
 
-PnaclComponentInstallerPolicy::PnaclComponentInstallerPolicy() {}
-PnaclComponentInstallerPolicy::~PnaclComponentInstallerPolicy() {}
+PnaclComponentInstallerPolicy::PnaclComponentInstallerPolicy() = default;
+PnaclComponentInstallerPolicy::~PnaclComponentInstallerPolicy() = default;
 
 bool PnaclComponentInstallerPolicy::SupportsGroupPolicyEnabledComponentUpdates()
     const {
@@ -226,7 +226,7 @@ void PnaclComponentInstallerPolicy::ComponentReady(
     const base::FilePath& install_dir,
     std::unique_ptr<base::DictionaryValue> manifest) {
   CheckVersionCompatiblity(version);
-  base::PostTaskWithTraits(
+  base::ThreadPool::PostTask(
       FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
       base::BindOnce(&OverrideDirPnaclComponent, install_dir));
 }
@@ -246,10 +246,6 @@ std::string PnaclComponentInstallerPolicy::GetName() const {
 update_client::InstallerAttributes
 PnaclComponentInstallerPolicy::GetInstallerAttributes() const {
   return update_client::InstallerAttributes();
-}
-
-std::vector<std::string> PnaclComponentInstallerPolicy::GetMimeTypes() const {
-  return std::vector<std::string>();
 }
 
 }  // namespace

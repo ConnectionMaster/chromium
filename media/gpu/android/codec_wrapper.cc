@@ -12,10 +12,9 @@
 
 #include "base/bind.h"
 #include "base/memory/ptr_util.h"
-#include "base/optional.h"
-#include "base/stl_util.h"
 #include "media/base/android/media_codec_util.h"
 #include "media/base/bind_to_current_loop.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
@@ -38,12 +37,10 @@ class CodecWrapperImpl : public base::RefCountedThreadSafe<CodecWrapperImpl> {
   bool IsFlushed() const;
   bool IsDraining() const;
   bool IsDrained() const;
-  bool SupportsFlush(DeviceInfo* device_info) const;
   bool Flush();
-  bool SetSurface(scoped_refptr<AVDASurfaceBundle> surface_bundle);
-  scoped_refptr<AVDASurfaceBundle> SurfaceBundle();
-  QueueStatus QueueInputBuffer(const DecoderBuffer& buffer,
-                               const EncryptionScheme& encryption_scheme);
+  bool SetSurface(scoped_refptr<CodecSurfaceBundle> surface_bundle);
+  scoped_refptr<CodecSurfaceBundle> SurfaceBundle();
+  QueueStatus QueueInputBuffer(const DecoderBuffer& buffer);
   DequeueStatus DequeueOutputBuffer(
       base::TimeDelta* presentation_time,
       bool* end_of_stream,
@@ -74,7 +71,7 @@ class CodecWrapperImpl : public base::RefCountedThreadSafe<CodecWrapperImpl> {
   std::unique_ptr<MediaCodecBridge> codec_;
 
   // The currently configured surface.
-  scoped_refptr<AVDASurfaceBundle> surface_bundle_;
+  scoped_refptr<CodecSurfaceBundle> surface_bundle_;
 
   // Buffer ids are unique for a given CodecWrapper and map to MediaCodec buffer
   // indices.
@@ -84,7 +81,7 @@ class CodecWrapperImpl : public base::RefCountedThreadSafe<CodecWrapperImpl> {
   // An input buffer that was dequeued but subsequently rejected from
   // QueueInputBuffer() because the codec didn't have the crypto key. We
   // maintain ownership of it and reuse it next time.
-  base::Optional<int> owned_input_buffer_;
+  absl::optional<int> owned_input_buffer_;
 
   // The current output size. Updated when DequeueOutputBuffer() reports
   // OUTPUT_FORMAT_CHANGED.
@@ -107,20 +104,29 @@ class CodecWrapperImpl : public base::RefCountedThreadSafe<CodecWrapperImpl> {
 
 CodecOutputBuffer::CodecOutputBuffer(scoped_refptr<CodecWrapperImpl> codec,
                                      int64_t id,
-                                     gfx::Size size)
+                                     const gfx::Size& size)
     : codec_(std::move(codec)), id_(id), size_(size) {}
+
+// For testing.
+CodecOutputBuffer::CodecOutputBuffer(int64_t id, const gfx::Size& size)
+    : id_(id), size_(size) {}
 
 CodecOutputBuffer::~CodecOutputBuffer() {
   // While it will work if we re-release the buffer, since CodecWrapper handles
   // it properly, we can save a lock + (possibly) post by checking here if we
   // know that it has been rendered already.
-  if (!was_rendered_)
+  //
+  // |codec_| might be null, but only for tests.
+  if (!was_rendered_ && codec_)
     codec_->ReleaseCodecOutputBuffer(id_, false);
 }
 
 bool CodecOutputBuffer::ReleaseToSurface() {
   was_rendered_ = true;
-  return codec_->ReleaseCodecOutputBuffer(id_, true);
+  auto result = codec_->ReleaseCodecOutputBuffer(id_, true);
+  if (render_cb_)
+    std::move(render_cb_).Run();
+  return result;
 }
 
 CodecWrapperImpl::CodecWrapperImpl(
@@ -181,12 +187,6 @@ void CodecWrapperImpl::DiscardOutputBuffers_Locked() {
   buffer_ids_.clear();
 }
 
-bool CodecWrapperImpl::SupportsFlush(DeviceInfo* device_info) const {
-  DVLOG(2) << __func__;
-  base::AutoLock l(lock_);
-  return !device_info->CodecNeedsFlushWorkaround(codec_.get());
-}
-
 bool CodecWrapperImpl::Flush() {
   DVLOG(2) << __func__;
   base::AutoLock l(lock_);
@@ -206,8 +206,7 @@ bool CodecWrapperImpl::Flush() {
 }
 
 CodecWrapperImpl::QueueStatus CodecWrapperImpl::QueueInputBuffer(
-    const DecoderBuffer& buffer,
-    const EncryptionScheme& encryption_scheme) {
+    const DecoderBuffer& buffer) {
   DVLOG(4) << __func__;
   base::AutoLock l(lock_);
   DCHECK(codec_ && state_ != State::kError);
@@ -258,7 +257,8 @@ CodecWrapperImpl::QueueStatus CodecWrapperImpl::QueueInputBuffer(
     status = codec_->QueueSecureInputBuffer(
         input_buffer, buffer.data(), buffer.data_size(),
         decrypt_config->key_id(), decrypt_config->iv(),
-        decrypt_config->subsamples(), encryption_scheme, buffer.timestamp());
+        decrypt_config->subsamples(), decrypt_config->encryption_scheme(),
+        decrypt_config->encryption_pattern(), buffer.timestamp());
   } else {
     status = codec_->QueueInputBuffer(input_buffer, buffer.data(),
                                       buffer.data_size(), buffer.timestamp());
@@ -359,7 +359,7 @@ CodecWrapperImpl::DequeueStatus CodecWrapperImpl::DequeueOutputBuffer(
 }
 
 bool CodecWrapperImpl::SetSurface(
-    scoped_refptr<AVDASurfaceBundle> surface_bundle) {
+    scoped_refptr<CodecSurfaceBundle> surface_bundle) {
   DVLOG(2) << __func__;
   base::AutoLock l(lock_);
   DCHECK(surface_bundle);
@@ -373,7 +373,7 @@ bool CodecWrapperImpl::SetSurface(
   return true;
 }
 
-scoped_refptr<AVDASurfaceBundle> CodecWrapperImpl::SurfaceBundle() {
+scoped_refptr<CodecSurfaceBundle> CodecWrapperImpl::SurfaceBundle() {
   base::AutoLock l(lock_);
   return surface_bundle_;
 }
@@ -418,20 +418,13 @@ bool CodecWrapperImpl::ReleaseCodecOutputBuffer(int64_t id, bool render) {
   if (!valid)
     return false;
 
-  // Discard the buffers preceding the one we're releasing. The buffers are in
-  // presentation order because the ids are generated in presentation order.
-  for (auto it = buffer_ids_.begin(); it < buffer_it; ++it) {
-    int index = it->second;
-    codec_->ReleaseOutputBuffer(index, false);
-    DVLOG(2) << __func__ << " discarded " << index;
-  }
-
   int index = buffer_it->second;
   codec_->ReleaseOutputBuffer(index, render);
-  buffer_ids_.erase(buffer_ids_.begin(), buffer_it + 1);
+  buffer_ids_.erase(buffer_it);
   if (output_buffer_release_cb_) {
     output_buffer_release_cb_.Run(state_ == State::kDrained ||
-                                  state_ == State::kDraining);
+                                  state_ == State::kDraining ||
+                                  buffer_ids_.empty());
   }
   return true;
 }
@@ -461,10 +454,6 @@ void CodecWrapper::DiscardOutputBuffers() {
   impl_->DiscardOutputBuffers();
 }
 
-bool CodecWrapper::SupportsFlush(DeviceInfo* device_info) const {
-  return impl_->SupportsFlush(device_info);
-}
-
 bool CodecWrapper::IsFlushed() const {
   return impl_->IsFlushed();
 }
@@ -482,9 +471,8 @@ bool CodecWrapper::Flush() {
 }
 
 CodecWrapper::QueueStatus CodecWrapper::QueueInputBuffer(
-    const DecoderBuffer& buffer,
-    const EncryptionScheme& encryption_scheme) {
-  return impl_->QueueInputBuffer(buffer, encryption_scheme);
+    const DecoderBuffer& buffer) {
+  return impl_->QueueInputBuffer(buffer);
 }
 
 CodecWrapper::DequeueStatus CodecWrapper::DequeueOutputBuffer(
@@ -495,11 +483,12 @@ CodecWrapper::DequeueStatus CodecWrapper::DequeueOutputBuffer(
                                     codec_buffer);
 }
 
-bool CodecWrapper::SetSurface(scoped_refptr<AVDASurfaceBundle> surface_bundle) {
+bool CodecWrapper::SetSurface(
+    scoped_refptr<CodecSurfaceBundle> surface_bundle) {
   return impl_->SetSurface(std::move(surface_bundle));
 }
 
-scoped_refptr<AVDASurfaceBundle> CodecWrapper::SurfaceBundle() {
+scoped_refptr<CodecSurfaceBundle> CodecWrapper::SurfaceBundle() {
   return impl_->SurfaceBundle();
 }
 

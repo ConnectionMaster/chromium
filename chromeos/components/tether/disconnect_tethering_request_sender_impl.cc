@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/memory/ptr_util.h"
 #include "chromeos/components/multidevice/logging/logging.h"
 #include "chromeos/components/tether/tether_host_fetcher.h"
@@ -21,31 +22,26 @@ DisconnectTetheringRequestSenderImpl::Factory*
 
 // static
 std::unique_ptr<DisconnectTetheringRequestSender>
-DisconnectTetheringRequestSenderImpl::Factory::NewInstance(
+DisconnectTetheringRequestSenderImpl::Factory::Create(
     device_sync::DeviceSyncClient* device_sync_client,
     secure_channel::SecureChannelClient* secure_channel_client,
     TetherHostFetcher* tether_host_fetcher) {
-  if (!factory_instance_)
-    factory_instance_ = new Factory();
+  if (factory_instance_) {
+    return factory_instance_->CreateInstance(
+        device_sync_client, secure_channel_client, tether_host_fetcher);
+  }
 
-  return factory_instance_->BuildInstance(
-      device_sync_client, secure_channel_client, tether_host_fetcher);
+  return base::WrapUnique(new DisconnectTetheringRequestSenderImpl(
+      device_sync_client, secure_channel_client, tether_host_fetcher));
 }
 
 // static
-void DisconnectTetheringRequestSenderImpl::Factory::SetInstanceForTesting(
+void DisconnectTetheringRequestSenderImpl::Factory::SetFactoryForTesting(
     Factory* factory) {
   factory_instance_ = factory;
 }
 
-std::unique_ptr<DisconnectTetheringRequestSender>
-DisconnectTetheringRequestSenderImpl::Factory::BuildInstance(
-    device_sync::DeviceSyncClient* device_sync_client,
-    secure_channel::SecureChannelClient* secure_channel_client,
-    TetherHostFetcher* tether_host_fetcher) {
-  return base::WrapUnique(new DisconnectTetheringRequestSenderImpl(
-      device_sync_client, secure_channel_client, tether_host_fetcher));
-}
+DisconnectTetheringRequestSenderImpl::Factory::~Factory() = default;
 
 DisconnectTetheringRequestSenderImpl::DisconnectTetheringRequestSenderImpl(
     device_sync::DeviceSyncClient* device_sync_client,
@@ -53,8 +49,7 @@ DisconnectTetheringRequestSenderImpl::DisconnectTetheringRequestSenderImpl(
     TetherHostFetcher* tether_host_fetcher)
     : device_sync_client_(device_sync_client),
       secure_channel_client_(secure_channel_client),
-      tether_host_fetcher_(tether_host_fetcher),
-      weak_ptr_factory_(this) {}
+      tether_host_fetcher_(tether_host_fetcher) {}
 
 DisconnectTetheringRequestSenderImpl::~DisconnectTetheringRequestSenderImpl() {
   for (auto const& entry : device_id_to_operation_map_)
@@ -63,14 +58,14 @@ DisconnectTetheringRequestSenderImpl::~DisconnectTetheringRequestSenderImpl() {
 
 void DisconnectTetheringRequestSenderImpl::SendDisconnectRequestToDevice(
     const std::string& device_id) {
-  if (base::ContainsKey(device_id_to_operation_map_, device_id))
+  if (base::Contains(device_id_to_operation_map_, device_id))
     return;
 
   num_pending_host_fetches_++;
   tether_host_fetcher_->FetchTetherHost(
       device_id,
-      base::Bind(&DisconnectTetheringRequestSenderImpl::OnTetherHostFetched,
-                 weak_ptr_factory_.GetWeakPtr(), device_id));
+      base::BindOnce(&DisconnectTetheringRequestSenderImpl::OnTetherHostFetched,
+                     weak_ptr_factory_.GetWeakPtr(), device_id));
 }
 
 bool DisconnectTetheringRequestSenderImpl::HasPendingRequests() {
@@ -79,7 +74,7 @@ bool DisconnectTetheringRequestSenderImpl::HasPendingRequests() {
 
 void DisconnectTetheringRequestSenderImpl::OnTetherHostFetched(
     const std::string& device_id,
-    base::Optional<multidevice::RemoteDeviceRef> tether_host) {
+    absl::optional<multidevice::RemoteDeviceRef> tether_host) {
   num_pending_host_fetches_--;
   DCHECK(num_pending_host_fetches_ >= 0);
 
@@ -97,7 +92,7 @@ void DisconnectTetheringRequestSenderImpl::OnTetherHostFetched(
                          device_id);
 
   std::unique_ptr<DisconnectTetheringOperation> disconnect_tethering_operation =
-      DisconnectTetheringOperation::Factory::NewInstance(
+      DisconnectTetheringOperation::Factory::Create(
           *tether_host, device_sync_client_, secure_channel_client_);
 
   // Add to the map.
@@ -126,7 +121,7 @@ void DisconnectTetheringRequestSenderImpl::OnOperationFinished(
 
   bool had_pending_requests = HasPendingRequests();
 
-  if (base::ContainsKey(device_id_to_operation_map_, device_id)) {
+  if (base::Contains(device_id_to_operation_map_, device_id)) {
     // Regardless of success/failure, unregister as a listener and delete the
     // operation.
     device_id_to_operation_map_.at(device_id)->RemoveObserver(this);

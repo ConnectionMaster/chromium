@@ -50,7 +50,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kOkToOverride},
         {REMOVAL_STATUS_NOT_FOUND, kOkToOverride},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kOkToOverride},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kOkToOverride},
     };
 
@@ -64,7 +63,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kOkToOverride},
         {REMOVAL_STATUS_NOT_FOUND, kOkToOverride},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kOkToOverride},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kOkToOverride},
     };
 
@@ -78,7 +76,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kNotAllowed},
         {REMOVAL_STATUS_NOT_FOUND, kNotAllowed},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kNotAllowed},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kNotAllowed},
     };
 
@@ -92,7 +89,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kOkToOverride},
         {REMOVAL_STATUS_NOT_FOUND, kSkip},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kNotAllowed},
     };
 
@@ -106,7 +102,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kOkToOverride},
         {REMOVAL_STATUS_NOT_FOUND, kOkToOverride},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kOkToOverride},
     };
 
@@ -120,7 +115,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kSkip},
         {REMOVAL_STATUS_NOT_FOUND, kOkToOverride},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kSkip},
     };
 
@@ -134,7 +128,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kOkToOverride},
         {REMOVAL_STATUS_NOT_FOUND, kOkToOverride},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kOkToOverride},
     };
 
@@ -148,7 +141,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kOkToOverride},
         {REMOVAL_STATUS_NOT_FOUND, kOkToOverride},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kOkToOverride},
     };
 
@@ -162,22 +154,7 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kSkip},
         {REMOVAL_STATUS_NOT_FOUND, kOkToOverride},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kSkip},
-    };
-
-    (*overriding_decisions)[REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION] = {
-        {REMOVAL_STATUS_UNSPECIFIED, kNotAllowed},
-        {REMOVAL_STATUS_MATCHED_ONLY, kNotAllowed},
-        {REMOVAL_STATUS_BLACKLISTED_FOR_REMOVAL, kNotAllowed},
-        {REMOVAL_STATUS_REMOVED, kNotAllowed},
-        {REMOVAL_STATUS_FAILED_TO_REMOVE, kNotAllowed},
-        {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL, kNotAllowed},
-        {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kNotAllowed},
-        {REMOVAL_STATUS_NOT_FOUND, kNotAllowed},
-        {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kNotAllowed},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
-        {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kNotAllowed},
     };
 
     (*overriding_decisions)[REMOVAL_STATUS_ERROR_IN_ARCHIVER] = {
@@ -190,7 +167,6 @@ GetRemovalStatusOverridePermissionMap() {
         {REMOVAL_STATUS_FAILED_TO_SCHEDULE_FOR_REMOVAL, kOkToOverride},
         {REMOVAL_STATUS_NOT_FOUND, kOkToOverride},
         {REMOVAL_STATUS_SCHEDULED_FOR_REMOVAL_FALLBACK, kOkToOverride},
-        {REMOVAL_STATUS_NOT_REMOVED_INACTIVE_EXTENSION, kNotAllowed},
         {REMOVAL_STATUS_ERROR_IN_ARCHIVER, kOkToOverride},
     };
     return overriding_decisions;
@@ -224,7 +200,7 @@ void FileRemovalStatusUpdater::UpdateRemovalStatus(const base::FilePath& path,
       << "Unknown RemovalStatus: need to update "
          "RemovalStatusCanBeOverriddenBy()?";
 
-  const base::string16 sanitized_path = SanitizePath(path);
+  const std::wstring sanitized_path = SanitizePath(path);
 
   base::AutoLock lock(removal_status_lock_);
 
@@ -252,7 +228,7 @@ RemovalStatus FileRemovalStatusUpdater::GetRemovalStatus(
 }
 
 RemovalStatus FileRemovalStatusUpdater::GetRemovalStatusOfSanitizedPath(
-    const base::string16& sanitized_path) const {
+    const std::wstring& sanitized_path) const {
   base::AutoLock lock(removal_status_lock_);
   const auto it = removal_statuses_.find(sanitized_path);
   return it == removal_statuses_.end() ? REMOVAL_STATUS_UNSPECIFIED
@@ -266,7 +242,7 @@ void FileRemovalStatusUpdater::UpdateQuarantineStatus(
   DCHECK(status > QUARANTINE_STATUS_UNSPECIFIED &&
          status <= QuarantineStatus_MAX);
 
-  const base::string16 sanitized_path = SanitizePath(path);
+  const std::wstring sanitized_path = SanitizePath(path);
 
   base::AutoLock lock(removal_status_lock_);
 
@@ -288,7 +264,7 @@ void FileRemovalStatusUpdater::UpdateQuarantineStatus(
 
 QuarantineStatus FileRemovalStatusUpdater::GetQuarantineStatus(
     const base::FilePath& path) const {
-  const base::string16 sanitized_path = SanitizePath(path);
+  const std::wstring sanitized_path = SanitizePath(path);
 
   base::AutoLock lock(removal_status_lock_);
 

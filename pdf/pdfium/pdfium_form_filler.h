@@ -8,10 +8,10 @@
 #include <map>
 #include <memory>
 
-#include "base/macros.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "third_party/pdfium/public/fpdf_formfill.h"
+#include "third_party/pdfium/public/fpdfview.h"
 
 namespace chrome_pdf {
 
@@ -19,10 +19,20 @@ class PDFiumEngine;
 
 class PDFiumFormFiller : public FPDF_FORMFILLINFO, public IPDF_JSPLATFORM {
  public:
-  PDFiumFormFiller(PDFiumEngine* engine, bool enable_javascript);
+  enum class ScriptOption { kNoJavaScript, kJavaScript, kJavaScriptAndXFA };
+  static PDFiumFormFiller::ScriptOption DefaultScriptOption();
+
+  // NOTE: `script_option` is ignored when PDF_ENABLE_V8 is not defined.
+  PDFiumFormFiller(PDFiumEngine* engine, ScriptOption script_option);
+  PDFiumFormFiller(const PDFiumFormFiller&) = delete;
+  PDFiumFormFiller& operator=(const PDFiumFormFiller&) = delete;
   ~PDFiumFormFiller();
 
+  ScriptOption script_option() const { return script_option_; }
+
  private:
+  friend class FormFillerTest;
+
   // FPDF_FORMFILLINFO callbacks.
   static void Form_Invalidate(FPDF_FORMFILLINFO* param,
                               FPDF_PAGE page,
@@ -55,13 +65,20 @@ class PDFiumFormFiller : public FPDF_FORMFILLINFO, public IPDF_JSPLATFORM {
                                      FPDF_WIDESTRING value,
                                      FPDF_DWORD valueLen,
                                      FPDF_BOOL is_focus);
+  static void Form_OnFocusChange(FPDF_FORMFILLINFO* param,
+                                 FPDF_ANNOTATION annot,
+                                 int page_index);
   static void Form_DoURIAction(FPDF_FORMFILLINFO* param, FPDF_BYTESTRING uri);
   static void Form_DoGoToAction(FPDF_FORMFILLINFO* param,
                                 int page_index,
                                 int zoom_mode,
                                 float* position_array,
                                 int size_of_array);
+  static void Form_DoURIActionWithKeyboardModifier(FPDF_FORMFILLINFO* param,
+                                                   FPDF_BYTESTRING uri,
+                                                   int modifiers);
 
+#if defined(PDF_ENABLE_V8)
 #if defined(PDF_ENABLE_XFA)
   static void Form_EmailTo(FPDF_FORMFILLINFO* param,
                            FPDF_FILEHANDLER* file_handler,
@@ -115,8 +132,8 @@ class PDFiumFormFiller : public FPDF_FORMFILLINFO, public IPDF_JSPLATFORM {
                             FPDF_FILEHANDLER* file_handler,
                             int file_flag,
                             FPDF_WIDESTRING dest);
-  static FPDF_LPFILEHANDLER Form_DownloadFromURL(FPDF_FORMFILLINFO* param,
-                                                 FPDF_WIDESTRING url);
+  static FPDF_FILEHANDLER* Form_DownloadFromURL(FPDF_FORMFILLINFO* param,
+                                                FPDF_WIDESTRING url);
   static FPDF_FILEHANDLER* Form_OpenFile(FPDF_FORMFILLINFO* param,
                                          int file_flag,
                                          FPDF_WIDESTRING url,
@@ -170,6 +187,7 @@ class PDFiumFormFiller : public FPDF_FORMFILLINFO, public IPDF_JSPLATFORM {
                               int length,
                               FPDF_WIDESTRING url);
   static void Form_GotoPage(IPDF_JSPLATFORM* param, int page_number);
+#endif  // defined(PDF_ENABLE_V8)
 
   static PDFiumEngine* GetEngine(FPDF_FORMFILLINFO* info);
   static PDFiumEngine* GetEngine(IPDF_JSPLATFORM* platform);
@@ -178,11 +196,8 @@ class PDFiumFormFiller : public FPDF_FORMFILLINFO, public IPDF_JSPLATFORM {
   void KillTimer(int timer_id);
 
   PDFiumEngine* const engine_;
-
+  const ScriptOption script_option_;
   std::map<int, std::unique_ptr<base::RepeatingTimer>> timers_;
-  int last_timer_id_ = 0;
-
-  DISALLOW_COPY_AND_ASSIGN(PDFiumFormFiller);
 };
 
 }  // namespace chrome_pdf

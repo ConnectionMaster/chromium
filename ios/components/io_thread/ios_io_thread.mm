@@ -10,16 +10,14 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
-#include "base/debug/leak_tracker.h"
 #include "base/environment.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/metrics/field_trial.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -33,15 +31,14 @@
 #include "components/proxy_config/pref_proxy_config_tracker.h"
 #include "components/variations/variations_associated_data.h"
 #include "components/version_info/version_info.h"
-#include "ios/web/public/user_agent.h"
+#include "ios/components/io_thread/leak_tracker.h"
+#include "ios/web/common/user_agent.h"
+#include "ios/web/public/thread/web_task_traits.h"
+#include "ios/web/public/thread/web_thread.h"
 #include "ios/web/public/web_client.h"
-#include "ios/web/public/web_task_traits.h"
-#include "ios/web/public/web_thread.h"
 #include "net/base/logging_network_change_observer.h"
 #include "net/cert/cert_verifier.h"
 #include "net/cert/ct_policy_enforcer.h"
-#include "net/cert/ct_verifier.h"
-#include "net/cert/multi_log_ct_verifier.h"
 #include "net/cert/multi_threaded_cert_verifier.h"
 #include "net/cookies/cookie_monster.h"
 #include "net/cookies/cookie_store.h"
@@ -51,32 +48,29 @@
 #include "net/http/http_auth_handler_factory.h"
 #include "net/http/http_auth_preferences.h"
 #include "net/http/http_network_layer.h"
-#include "net/http/http_server_properties_impl.h"
+#include "net/http/http_server_properties.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
 #include "net/proxy_resolution/pac_file_fetcher_impl.h"
 #include "net/proxy_resolution/proxy_config_service.h"
 #include "net/proxy_resolution/proxy_resolution_service.h"
+#include "net/quic/quic_context.h"
 #include "net/socket/tcp_client_socket.h"
 #include "net/spdy/spdy_session.h"
-#include "net/ssl/channel_id_service.h"
-#include "net/ssl/default_channel_id_store.h"
 #include "net/ssl/ssl_config_service_defaults.h"
-#include "net/url_request/data_protocol_handler.h"
-#include "net/url_request/file_protocol_handler.h"
 #include "net/url_request/static_http_user_agent_settings.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
 #include "net/url_request/url_request_context_getter.h"
-#include "net/url_request/url_request_job_factory_impl.h"
+#include "net/url_request/url_request_job_factory.h"
 #include "url/url_constants.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
 #endif
 
-// The IOSIOThread object must outlive any tasks posted to the IO thread
-// before the Quit task, so base::Bind() calls are not refcounted.
+// The IOSIOThread object must outlive any tasks posted to the IO thread before
+// the Quit task, so base::Bind{Once,Repeating}() calls are not refcounted.
 
 namespace io_thread {
 
@@ -126,14 +120,14 @@ class SystemURLRequestContextGetter : public net::URLRequestContextGetter {
   IOSIOThread* io_thread_;  // Weak pointer, owned by ApplicationContext.
   scoped_refptr<base::SingleThreadTaskRunner> network_task_runner_;
 
-  base::debug::LeakTracker<SystemURLRequestContextGetter> leak_tracker_;
+  LeakTracker<SystemURLRequestContextGetter> leak_tracker_;
 };
 
 SystemURLRequestContextGetter::SystemURLRequestContextGetter(
     IOSIOThread* io_thread)
     : io_thread_(io_thread),
       network_task_runner_(
-          base::CreateSingleThreadTaskRunnerWithTraits({web::WebThread::IO})) {}
+          base::CreateSingleThreadTaskRunner({web::WebThread::IO})) {}
 
 SystemURLRequestContextGetter::~SystemURLRequestContextGetter() {}
 
@@ -212,10 +206,9 @@ net::NetLog* IOSIOThread::net_log() {
 
 void IOSIOThread::ChangedToOnTheRecord() {
   DCHECK_CURRENTLY_ON(web::WebThread::UI);
-  base::PostTaskWithTraits(
-      FROM_HERE, {web::WebThread::IO},
-      base::BindOnce(&IOSIOThread::ChangedToOnTheRecordOnIOThread,
-                     base::Unretained(this)));
+  base::PostTask(FROM_HERE, {web::WebThread::IO},
+                 base::BindOnce(&IOSIOThread::ChangedToOnTheRecordOnIOThread,
+                                base::Unretained(this)));
 }
 
 net::URLRequestContextGetter* IOSIOThread::system_url_request_context_getter() {
@@ -246,32 +239,30 @@ void IOSIOThread::Init() {
   globals_->system_network_delegate = CreateSystemNetworkDelegate();
   globals_->host_resolver = CreateGlobalHostResolver(net_log_);
 
-  globals_->cert_verifier = net::CertVerifier::CreateDefault();
+  globals_->cert_verifier =
+      net::CertVerifier::CreateDefault(/*cert_net_fetcher=*/nullptr);
 
   globals_->transport_security_state.reset(new net::TransportSecurityState());
 
-  globals_->cert_transparency_verifier.reset(new net::MultiLogCTVerifier());
   globals_->ct_policy_enforcer.reset(new net::DefaultCTPolicyEnforcer());
 
   globals_->ssl_config_service.reset(new net::SSLConfigServiceDefaults());
 
   CreateDefaultAuthHandlerFactory();
-  globals_->http_server_properties.reset(new net::HttpServerPropertiesImpl());
+  globals_->http_server_properties =
+      std::make_unique<net::HttpServerProperties>();
   // In-memory cookie store.
   // TODO(crbug.com/801910): Hook up logging by passing in a non-null netlog.
   globals_->system_cookie_store.reset(
       new net::CookieMonster(nullptr /* store */, nullptr /* netlog */));
-  // In-memory channel ID store.
-  globals_->system_channel_id_service.reset(
-      new net::ChannelIDService(new net::DefaultChannelIDStore(nullptr)));
-  globals_->system_cookie_store->SetChannelIDServiceID(
-      globals_->system_channel_id_service->GetUniqueID());
   globals_->http_user_agent_settings.reset(new net::StaticHttpUserAgentSettings(
       std::string(),
       web::GetWebClient()->GetUserAgent(web::UserAgentType::MOBILE)));
 
   params_.ignore_certificate_errors = false;
   params_.enable_user_alternate_protocol_ports = false;
+
+  globals_->quic_context = std::make_unique<net::QuicContext>();
 
   std::string quic_user_agent_id = GetChannelString();
   if (!quic_user_agent_id.empty())
@@ -284,7 +275,8 @@ void IOSIOThread::Init() {
   // Set up field trials, ignoring debug command line options.
   network_session_configurator::ParseCommandLineAndFieldTrials(
       base::CommandLine(base::CommandLine::NO_PROGRAM),
-      /*is_quic_force_disabled=*/false, quic_user_agent_id, &params_);
+      /*is_quic_force_disabled=*/false, quic_user_agent_id, &params_,
+      globals_->quic_context->params());
 
   globals_->system_proxy_resolution_service =
       ProxyServiceFactory::CreateProxyResolutionService(
@@ -311,7 +303,7 @@ void IOSIOThread::CleanUp() {
   delete globals_;
   globals_ = nullptr;
 
-  base::debug::LeakTracker<SystemURLRequestContextGetter>::CheckForLeaks();
+  LeakTracker<SystemURLRequestContextGetter>::CheckForLeaks();
 }
 
 void IOSIOThread::CreateDefaultAuthHandlerFactory() {
@@ -356,8 +348,6 @@ net::URLRequestContext* IOSIOThread::ConstructSystemRequestContext(
   context->set_cert_verifier(globals->cert_verifier.get());
   context->set_transport_security_state(
       globals->transport_security_state.get());
-  context->set_cert_transparency_verifier(
-      globals->cert_transparency_verifier.get());
   context->set_ssl_config_service(globals->ssl_config_service.get());
   context->set_http_auth_handler_factory(
       globals->http_auth_handler_factory.get());
@@ -365,23 +355,17 @@ net::URLRequestContext* IOSIOThread::ConstructSystemRequestContext(
       globals->system_proxy_resolution_service.get());
   context->set_ct_policy_enforcer(globals->ct_policy_enforcer.get());
 
-  net::URLRequestJobFactoryImpl* system_job_factory =
-      new net::URLRequestJobFactoryImpl();
-  // Data URLs are always loaded through the system request context on iOS
-  // (due to UIWebView limitations).
-  bool set_protocol = system_job_factory->SetProtocolHandler(
-      url::kDataScheme, std::make_unique<net::DataProtocolHandler>());
-  DCHECK(set_protocol);
-  globals->system_url_request_job_factory.reset(system_job_factory);
+  globals->system_url_request_job_factory =
+      std::make_unique<net::URLRequestJobFactory>();
   context->set_job_factory(globals->system_url_request_job_factory.get());
 
   context->set_cookie_store(globals->system_cookie_store.get());
-  context->set_channel_id_service(globals->system_channel_id_service.get());
   context->set_network_delegate(globals->system_network_delegate.get());
   context->set_http_user_agent_settings(
       globals->http_user_agent_settings.get());
 
   context->set_http_server_properties(globals->http_server_properties.get());
+  context->set_quic_context(globals->quic_context.get());
 
   net::HttpNetworkSession::Context system_context;
   net::URLRequestContextBuilder::SetHttpNetworkSessionComponents(

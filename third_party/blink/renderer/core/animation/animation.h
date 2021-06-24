@@ -33,21 +33,21 @@
 
 #include <memory>
 
-#include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/optional.h"
+#include "base/time/time.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_property.h"
 #include "third_party/blink/renderer/core/animation/animation_effect.h"
 #include "third_party/blink/renderer/core/animation/animation_effect_owner.h"
 #include "third_party/blink/renderer/core/animation/compositor_animations.h"
-#include "third_party/blink/renderer/core/animation/document_timeline.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
+#include "third_party/blink/renderer/core/css/cssom/css_numeric_value.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
-#include "third_party/blink/renderer/core/execution_context/context_lifecycle_observer.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/platform/animation/compositor_animation_client.h"
 #include "third_party/blink/renderer/platform/animation/compositor_animation_delegate.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
@@ -59,26 +59,50 @@ namespace blink {
 class CompositorAnimation;
 class Element;
 class ExceptionState;
+class PaintArtifactCompositor;
 class TreeScope;
+class AnimationTimeline;
 
-class CORE_EXPORT Animation final : public EventTargetWithInlineData,
-                                    public ActiveScriptWrappable<Animation>,
-                                    public ContextLifecycleObserver,
-                                    public CompositorAnimationDelegate,
-                                    public CompositorAnimationClient,
-                                    public AnimationEffectOwner {
+class CORE_EXPORT Animation : public EventTargetWithInlineData,
+                              public ActiveScriptWrappable<Animation>,
+                              public ExecutionContextLifecycleObserver,
+                              public CompositorAnimationDelegate,
+                              public CompositorAnimationClient,
+                              public AnimationEffectOwner {
   DEFINE_WRAPPERTYPEINFO();
-  USING_GARBAGE_COLLECTED_MIXIN(Animation);
+  USING_PRE_FINALIZER(Animation, Dispose);
 
  public:
   enum AnimationPlayState {
     kUnset,
     kIdle,
-    kPending,
+    kPending,  // TODO(crbug.com/958433) remove non-spec compliant state.
     kRunning,
     kPaused,
     kFinished
   };
+
+  // https://drafts.csswg.org/web-animations/#animation-replace-state
+  enum ReplaceState { kActive, kRemoved, kPersisted };
+
+  // Priority for sorting getAnimation by Animation class, arranged from lowest
+  // priority to highest priority as per spec:
+  // https://drafts.csswg.org/web-animations/#dom-document-getanimations
+  enum AnimationClassPriority {
+    kCssTransitionPriority,
+    kCssAnimationPriority,
+    kDefaultPriority
+  };
+
+  // kTreeOrder uses the order in the DOM to determine animations' relative
+  // position.
+  // kPointerOrder simply compares Element pointers and determine animations'
+  // relative position.
+  enum CompareAnimationsOrdering { kTreeOrder, kPointerOrder };
+
+  // Only expect timing accuracy to within 1 microsecond.
+  // drafts.csswg.org/web-animations/#precision-of-time-values.
+  static constexpr double kTimeToleranceMs = 0.001;
 
   static Animation* Create(AnimationEffect*,
                            AnimationTimeline*,
@@ -93,9 +117,15 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
                            AnimationTimeline*,
                            ExceptionState&);
 
-  Animation(ExecutionContext*, DocumentTimeline&, AnimationEffect*);
+  Animation(ExecutionContext*, AnimationTimeline*, AnimationEffect*);
   ~Animation() override;
   void Dispose();
+
+  virtual bool IsCSSAnimation() const { return false; }
+  virtual bool IsCSSTransition() const { return false; }
+  virtual Element* OwningElement() const { return nullptr; }
+  virtual void ClearOwningElement() {}
+  bool IsOwned() const { return OwningElement(); }
 
   // Returns whether the animation is finished.
   bool Update(TimingUpdateReason);
@@ -107,64 +137,86 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
   Animation* GetAnimation() override { return this; }
 
   // timeToEffectChange returns:
-  //  infinity  - if this animation is no longer in effect
-  //  0         - if this animation requires an update on the next frame
-  //  n         - if this animation requires an update after 'n' units of time
-  double TimeToEffectChange();
+  //  nullopt                  - if this animation is no longer in effect
+  //  AnimationTimeDelta()     - if this animation requires an update on the
+  //                             next frame
+  //  AnimationTimeDelta() > 0 - if this animation requires an update
+  //                             after 'n' units of time
+  absl::optional<AnimationTimeDelta> TimeToEffectChange();
 
   void cancel();
 
-  double currentTime(bool& is_null);
-  double currentTime();
-  void setCurrentTime(double new_current_time,
-                      bool is_null,
-                      ExceptionState& = ASSERT_NO_EXCEPTION);
+  V8CSSNumberish* ConvertTimeToCSSNumberish(AnimationTimeDelta) const;
 
-  double CurrentTimeInternal() const;
-  double UnlimitedCurrentTimeInternal() const;
+  V8CSSNumberish* currentTime() const;
+  absl::optional<AnimationTimeDelta> CurrentTimeInternal() const;
+  void setCurrentTime(const V8CSSNumberish* current_time,
+                      ExceptionState& exception_state);
+  void SetCurrentTimeInternal(AnimationTimeDelta);
 
-  void SetCurrentTimeInternal(double new_current_time,
-                              TimingUpdateReason = kTimingUpdateOnDemand);
-  bool Paused() const { return paused_ && !is_paused_for_testing_; }
+  absl::optional<AnimationTimeDelta> UnlimitedCurrentTime() const;
+
+  // https://drafts.csswg.org/web-animations/#play-states
+  String PlayStateString() const;
   static const char* PlayStateString(AnimationPlayState);
-  String playState() const { return PlayStateString(PlayStateInternal()); }
-  AnimationPlayState PlayStateInternal() const;
+  AnimationPlayState CalculateAnimationPlayState() const;
 
-  void pause(ExceptionState& = ASSERT_NO_EXCEPTION);
-  void play(ExceptionState& = ASSERT_NO_EXCEPTION);
-  void reverse(ExceptionState& = ASSERT_NO_EXCEPTION);
+  // As a web exposed API, playState must update style and layout if the play
+  // state may be affected by it (see CSSAnimation::playState), whereas
+  // PlayStateString can be used to query the current play state.
+  virtual String playState() const;
+
+  bool PendingInternal() const;
+
+  // As a web exposed API, pending must update style and layout if the pending
+  // status may be affected by it (see CSSAnimation::pending), whereas
+  // PendingInternal can be used to query the current pending status.
+  virtual bool pending() const;
+
+  virtual void pause(ExceptionState& = ASSERT_NO_EXCEPTION);
+  virtual void play(ExceptionState& = ASSERT_NO_EXCEPTION);
+  virtual void reverse(ExceptionState& = ASSERT_NO_EXCEPTION);
   void finish(ExceptionState& = ASSERT_NO_EXCEPTION);
+  void updatePlaybackRate(double playback_rate,
+                          ExceptionState& = ASSERT_NO_EXCEPTION);
 
   ScriptPromise finished(ScriptState*);
   ScriptPromise ready(ScriptState*);
 
-  bool Playing() const override {
-    return !(PlayStateInternal() == kIdle || Limited() || paused_ ||
-             is_paused_for_testing_);
+  bool Paused() const {
+    return CalculateAnimationPlayState() == kPaused && !is_paused_for_testing_;
   }
+
+  bool Playing() const override {
+    return CalculateAnimationPlayState() == kRunning && !Limited() &&
+           !is_paused_for_testing_;
+  }
+
   bool Limited() const { return Limited(CurrentTimeInternal()); }
   bool FinishedInternal() const { return finished_; }
 
   DEFINE_ATTRIBUTE_EVENT_LISTENER(finish, kFinish)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(cancel, kCancel)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(remove, kRemove)
 
   const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
   bool HasPendingActivity() const final;
-  void ContextDestroyed(ExecutionContext*) override;
+  void ContextDestroyed() override;
 
   double playbackRate() const;
-  void setPlaybackRate(double);
-  AnimationTimeline* timeline() {
-    return static_cast<AnimationTimeline*>(timeline_);
-  }
-  const DocumentTimeline* TimelineInternal() const { return timeline_; }
-  DocumentTimeline* TimelineInternal() { return timeline_; }
+  void setPlaybackRate(double, ExceptionState& = ASSERT_NO_EXCEPTION);
+  AnimationTimeline* timeline() { return timeline_; }
+  AnimationTimeline* timeline() const { return timeline_; }
+  virtual void setTimeline(AnimationTimeline* timeline);
+  Document* GetDocument() const;
 
-  double startTime(bool& is_null) const;
-  base::Optional<double> startTime() const;
-  base::Optional<double> StartTimeInternal() const { return start_time_; }
-  void setStartTime(double, bool is_null);
+  V8CSSNumberish* startTime() const;
+  absl::optional<AnimationTimeDelta> StartTimeInternal() const {
+    return start_time_;
+  }
+  virtual void setStartTime(const V8CSSNumberish* start_time,
+                            ExceptionState& exception_state);
 
   const AnimationEffect* effect() const { return content_.Get(); }
   AnimationEffect* effect() { return content_.Get(); }
@@ -175,27 +227,31 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
 
   // Pausing via this method is not reflected in the value returned by
   // paused() and must never overlap with pausing via pause().
-  void PauseForTesting(double pause_time);
+  void PauseForTesting(AnimationTimeDelta pause_time);
   void DisableCompositedAnimationForTesting();
 
   // This should only be used for CSS
   void Unpause();
+  bool ResetsCurrentTimeOnResume() const {
+    return reset_current_time_on_resume_;
+  }
 
   void SetOutdated();
   bool Outdated() { return outdated_; }
 
-  CompositorAnimations::FailureCode CheckCanStartAnimationOnCompositor(
-      const base::Optional<CompositorElementIdSet>& composited_element_ids)
-      const;
+  CompositorAnimations::FailureReasons CheckCanStartAnimationOnCompositor(
+      const PaintArtifactCompositor* paint_artifact_compositor,
+      PropertyHandleSet* unsupported_properties = nullptr) const;
   void StartAnimationOnCompositor(
-      const base::Optional<CompositorElementIdSet>& composited_element_ids);
+      const PaintArtifactCompositor* paint_artifact_compositor);
   void CancelAnimationOnCompositor();
   void RestartAnimationOnCompositor();
   void CancelIncompatibleAnimationsOnCompositor();
   bool HasActiveAnimationsOnCompositor();
   void SetCompositorPending(bool effect_changed = false);
-  void NotifyCompositorStartTime(double timeline_time);
-  void NotifyStartTime(double timeline_time);
+  void NotifyReady(AnimationTimeDelta ready_time);
+  void CommitPendingPlay(AnimationTimeDelta ready_time);
+  void CommitPendingPause(AnimationTimeDelta ready_time);
   // CompositorAnimationClient implementation.
   CompositorAnimation* GetCompositorAnimation() const override {
     return compositor_animation_ ? compositor_animation_->GetAnimation()
@@ -207,53 +263,99 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
   // Returns whether we should continue with the commit for this animation or
   // wait until next commit.
   bool PreCommit(int compositor_group,
-                 const base::Optional<CompositorElementIdSet>&,
+                 const PaintArtifactCompositor*,
                  bool start_on_compositor);
-  void PostCommit(double timeline_time);
+  void PostCommit();
 
   unsigned SequenceNumber() const override { return sequence_number_; }
+
   int CompositorGroup() const { return compositor_group_; }
 
-  static bool HasLowerPriority(const Animation* animation1,
-                               const Animation* animation2) {
-    return animation1->SequenceNumber() < animation2->SequenceNumber();
-  }
+  static bool HasLowerCompositeOrdering(
+      const Animation* animation1,
+      const Animation* animation2,
+      CompareAnimationsOrdering compare_animation_type);
 
   bool EffectSuppressed() const override { return effect_suppressed_; }
   void SetEffectSuppressed(bool);
 
   void InvalidateKeyframeEffect(const TreeScope&);
+  void InvalidateEffectTargetStyle();
 
-  void Trace(blink::Visitor*) override;
+  void Trace(Visitor*) const override;
 
-  bool CompositorPendingForTesting() const { return compositor_pending_; }
+  bool CompositorPending() const { return compositor_pending_; }
+
+  // Methods for handling removal and persistence of animations.
+  bool IsReplaceable();
+  void RemoveReplacedAnimation();
+  void persist();
+  String replaceState();
+  void commitStyles(ExceptionState& = ASSERT_NO_EXCEPTION);
+  bool ReplaceStateRemoved() const override {
+    return replace_state_ == kRemoved;
+  }
+  bool ReplaceStateActive() const { return replace_state_ == kActive; }
+
+  // Overridden for CSS animations to force pending animation properties to be
+  // applied. This step is required before any web animation API calls that
+  // depends on computed values.
+  virtual void FlushPendingUpdates() const {}
+
+  bool IsInDisplayLockedSubtree();
+
+  base::TimeDelta ComputeCompositorTimeOffset() const;
+
+  // Updates |compositor_property_animations_have_no_effect_| and marks the
+  // animation as pending if it changes.
+  void MarkPendingIfCompositorPropertyAnimationChanges(
+      const PaintArtifactCompositor*);
+  bool CompositorPropertyAnimationsHaveNoEffectForTesting() const {
+    return compositor_property_animations_have_no_effect_;
+  }
+  bool AnimationHasNoEffectForTesting() const {
+    return animation_has_no_effect_;
+  }
 
  protected:
   DispatchEventResult DispatchEventInternal(Event&) override;
   void AddedEventListener(const AtomicString& event_type,
                           RegisteredEventListener&) override;
+  TimelinePhase CurrentPhaseInternal() const;
+  virtual AnimationEffect::EventDelegate* CreateEventDelegate(
+      Element* target,
+      const AnimationEffect::EventDelegate* old_event_delegate) {
+    return nullptr;
+  }
 
  private:
+  void SetHoldTimeAndPhase(absl::optional<AnimationTimeDelta> new_hold_time,
+                           TimelinePhase new_hold_phase);
+  void ResetHoldTimeAndPhase();
+  bool ValidateHoldTimeAndPhase() const;
+
   void ClearOutdated();
   void ForceServiceOnNextFrame();
 
-  double EffectEnd() const;
-  bool Limited(double current_time) const;
+  AnimationTimeDelta EffectEnd() const;
+  bool Limited(absl::optional<AnimationTimeDelta> current_time) const;
 
-  AnimationPlayState CalculatePlayState() const;
-  base::Optional<double> CalculateStartTime(double current_time) const;
-  double CalculateCurrentTime() const;
+  // Playback rate that will take effect once any pending tasks are resolved.
+  // If there are no pending tasks, then the effective playback rate equals the
+  // active playback rate.
+  double EffectivePlaybackRate() const;
+  void ApplyPendingPlaybackRate();
 
-  void UnpauseInternal();
-  void SetPlaybackRateInternal(double);
-  void SetStartTimeInternal(base::Optional<double>);
-  void UpdateCurrentTimingState(TimingUpdateReason);
+  absl::optional<AnimationTimeDelta> CalculateStartTime(
+      AnimationTimeDelta current_time) const;
+  absl::optional<AnimationTimeDelta> CalculateCurrentTime() const;
+  TimelinePhase CalculateCurrentPhase() const;
 
   void BeginUpdatingState();
   void EndUpdatingState();
 
-  CompositorAnimations::FailureCode CheckCanStartAnimationOnCompositorInternal()
-      const;
+  CompositorAnimations::FailureReasons
+  CheckCanStartAnimationOnCompositorInternal() const;
   void CreateCompositorAnimation();
   void DestroyCompositorAnimation();
   void AttachCompositorTimeline();
@@ -266,18 +368,54 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
   void NotifyAnimationAborted(double monotonic_time, int group) override {}
 
   using AnimationPromise = ScriptPromiseProperty<Member<Animation>,
-                                                 Member<Animation>,
                                                  Member<DOMException>>;
   void ResolvePromiseMaybeAsync(AnimationPromise*);
   void RejectAndResetPromise(AnimationPromise*);
   void RejectAndResetPromiseMaybeAsync(AnimationPromise*);
 
+  // Updates the finished state of the animation. If the update is the result of
+  // a discontinuous time change then the value for current time is not bound by
+  // the limits of the animation. The finished notification may be synchronous
+  // or asynchronous. A synchronous notification is used in the case of
+  // explicitly calling finish on an animation.
+  enum class UpdateType { kContinuous, kDiscontinuous };
+  enum class NotificationType { kAsync, kSync };
+  void UpdateFinishedState(UpdateType update_context,
+                           NotificationType notification_type);
+  void QueueFinishedEvent();
+
+  // Plays an animation. When auto_rewind is enabled, the current time can be
+  // adjusted to accommodate reversal of an animation or snapping to an
+  // endpoint.
+  enum class AutoRewind { kDisabled, kEnabled };
+  void PlayInternal(AutoRewind auto_rewind, ExceptionState& exception_state);
+
+  void ResetPendingTasks();
+  absl::optional<double> TimelineTime() const;
+
+  void ScheduleAsyncFinish();
+  void AsyncFinishMicrotask();
+  void CommitFinishNotification();
+
+  // Tracking the state of animations in dev tools.
+  void NotifyProbe();
+
   String id_;
 
-  AnimationPlayState play_state_;
+  // Extended play state reported to dev tools. This play state has an
+  // additional pending state that is not part of the spec by expected by dev
+  // tools.
+  AnimationPlayState reported_play_state_;
   double playback_rate_;
-  base::Optional<double> start_time_;
-  base::Optional<double> hold_time_;
+  // The pending playback rate is not currently in effect. It typically takes
+  // effect when running a scheduled task in response to the animation being
+  // ready.
+  absl::optional<double> pending_playback_rate_;
+  absl::optional<AnimationTimeDelta> start_time_;
+  absl::optional<AnimationTimeDelta> hold_time_;
+  absl::optional<TimelinePhase> hold_phase_;
+  absl::optional<AnimationTimeDelta> previous_current_time_;
+  bool reset_current_time_on_resume_ = false;
 
   unsigned sequence_number_;
 
@@ -285,18 +423,35 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
   Member<AnimationPromise> ready_promise_;
 
   Member<AnimationEffect> content_;
-  Member<DocumentTimeline> timeline_;
+  // Document refers to the timeline's document if there is a timeline.
+  // Otherwise it refers to the document for the execution context.
+  Member<Document> document_;
+  Member<AnimationTimeline> timeline_;
 
-  // Reflects all pausing, including via pauseForTesting().
-  bool paused_;
+  ReplaceState replace_state_;
+
+  // Testing flags.
   bool is_paused_for_testing_;
   bool is_composited_animation_disabled_for_testing_;
+
+  // Pending micro-tasks. These flags are used for tracking purposes only for
+  // the Animation.pending attribute, and do not otherwise affect internal flow
+  // control.
+  bool pending_pause_;
+  bool pending_play_;
+  // Indicates finish notification queued but not processed.
+  bool pending_finish_notification_;
+  bool has_queued_microtask_;
 
   // This indicates timing information relevant to the animation's effect
   // has changed by means other than the ordinary progression of time
   bool outdated_;
 
+  // Indicates the animation is no longer active. Cancelled animation is marked
+  // as finished_.
   bool finished_;
+  // Indicates finish notification has been handled.
+  bool committed_finish_notification_;
   // Holds a 'finished' event queued for asynchronous dispatch via the
   // ScriptedAnimationController. This object remains active until the
   // event is actually dispatched.
@@ -304,24 +459,38 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
 
   Member<Event> pending_cancelled_event_;
 
-  enum CompositorAction { kNone, kPause, kStart, kPauseThenStart };
+  Member<Event> pending_remove_event_;
+
+  // TODO(crbug.com/960944): Consider reintroducing kPause and cleanup use of
+  // mutually exclusive pending_play_ and pending_pause_ flags.
+  enum CompositorAction { kNone, kStart };
 
   class CompositorState {
     USING_FAST_MALLOC(CompositorState);
 
    public:
+    // TODO(https://crbug.com/1166397): Convert composited animations to use
+    // AnimationTimeDelta for start_time_ and hold_time_.
     explicit CompositorState(Animation& animation)
-        : start_time(animation.start_time_),
-          hold_time(animation.hold_time_),
-          playback_rate(animation.playback_rate_),
+        : start_time(animation.start_time_
+                         ? absl::make_optional(
+                               animation.start_time_.value().InSecondsF())
+                         : absl::nullopt),
+          hold_time(animation.hold_time_
+                        ? absl::make_optional(
+                              animation.hold_time_.value().InSecondsF())
+                        : absl::nullopt),
+          playback_rate(animation.EffectivePlaybackRate()),
           effect_changed(false),
-          pending_action(kStart) {}
-    base::Optional<double> start_time;
-    base::Optional<double> hold_time;
+          pending_action(animation.start_time_ ? kNone : kStart) {}
+    CompositorState(const CompositorState&) = delete;
+    CompositorState& operator=(const CompositorState&) = delete;
+
+    absl::optional<double> start_time;
+    absl::optional<double> hold_time;
     double playback_rate;
     bool effect_changed;
     CompositorAction pending_action;
-    DISALLOW_COPY_AND_ASSIGN(CompositorState);
   };
 
   enum CompositorPendingChange {
@@ -330,26 +499,11 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
     kDoNotSetCompositorPending,
   };
 
-  class PlayStateUpdateScope {
-    STACK_ALLOCATED();
-
-   public:
-    PlayStateUpdateScope(Animation&,
-                         TimingUpdateReason,
-                         CompositorPendingChange = kSetCompositorPending);
-    ~PlayStateUpdateScope();
-
-   private:
-    Member<Animation> animation_;
-    AnimationPlayState initial_play_state_;
-    CompositorPendingChange compositor_pending_change_;
-  };
-
   // CompositorAnimation objects need to eagerly sever their connection to their
   // Animation delegate; use a separate 'holder' on-heap object to accomplish
   // that.
-  class CompositorAnimationHolder
-      : public GarbageCollectedFinalized<CompositorAnimationHolder> {
+  class CompositorAnimationHolder final
+      : public GarbageCollected<CompositorAnimationHolder> {
     USING_PRE_FINALIZER(CompositorAnimationHolder, Dispose);
 
    public:
@@ -359,7 +513,7 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
 
     void Detach();
 
-    void Trace(blink::Visitor* visitor) { visitor->Trace(animation_); }
+    void Trace(Visitor* visitor) const { visitor->Trace(animation_); }
 
     CompositorAnimation* GetAnimation() const {
       return compositor_animation_.get();
@@ -381,13 +535,26 @@ class CORE_EXPORT Animation final : public EventTargetWithInlineData,
 
   Member<CompositorAnimationHolder> compositor_animation_;
 
-  bool current_time_pending_;
-  bool state_is_being_updated_;
-
   bool effect_suppressed_;
 
-  FRIEND_TEST_ALL_PREFIXES(AnimationAnimationTest,
+  // Animations with an owning element stop ticking if there is an active
+  // display lock on an ancestor element.  Cache the status to minimize the
+  // number of tree walks.
+  base::TimeTicks last_display_lock_update_time_ = base::TimeTicks();
+  bool is_in_display_locked_subtree_ = false;
+
+  // True if we animate compositor properties but they would have no effect due
+  // to being optimized out on the compositor. Updated in |Animation::PreCommit|
+  // and |MarkPendingIfCompositorPropertyAnimationChanges|.
+  bool compositor_property_animations_have_no_effect_;
+  // True if the only reason for not running the animation on the compositor is
+  // that the animation would have no effect. Updated in |Animation::PreCommit|.
+  bool animation_has_no_effect_;
+
+  FRIEND_TEST_ALL_PREFIXES(AnimationAnimationTestCompositing,
                            NoCompositeWithoutCompositedElementId);
+  FRIEND_TEST_ALL_PREFIXES(AnimationAnimationTestNoCompositing,
+                           PendingActivityWithFinishedEventListener);
 };
 
 }  // namespace blink

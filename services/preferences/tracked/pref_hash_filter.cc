@@ -5,13 +5,16 @@
 #include "services/preferences/tracked/pref_hash_filter.h"
 
 #include <stdint.h>
+
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/cxx17_backports.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/stl_util.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -32,9 +35,8 @@ void CleanupDeprecatedTrackedPreferences(
   // Add deprecated previously tracked preferences below for them to be cleaned
   // up from both the pref files and the hash store.
   static const char* const kDeprecatedTrackedPreferences[] = {
-      // TODO(a-v-y): Remove in M60+,
-      "default_search_provider.search_url", "default_search_provider.name",
-      "default_search_provider.keyword"};
+      // TODO(pmonette): Remove in 2022+.
+      "module_blacklist_cache_md5_digest"};
 
   for (size_t i = 0; i < base::size(kDeprecatedTrackedPreferences); ++i) {
     const char* key = kDeprecatedTrackedPreferences[i];
@@ -53,18 +55,20 @@ PrefHashFilter::PrefHashFilter(
     StoreContentsPair external_validation_hash_store_pair,
     const std::vector<prefs::mojom::TrackedPreferenceMetadataPtr>&
         tracked_preferences,
-    prefs::mojom::ResetOnLoadObserverPtr reset_on_load_observer,
-    prefs::mojom::TrackedPreferenceValidationDelegate* delegate,
-    size_t reporting_ids_count,
-    bool report_super_mac_validity)
+    mojo::PendingRemote<prefs::mojom::ResetOnLoadObserver>
+        reset_on_load_observer,
+    scoped_refptr<base::RefCountedData<
+        mojo::Remote<prefs::mojom::TrackedPreferenceValidationDelegate>>>
+        delegate,
+    size_t reporting_ids_count)
     : pref_hash_store_(std::move(pref_hash_store)),
       external_validation_hash_store_pair_(
           external_validation_hash_store_pair.first
-              ? base::make_optional(
+              ? absl::make_optional(
                     std::move(external_validation_hash_store_pair))
-              : base::nullopt),
+              : absl::nullopt),
       reset_on_load_observer_(std::move(reset_on_load_observer)),
-      report_super_mac_validity_(report_super_mac_validity) {
+      delegate_(std::move(delegate)) {
   DCHECK(pref_hash_store_);
   DCHECK_GE(reporting_ids_count, tracked_preferences.size());
   // Verify that, if |external_validation_hash_store_pair_| is present, both its
@@ -73,6 +77,8 @@ PrefHashFilter::PrefHashFilter(
          (external_validation_hash_store_pair_->first &&
           external_validation_hash_store_pair_->second));
 
+  prefs::mojom::TrackedPreferenceValidationDelegate* delegate_ptr =
+      (delegate_ ? delegate_->data.get() : nullptr);
   for (size_t i = 0; i < tracked_preferences.size(); ++i) {
     const prefs::mojom::TrackedPreferenceMetadata& metadata =
         *tracked_preferences[i];
@@ -80,14 +86,14 @@ PrefHashFilter::PrefHashFilter(
     std::unique_ptr<TrackedPreference> tracked_preference;
     switch (metadata.strategy) {
       case PrefTrackingStrategy::ATOMIC:
-        tracked_preference.reset(new TrackedAtomicPreference(
+        tracked_preference = std::make_unique<TrackedAtomicPreference>(
             metadata.name, metadata.reporting_id, reporting_ids_count,
-            metadata.enforcement_level, metadata.value_type, delegate));
+            metadata.enforcement_level, metadata.value_type, delegate_ptr);
         break;
       case PrefTrackingStrategy::SPLIT:
-        tracked_preference.reset(new TrackedSplitPreference(
+        tracked_preference = std::make_unique<TrackedSplitPreference>(
             metadata.name, metadata.reporting_id, reporting_ids_count,
-            metadata.enforcement_level, metadata.value_type, delegate));
+            metadata.enforcement_level, metadata.value_type, delegate_ptr);
         break;
     }
     DCHECK(tracked_preference);
@@ -211,7 +217,7 @@ void PrefHashFilter::OnStoreDeletionFromDisk() {
 }
 
 void PrefHashFilter::FinalizeFilterOnLoad(
-    const PostFilterOnLoadCallback& post_filter_on_load_callback,
+    PostFilterOnLoadCallback post_filter_on_load_callback,
     std::unique_ptr<base::DictionaryValue> pref_store_contents,
     bool prefs_altered) {
   DCHECK(pref_store_contents);
@@ -233,11 +239,6 @@ void PrefHashFilter::FinalizeFilterOnLoad(
 
     CleanupDeprecatedTrackedPreferences(pref_store_contents.get(),
                                         hash_store_transaction.get());
-
-    if (report_super_mac_validity_) {
-      UMA_HISTOGRAM_BOOLEAN("Settings.HashesDictionaryTrusted",
-                            hash_store_transaction->IsSuperMACValid());
-    }
 
     for (auto it = tracked_paths_.begin(); it != tracked_paths_.end(); ++it) {
       if (it->second->EnforceAndReport(
@@ -265,15 +266,15 @@ void PrefHashFilter::FinalizeFilterOnLoad(
   UMA_HISTOGRAM_TIMES("Settings.FilterOnLoadTime",
                       base::TimeTicks::Now() - checkpoint);
 
-  post_filter_on_load_callback.Run(std::move(pref_store_contents),
-                                   prefs_altered);
+  std::move(post_filter_on_load_callback)
+      .Run(std::move(pref_store_contents), prefs_altered);
 }
 
 // static
 void PrefHashFilter::ClearFromExternalStore(
     HashStoreContents* external_validation_hash_store_contents,
     const base::DictionaryValue* changed_paths_and_macs) {
-  DCHECK(!changed_paths_and_macs->empty());
+  DCHECK(!changed_paths_and_macs->DictEmpty());
 
   for (base::DictionaryValue::Iterator it(*changed_paths_and_macs);
        !it.IsAtEnd(); it.Advance()) {
@@ -286,7 +287,7 @@ void PrefHashFilter::FlushToExternalStore(
     std::unique_ptr<HashStoreContents> external_validation_hash_store_contents,
     std::unique_ptr<base::DictionaryValue> changed_paths_and_macs,
     bool write_success) {
-  DCHECK(!changed_paths_and_macs->empty());
+  DCHECK(!changed_paths_and_macs->DictEmpty());
   DCHECK(external_validation_hash_store_contents);
   if (!write_success)
     return;
@@ -320,8 +321,8 @@ void PrefHashFilter::FlushToExternalStore(
 PrefFilter::OnWriteCallbackPair PrefHashFilter::GetOnWriteSynchronousCallbacks(
     base::DictionaryValue* pref_store_contents) {
   if (changed_paths_.empty() || !external_validation_hash_store_pair_) {
-    return std::make_pair(base::Closure(),
-                          base::Callback<void(bool success)>());
+    return std::make_pair(base::OnceClosure(),
+                          base::OnceCallback<void(bool success)>());
   }
 
   std::unique_ptr<base::DictionaryValue> changed_paths_macs =
@@ -345,10 +346,11 @@ PrefFilter::OnWriteCallbackPair PrefHashFilter::GetOnWriteSynchronousCallbacks(
       case TrackedPreferenceType::SPLIT: {
         const base::DictionaryValue* dict_value = nullptr;
         pref_store_contents->GetDictionary(changed_path, &dict_value);
-        changed_paths_macs->SetWithoutPathExpansion(
+        changed_paths_macs->SetKey(
             changed_path,
-            external_validation_hash_store_pair_->first->ComputeSplitMacs(
-                changed_path, dict_value));
+            base::Value::FromUniquePtrValue(
+                external_validation_hash_store_pair_->first->ComputeSplitMacs(
+                    changed_path, dict_value)));
         break;
       }
     }
@@ -368,8 +370,8 @@ PrefFilter::OnWriteCallbackPair PrefHashFilter::GetOnWriteSynchronousCallbacks(
   base::DictionaryValue* raw_changed_paths_macs = changed_paths_macs.get();
 
   return std::make_pair(
-      base::Bind(&ClearFromExternalStore, base::Unretained(raw_contents),
-                 base::Unretained(raw_changed_paths_macs)),
-      base::Bind(&FlushToExternalStore, base::Passed(&hash_store_contents_copy),
-                 base::Passed(&changed_paths_macs)));
+      base::BindOnce(&ClearFromExternalStore, base::Unretained(raw_contents),
+                     base::Unretained(raw_changed_paths_macs)),
+      base::BindOnce(&FlushToExternalStore, std::move(hash_store_contents_copy),
+                     std::move(changed_paths_macs)));
 }

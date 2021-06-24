@@ -30,44 +30,10 @@
 
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_context.h"
 
-#include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
-#include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher_properties.h"
-#include "third_party/blink/renderer/platform/platform_probe_sink.h"
-#include "third_party/blink/renderer/platform/probe/platform_trace_events_agent.h"
 
 namespace blink {
-
-namespace {
-
-class NullFetchContext final : public FetchContext {
- public:
-  NullFetchContext() = default;
-
-  void CountUsage(mojom::WebFeature) const override {}
-  void CountDeprecation(mojom::WebFeature) const override {}
-};
-
-}  // namespace
-
-FetchContext& FetchContext::NullInstance() {
-  return *MakeGarbageCollected<NullFetchContext>();
-}
-
-FetchContext::FetchContext()
-    : platform_probe_sink_(MakeGarbageCollected<PlatformProbeSink>()) {
-  platform_probe_sink_->AddPlatformTraceEvents(
-      MakeGarbageCollected<PlatformTraceEventsAgent>());
-}
-
-void FetchContext::Trace(blink::Visitor* visitor) {
-  visitor->Trace(platform_probe_sink_);
-  visitor->Trace(resource_fetcher_properties_);
-}
-
-void FetchContext::DispatchDidChangeResourcePriority(uint64_t,
-                                                     ResourceLoadPriority,
-                                                     int) {}
 
 void FetchContext::AddAdditionalRequestHeaders(ResourceRequest&) {}
 
@@ -79,18 +45,9 @@ mojom::FetchCacheMode FetchContext::ResourceRequestCachePolicy(
 }
 
 void FetchContext::PrepareRequest(ResourceRequest&,
-                                  const FetchInitiatorInfo&,
+                                  ResourceLoaderOptions&,
                                   WebScopedVirtualTimePauser&,
                                   ResourceType) {}
-
-bool FetchContext::ShouldLoadNewResource(ResourceType type) const {
-  return !GetResourceFetcherProperties().ShouldBlockLoadingSubResource();
-}
-
-void FetchContext::RecordLoadingActivity(
-    const ResourceRequest&,
-    ResourceType,
-    const AtomicString& fetch_initiator_name) {}
 
 void FetchContext::AddResourceTiming(const ResourceTimingInfo&) {}
 
@@ -98,6 +55,12 @@ void FetchContext::PopulateResourceRequest(
     ResourceType,
     const ClientHintsPreferences&,
     const FetchParameters::ResourceWidth&,
-    ResourceRequest&) {}
+    ResourceRequest&,
+    const ResourceLoaderOptions&) {}
+
+mojo::PendingReceiver<mojom::blink::WorkerTimingContainer>
+FetchContext::TakePendingWorkerTimingReceiver(int request_id) {
+  return mojo::NullReceiver();
+}
 
 }  // namespace blink

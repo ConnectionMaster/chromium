@@ -5,12 +5,14 @@
 #ifndef CHROME_CHROME_CLEANER_OS_FILE_PATH_SANITIZATION_H_
 #define CHROME_CHROME_CLEANER_OS_FILE_PATH_SANITIZATION_H_
 
+#include <windows.h>
+
 #include <map>
+#include <string>
 #include <vector>
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/strings/string16.h"
 
 namespace chrome_cleaner {
 
@@ -40,13 +42,13 @@ void InitializeFilePathSanitization();
 std::vector<base::FilePath> GetRewrittenPaths();
 
 // Returns the map of key paths to the corresponding sanitization string.
-std::map<int, base::string16> PathKeyToSanitizeString();
+std::map<int, std::wstring> PathKeyToSanitizeString();
 
 // Convert a CSIDL to a key that can be used with PathService::Get().
 int CsidlToPathServiceKey(int CSIDL);
 
 // Return the long path equivalent of |path| in |long_path|.
-void ConvertToLongPath(const base::string16& path, base::string16* long_path);
+void ConvertToLongPath(const std::wstring& path, std::wstring* long_path);
 
 // Converts a FilePath to a common format to prevent comparison errors because
 // of case sensitivity or short vs. long path formats.
@@ -55,10 +57,10 @@ base::FilePath NormalizePath(const base::FilePath& path);
 // Return the value of the |path| after being sanitized. A path is sanitized by
 // replacing the portion that represents a CSIDL. Must never be called before
 // InitializeFilePathSanitization().
-base::string16 SanitizePath(const base::FilePath& path);
+std::wstring SanitizePath(const base::FilePath& path);
 
 // Return the command line string after the executable path is sanitized.
-base::string16 SanitizeCommandLine(const base::CommandLine& command_line);
+std::wstring SanitizeCommandLine(const base::CommandLine& command_line);
 
 // If |input_path| is a relative path, |csidl| is used as one of the CSIDL_*
 // #defines in shlobj.h to identify the root path, to which |input_path is
@@ -69,6 +71,17 @@ base::string16 SanitizeCommandLine(const base::CommandLine& command_line);
 // expanded full absolute path.
 base::FilePath ExpandSpecialFolderPath(int csidl,
                                        const base::FilePath& input_path);
+
+// Returns true iff |file_path| is safe to access from the sandbox.
+bool ValidateSandboxFilePath(const base::FilePath& file_path);
+
+// Returns true iff |file_attributes| contains no attributes that indicate a
+// remote file, such as FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.
+bool IsLocalFileAttributes(DWORD file_attributes);
+
+// Returns true iff |file_path|'s attributes can be retrieved and they indicate
+// a local file according to IsLocalFileAttributes.
+bool IsFilePresentLocally(const base::FilePath& file_path);
 
 }  // namespace chrome_cleaner
 

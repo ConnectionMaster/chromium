@@ -10,23 +10,11 @@
 
 namespace content {
 
-class ChromeBlobStorageContext;
-class StreamContext;
 class BrowserContext;
-class URLDataManagerBackend;
 
 // Getters for objects that are part of BrowserContext which are also used on
 // the IO thread. These are only accessed by content so they're not on the
 // public API.
-
-ChromeBlobStorageContext* GetChromeBlobStorageContextForResourceContext(
-    const ResourceContext* resource_context);
-
-CONTENT_EXPORT StreamContext* GetStreamContextForResourceContext(
-    const ResourceContext* resource_context);
-
-URLDataManagerBackend* GetURLDataManagerForResourceContext(
-    ResourceContext* context);
 
 // Initialize the above data on the ResourceContext from a given BrowserContext.
 CONTENT_EXPORT void InitializeResourceContext(BrowserContext* browser_context);

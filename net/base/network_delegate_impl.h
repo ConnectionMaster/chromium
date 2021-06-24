@@ -8,19 +8,16 @@
 #include <stdint.h>
 
 #include <set>
+#include <string>
 
-#include "base/strings/string16.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
 #include "net/base/network_delegate.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/proxy_resolution/proxy_retry_info.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class GURL;
-
-namespace base {
-class FilePath;
-}
 
 namespace url {
 class Origin;
@@ -31,12 +28,14 @@ namespace net {
 class CookieOptions;
 class HttpRequestHeaders;
 class HttpResponseHeaders;
-class ProxyInfo;
 class URLRequest;
 
 class NET_EXPORT NetworkDelegateImpl : public NetworkDelegate {
  public:
-  ~NetworkDelegateImpl() override {}
+  NetworkDelegateImpl() = default;
+  NetworkDelegateImpl(const NetworkDelegateImpl&) = delete;
+  NetworkDelegateImpl& operator=(const NetworkDelegateImpl&) = delete;
+  ~NetworkDelegateImpl() override = default;
 
  private:
   int OnBeforeURLRequest(URLRequest* request,
@@ -47,56 +46,40 @@ class NET_EXPORT NetworkDelegateImpl : public NetworkDelegate {
                                CompletionOnceCallback callback,
                                HttpRequestHeaders* headers) override;
 
-  void OnBeforeSendHeaders(URLRequest* request,
-                           const ProxyInfo& proxy_info,
-                           const ProxyRetryInfoMap& proxy_retry_info,
-                           HttpRequestHeaders* headers) override;
-
-  void OnStartTransaction(URLRequest* request,
-                          const HttpRequestHeaders& headers) override;
-
   int OnHeadersReceived(
       URLRequest* request,
       CompletionOnceCallback callback,
       const HttpResponseHeaders* original_response_headers,
       scoped_refptr<HttpResponseHeaders>* override_response_headers,
-      GURL* allowed_unsafe_redirect_url) override;
+      const IPEndPoint& endpoint,
+      absl::optional<GURL>* preserve_fragment_on_redirect_url) override;
 
   void OnBeforeRedirect(URLRequest* request, const GURL& new_location) override;
 
   void OnResponseStarted(URLRequest* request, int net_error) override;
 
-  void OnNetworkBytesReceived(URLRequest* request,
-                              int64_t bytes_received) override;
-
-  void OnNetworkBytesSent(URLRequest* request, int64_t bytes_sent) override;
-
   void OnCompleted(URLRequest* request, bool started, int net_error) override;
 
   void OnURLRequestDestroyed(URLRequest* request) override;
 
-  void OnPACScriptError(int line_number, const base::string16& error) override;
+  void OnPACScriptError(int line_number, const std::u16string& error) override;
 
-  AuthRequiredResponse OnAuthRequired(URLRequest* request,
-                                      const AuthChallengeInfo& auth_info,
-                                      AuthCallback callback,
-                                      AuthCredentials* credentials) override;
-
-  bool OnCanGetCookies(const URLRequest& request,
-                       const CookieList& cookie_list,
-                       bool allowed_from_caller) override;
+  bool OnAnnotateAndMoveUserBlockedCookies(
+      const URLRequest& request,
+      net::CookieAccessResultList& maybe_included_cookies,
+      net::CookieAccessResultList& excluded_cookies,
+      bool allowed_from_caller) override;
 
   bool OnCanSetCookie(const URLRequest& request,
                       const net::CanonicalCookie& cookie,
                       CookieOptions* options,
                       bool allowed_from_caller) override;
 
-  bool OnCanAccessFile(const URLRequest& request,
-                       const base::FilePath& original_path,
-                       const base::FilePath& absolute_path) const override;
-
   bool OnForcePrivacyMode(const GURL& url,
-                          const GURL& site_for_cookies) const override;
+                          const SiteForCookies& site_for_cookies,
+                          const absl::optional<url::Origin>& top_frame_origin,
+                          CookieOptions::SamePartyCookieContextType
+                              same_party_cookie_context_type) const override;
 
   bool OnCancelURLRequestWithPolicyViolatingReferrerHeader(
       const URLRequest& request,

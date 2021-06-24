@@ -48,10 +48,7 @@ static float ExtractAverageGroupDelay(AudioChannel* channel,
 
   float* impulse_p = channel->MutableData();
 
-  bool is_size_good = channel->length() >= analysis_fft_size;
-  DCHECK(is_size_good);
-  if (!is_size_good)
-    return 0;
+  DCHECK_GE(channel->length(), analysis_fft_size);
 
   // Check for power-of-2.
   DCHECK_EQ(1UL << static_cast<unsigned>(log2(analysis_fft_size)),
@@ -88,30 +85,16 @@ HRTFKernel::HRTFKernel(AudioChannel* channel,
   unsigned number_of_fade_out_frames = static_cast<unsigned>(
       sample_rate / 4410);  // 10 sample-frames @44.1KHz sample-rate
   DCHECK_LT(number_of_fade_out_frames, truncated_response_length);
-  if (number_of_fade_out_frames < truncated_response_length) {
-    for (unsigned i = truncated_response_length - number_of_fade_out_frames;
-         i < truncated_response_length; ++i) {
-      float x = 1.0f - static_cast<float>(i - (truncated_response_length -
-                                               number_of_fade_out_frames)) /
-                           number_of_fade_out_frames;
-      impulse_response[i] *= x;
-    }
+  for (unsigned i = truncated_response_length - number_of_fade_out_frames;
+       i < truncated_response_length; ++i) {
+    float x = 1.0f - static_cast<float>(i - (truncated_response_length -
+                                             number_of_fade_out_frames)) /
+                         number_of_fade_out_frames;
+    impulse_response[i] *= x;
   }
 
   fft_frame_ = std::make_unique<FFTFrame>(fft_size);
   fft_frame_->DoPaddedFFT(impulse_response, truncated_response_length);
-}
-
-std::unique_ptr<AudioChannel> HRTFKernel::CreateImpulseResponse() {
-  std::unique_ptr<AudioChannel> channel =
-      std::make_unique<AudioChannel>(FftSize());
-  FFTFrame fft_frame(*fft_frame_);
-
-  // Add leading delay back in.
-  fft_frame.AddConstantGroupDelay(frame_delay_);
-  fft_frame.DoInverseFFT(channel->MutableData());
-
-  return channel;
 }
 
 // Interpolates two kernels with x: 0 -> 1 and returns the result.
@@ -121,9 +104,6 @@ std::unique_ptr<HRTFKernel> HRTFKernel::CreateInterpolatedKernel(
     float x) {
   DCHECK(kernel1);
   DCHECK(kernel2);
-  if (!kernel1 || !kernel2)
-    return nullptr;
-
   DCHECK_GE(x, 0.0);
   DCHECK_LT(x, 1.0);
   x = clampTo(x, 0.0f, 1.0f);
@@ -131,8 +111,6 @@ std::unique_ptr<HRTFKernel> HRTFKernel::CreateInterpolatedKernel(
   float sample_rate1 = kernel1->SampleRate();
   float sample_rate2 = kernel2->SampleRate();
   DCHECK_EQ(sample_rate1, sample_rate2);
-  if (sample_rate1 != sample_rate2)
-    return nullptr;
 
   float frame_delay =
       (1 - x) * kernel1->FrameDelay() + x * kernel2->FrameDelay();

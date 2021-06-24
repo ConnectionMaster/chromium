@@ -11,27 +11,28 @@
 
 #include "base/bind.h"
 #include "base/cancelable_callback.h"
+#include "base/check.h"
+#include "base/cxx17_backports.h"
 #include "base/location.h"
-#include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/synchronization/condition_variable.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
-#include "base/task/post_task.h"
+#include "base/test/bind.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_switches.h"
+#include "components/crash/core/common/crash_key.h"
 #include "content/public/browser/browser_task_traits.h"
-#include "content/public/test/test_browser_thread.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
 
@@ -184,10 +185,10 @@ class CustomThreadWatcher : public ThreadWatcher {
             quit_closure.Run();
         },
         base::Unretained(this), quit_closure, expected_state);
-    base::CancelableClosure timeout_closure(base::BindRepeating(
-        [](base::RepeatingClosure quit_closure) {
-          FAIL() << "WaitForWaitStateChange timed out";
-          quit_closure.Run();
+    base::CancelableOnceClosure timeout_closure(base::BindOnce(
+        [](base::OnceClosure quit_closure) {
+          ADD_FAILURE() << "WaitForWaitStateChange timed out";
+          std::move(quit_closure).Run();
         },
         quit_closure));
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
@@ -237,8 +238,8 @@ class CustomThreadWatcher : public ThreadWatcher {
         },
         base::Unretained(this), quit_closure, expected_state,
         base::Unretained(&exit_state));
-    base::CancelableClosure timeout_closure(base::BindRepeating(
-        [](base::RepeatingClosure quit_closure) { quit_closure.Run(); },
+    base::CancelableOnceClosure timeout_closure(base::BindOnce(
+        [](base::OnceClosure quit_closure) { std::move(quit_closure).Run(); },
         quit_closure));
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE, timeout_closure.callback(),
@@ -270,8 +271,8 @@ class CustomThreadWatcher : public ThreadWatcher {
         },
         base::Unretained(this), quit_closure, expected_state,
         base::Unretained(&exit_state));
-    base::CancelableClosure timeout_closure(base::BindRepeating(
-        [](base::RepeatingClosure quit_closure) { quit_closure.Run(); },
+    base::CancelableOnceClosure timeout_closure(base::BindOnce(
+        [](base::OnceClosure quit_closure) { std::move(quit_closure).Run(); },
         quit_closure));
     base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
         FROM_HERE, timeout_closure.callback(),
@@ -304,14 +305,19 @@ class ThreadWatcherTest : public ::testing::Test {
   CustomThreadWatcher* ui_watcher_;
   ThreadWatcherList* thread_watcher_list_;
 
-  ThreadWatcherTest()
-      : thread_bundle_(content::TestBrowserThreadBundle::REAL_IO_THREAD),
+  template <typename... TaskEnvironmentTraits>
+  ThreadWatcherTest(base::test::TaskEnvironment::TimeSource time_source =
+                        base::test::TaskEnvironment::TimeSource::SYSTEM_TIME)
+      : task_environment_(content::BrowserTaskEnvironment::REAL_IO_THREAD,
+                          time_source),
         setup_complete_(&lock_),
         initialized_(false) {
-    // Make sure UI and IO threads are started and ready.
-    thread_bundle_.RunIOThreadUntilIdle();
+    crash_reporter::InitializeCrashKeysForTesting();
 
-    watchdog_thread_.reset(new WatchDogThread());
+    // Make sure UI and IO threads are started and ready.
+    task_environment_.RunIOThreadUntilIdle();
+
+    watchdog_thread_ = std::make_unique<WatchDogThread>();
     watchdog_thread_->StartAndWaitForTesting();
 
     WatchDogThread::PostTask(
@@ -368,10 +374,12 @@ class ThreadWatcherTest : public ::testing::Test {
     ui_watcher_ = nullptr;
     watchdog_thread_.reset();
     thread_watcher_list_ = nullptr;
+
+    crash_reporter::ResetCrashKeysForTesting();
   }
 
- private:
-  content::TestBrowserThreadBundle thread_bundle_;
+ protected:
+  content::BrowserTaskEnvironment task_environment_;
   base::Lock lock_;
   base::ConditionVariable setup_complete_;
   bool initialized_;
@@ -379,6 +387,65 @@ class ThreadWatcherTest : public ::testing::Test {
 
   DISALLOW_COPY_AND_ASSIGN(ThreadWatcherTest);
 };
+
+class ThreadWatcherTestWithMockTime : public ThreadWatcherTest {
+ public:
+  ThreadWatcherTestWithMockTime()
+      : ThreadWatcherTest(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+};
+
+// Verify that the "seconds-since-last-memory-pressure" crash key is written
+// correctly.
+//
+// Note: It is not possible to split this test in 3 smaller tests, because
+// reusing the same crash key in multiple unit tests is broken with breakpad.
+// https://crbug.com/1041106.
+TEST_F(ThreadWatcherTestWithMockTime, MemoryPressureCrashKey) {
+  // The "seconds-since-last-memory-pressure" crash key should hold "No memory
+  // pressure" when there has never been any memory pressure signal.
+  watchdog_thread_->PostTask(
+      FROM_HERE, base::BindLambdaForTesting([&]() {
+        ui_watcher_->SetTimeSinceLastCriticalMemoryPressureCrashKey();
+        EXPECT_EQ("No memory pressure",
+                  crash_reporter::GetCrashKeyValue(
+                      "seconds-since-last-memory-pressure"));
+      }));
+
+  watchdog_thread_->FlushForTesting();
+
+  // The "seconds-since-last-memory-pressure" crash key should hold "No memory
+  // pressure" when there has been a MODERATE memory pressure signal, but no
+  // CRITICAL memory pressure signal.
+  base::MemoryPressureListener::SimulatePressureNotification(
+      base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_MODERATE);
+  watchdog_thread_->FlushForTesting();
+
+  watchdog_thread_->PostTask(
+      FROM_HERE, base::BindLambdaForTesting([&]() {
+        ui_watcher_->SetTimeSinceLastCriticalMemoryPressureCrashKey();
+        EXPECT_EQ("No memory pressure",
+                  crash_reporter::GetCrashKeyValue(
+                      "seconds-since-last-memory-pressure"));
+      }));
+
+  watchdog_thread_->FlushForTesting();
+
+  // The "seconds-since-last-memory-pressure" crash key should hold "4" when set
+  // 4 seconds after a CRITICAL memory pressure signal.
+  base::MemoryPressureListener::SimulatePressureNotification(
+      base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL);
+  watchdog_thread_->FlushForTesting();
+
+  task_environment_.FastForwardBy(base::TimeDelta::FromSeconds(4));
+  watchdog_thread_->PostTask(
+      FROM_HERE, base::BindLambdaForTesting([&]() {
+        ui_watcher_->SetTimeSinceLastCriticalMemoryPressureCrashKey();
+        EXPECT_EQ("4", crash_reporter::GetCrashKeyValue(
+                           "seconds-since-last-memory-pressure"));
+      }));
+
+  watchdog_thread_->FlushForTesting();
+}
 
 // Test fixture that runs a test body on the WatchDogThread. Subclasses override
 // TestBodyOnWatchDogThread() and should call RunTestOnWatchDogThread() in their
@@ -434,7 +501,7 @@ TEST_F(ThreadWatcherTest, ThreadNamesOnlyArgs) {
   while (tokens.GetNext()) {
     std::vector<base::StringPiece> values = base::SplitStringPiece(
         tokens.token_piece(), ":", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-    std::string thread_name = values[0].as_string();
+    std::string thread_name(values[0]);
 
     auto it = crash_on_hang_threads.find(thread_name);
     bool crash_on_hang = (it != crash_on_hang_threads.end());
@@ -463,7 +530,7 @@ TEST_F(ThreadWatcherTest, CrashOnHangThreadsAllArgs) {
   while (tokens.GetNext()) {
     std::vector<base::StringPiece> values = base::SplitStringPiece(
         tokens.token_piece(), ":", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-    std::string thread_name = values[0].as_string();
+    std::string thread_name(values[0]);
 
     auto it = crash_on_hang_threads.find(thread_name);
 
@@ -553,8 +620,8 @@ class ThreadWatcherTestThreadNotResponding
     // a very long time by posting a task on watched thread that keeps it busy.
     // It is safe to use base::Unretained because test is waiting for the method
     // to finish.
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
+    content::GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(&CustomThreadWatcher::VeryLongMethod,
                        base::Unretained(io_watcher_), kUnresponsiveTime * 10));
 
@@ -627,8 +694,8 @@ class ThreadWatcherTestMultipleThreadsNotResponding
     // a very long time by posting a task on watched thread that keeps it busy.
     // It is safe to use base::Unretained because test is waiting for the method
     // to finish.
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::IO},
+    content::GetIOThreadTaskRunner({})->PostTask(
+        FROM_HERE,
         base::BindOnce(&CustomThreadWatcher::VeryLongMethod,
                        base::Unretained(io_watcher_), kUnresponsiveTime * 10));
 
@@ -706,7 +773,7 @@ class ThreadWatcherListTest : public ::testing::Test {
     }
   }
 
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   base::Lock lock_;
   base::ConditionVariable done_;
 
@@ -730,8 +797,8 @@ TEST_F(ThreadWatcherListTest, Restart) {
   ThreadWatcherList::StopWatchingAll();
   {
     base::RunLoop run_loop;
-    base::PostDelayedTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI}, run_loop.QuitWhenIdleClosure(),
+    content::GetUIThreadTaskRunner({})->PostDelayedTask(
+        FROM_HERE, run_loop.QuitWhenIdleClosure(),
         base::TimeDelta::FromSeconds(
             ThreadWatcherList::g_initialize_delay_seconds));
     run_loop.Run();
@@ -744,8 +811,8 @@ TEST_F(ThreadWatcherListTest, Restart) {
   ThreadWatcherList::StartWatchingAll(*base::CommandLine::ForCurrentProcess());
   {
     base::RunLoop run_loop;
-    base::PostDelayedTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI}, run_loop.QuitWhenIdleClosure(),
+    content::GetUIThreadTaskRunner({})->PostDelayedTask(
+        FROM_HERE, run_loop.QuitWhenIdleClosure(),
         base::TimeDelta::FromSeconds(
             ThreadWatcherList::g_initialize_delay_seconds + 1));
     run_loop.Run();
@@ -758,8 +825,8 @@ TEST_F(ThreadWatcherListTest, Restart) {
   ThreadWatcherList::StopWatchingAll();
   {
     base::RunLoop run_loop;
-    base::PostDelayedTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI}, run_loop.QuitWhenIdleClosure(),
+    content::GetUIThreadTaskRunner({})->PostDelayedTask(
+        FROM_HERE, run_loop.QuitWhenIdleClosure(),
         base::TimeDelta::FromSeconds(
             ThreadWatcherList::g_initialize_delay_seconds));
     run_loop.Run();

@@ -4,22 +4,23 @@
 
 #include <stddef.h>
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/macros.h"
-#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "chromeos/dbus/shill/shill_clients.h"
+#include "base/test/task_environment.h"
 #include "chromeos/dbus/shill/shill_manager_client.h"
 #include "chromeos/geolocation/simple_geolocation_provider.h"
 #include "chromeos/geolocation/simple_geolocation_request_test_monitor.h"
 #include "chromeos/network/geolocation_handler.h"
-#include "chromeos/network/network_handler.h"
+#include "chromeos/network/network_handler_test_helper.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
-#include "net/url_request/url_request_status.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
@@ -115,12 +116,12 @@ class TestGeolocationAPILoaderFactory : public network::TestURLLoaderFactory {
 
  private:
   void AddResponseWithCode(int error_code) {
-    network::ResourceResponseHead response_head;
-    response_head.headers = base::MakeRefCounted<net::HttpResponseHeaders>("");
-    response_head.headers->AddHeader("Content-Type: application/json");
+    auto response_head = network::mojom::URLResponseHead::New();
+    response_head->headers = base::MakeRefCounted<net::HttpResponseHeaders>("");
+    response_head->headers->SetHeader("Content-Type", "application/json");
     // If AddResponse() is called multiple times for the same URL, the last
     // one is the one used so there is no need for ClearResponses().
-    AddResponse(url_, response_head, response_,
+    AddResponse(url_, std::move(response_head), response_,
                 network::URLLoaderCompletionStatus(error_code));
   }
 
@@ -148,7 +149,7 @@ class GeolocationReceiver {
   }
 
   void WaitUntilRequestDone() {
-    message_loop_runner_.reset(new base::RunLoop);
+    message_loop_runner_ = std::make_unique<base::RunLoop>();
     message_loop_runner_->Run();
   }
 
@@ -182,7 +183,7 @@ class WirelessTestMonitor : public SimpleGeolocationRequestTestMonitor {
 
 class SimpleGeolocationTest : public testing::Test {
  private:
-  base::MessageLoop message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
 };
 
 TEST_F(SimpleGeolocationTest, ResponseOK) {
@@ -196,9 +197,10 @@ TEST_F(SimpleGeolocationTest, ResponseOK) {
   url_factory.SetSimpleGeolocationProvider(&provider);
 
   GeolocationReceiver receiver;
-  provider.RequestGeolocation(base::TimeDelta::FromSeconds(1), false, false,
-                              base::Bind(&GeolocationReceiver::OnRequestDone,
-                                         base::Unretained(&receiver)));
+  provider.RequestGeolocation(
+      base::TimeDelta::FromSeconds(1), false, false,
+      base::BindOnce(&GeolocationReceiver::OnRequestDone,
+                     base::Unretained(&receiver)));
   receiver.WaitUntilRequestDone();
 
   EXPECT_EQ(kExpectedPosition, receiver.position().ToString());
@@ -218,9 +220,10 @@ TEST_F(SimpleGeolocationTest, ResponseOKWithRetries) {
   url_factory.SetSimpleGeolocationProvider(&provider);
 
   GeolocationReceiver receiver;
-  provider.RequestGeolocation(base::TimeDelta::FromSeconds(1), false, false,
-                              base::Bind(&GeolocationReceiver::OnRequestDone,
-                                         base::Unretained(&receiver)));
+  provider.RequestGeolocation(
+      base::TimeDelta::FromSeconds(1), false, false,
+      base::BindOnce(&GeolocationReceiver::OnRequestDone,
+                     base::Unretained(&receiver)));
   receiver.WaitUntilRequestDone();
   EXPECT_EQ(kExpectedPosition, receiver.position().ToString());
   EXPECT_FALSE(receiver.server_error());
@@ -244,18 +247,20 @@ TEST_F(SimpleGeolocationTest, InvalidResponse) {
       timeout_seconds * 1000 / kRequestRetryIntervalMilliSeconds);
   ASSERT_GE(expected_retries, 2U);
 
-  provider.RequestGeolocation(base::TimeDelta::FromSeconds(timeout_seconds),
-                              false, false,
-                              base::Bind(&GeolocationReceiver::OnRequestDone,
-                                         base::Unretained(&receiver)));
+  provider.RequestGeolocation(
+      base::TimeDelta::FromSeconds(timeout_seconds), false, false,
+      base::BindOnce(&GeolocationReceiver::OnRequestDone,
+                     base::Unretained(&receiver)));
   receiver.WaitUntilRequestDone();
 
-  EXPECT_EQ(
-      "latitude=200.000000, longitude=200.000000, accuracy=-1.000000, "
-      "error_code=0, error_message='SimpleGeolocation provider at "
-      "'https://localhost/' : JSONReader failed: Line: 1, column: 1, "
-      "Unexpected token..', status=4 (TIMEOUT)",
-      receiver.position().ToString());
+  std::string receiver_position = receiver.position().ToString();
+  EXPECT_NE(
+      std::string::npos,
+      receiver_position.find(
+          "latitude=200.000000, longitude=200.000000, accuracy=-1.000000, "
+          "error_code=0, error_message='SimpleGeolocation provider at "
+          "'https://localhost/' : JSONReader failed:"));
+  EXPECT_NE(std::string::npos, receiver_position.find("status=4 (TIMEOUT)"));
   EXPECT_TRUE(receiver.server_error());
   EXPECT_GE(url_factory.attempts(), 2U);
   if (url_factory.attempts() > expected_retries + 1) {
@@ -273,8 +278,7 @@ TEST_F(SimpleGeolocationTest, InvalidResponse) {
 }
 
 TEST_F(SimpleGeolocationTest, NoWiFi) {
-  shill_clients::InitializeFakes();
-  NetworkHandler::Initialize();
+  NetworkHandlerTestHelper network_handler_test_helper;
 
   WirelessTestMonitor requests_monitor;
   SimpleGeolocationRequest::SetTestMonitor(&requests_monitor);
@@ -289,18 +293,16 @@ TEST_F(SimpleGeolocationTest, NoWiFi) {
   url_factory.SetSimpleGeolocationProvider(&provider);
 
   GeolocationReceiver receiver;
-  provider.RequestGeolocation(base::TimeDelta::FromSeconds(1), true, false,
-                              base::Bind(&GeolocationReceiver::OnRequestDone,
-                                         base::Unretained(&receiver)));
+  provider.RequestGeolocation(
+      base::TimeDelta::FromSeconds(1), true, false,
+      base::BindOnce(&GeolocationReceiver::OnRequestDone,
+                     base::Unretained(&receiver)));
   receiver.WaitUntilRequestDone();
   EXPECT_EQ(kIPOnlyRequestBody, requests_monitor.last_request_body());
 
   EXPECT_EQ(kExpectedPosition, receiver.position().ToString());
   EXPECT_FALSE(receiver.server_error());
   EXPECT_EQ(1U, url_factory.attempts());
-
-  NetworkHandler::Shutdown();
-  shill_clients::Shutdown();
 }
 
 // Test sending of WiFi Access points and Cell Towers.
@@ -312,7 +314,6 @@ class SimpleGeolocationWirelessTest : public ::testing::TestWithParam<bool> {
   ~SimpleGeolocationWirelessTest() override = default;
 
   void SetUp() override {
-    shill_clients::InitializeFakes();
     // Get the test interface for manager / device.
     manager_test_ = ShillManagerClient::Get()->GetTestInterface();
     ASSERT_TRUE(manager_test_);
@@ -323,7 +324,6 @@ class SimpleGeolocationWirelessTest : public ::testing::TestWithParam<bool> {
 
   void TearDown() override {
     geolocation_handler_.reset();
-    shill_clients::Shutdown();
   }
 
   bool GetWifiAccessPoints() {
@@ -368,7 +368,9 @@ class SimpleGeolocationWirelessTest : public ::testing::TestWithParam<bool> {
   }
 
  protected:
-  base::MessageLoopForUI message_loop_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
+  NetworkHandlerTestHelper network_handler_test_helper_;
   std::unique_ptr<GeolocationHandler> geolocation_handler_;
   ShillManagerClient::TestInterface* manager_test_;
   WifiAccessPointVector wifi_access_points_;
@@ -380,8 +382,6 @@ class SimpleGeolocationWirelessTest : public ::testing::TestWithParam<bool> {
 
 // Parameter is enable/disable sending of WiFi data.
 TEST_P(SimpleGeolocationWirelessTest, WiFiExists) {
-  NetworkHandler::Initialize();
-
   WirelessTestMonitor requests_monitor;
   SimpleGeolocationRequest::SetTestMonitor(&requests_monitor);
 
@@ -396,10 +396,10 @@ TEST_P(SimpleGeolocationWirelessTest, WiFiExists) {
   provider.set_geolocation_handler(geolocation_handler_.get());
   {
     GeolocationReceiver receiver;
-    provider.RequestGeolocation(base::TimeDelta::FromSeconds(1), GetParam(),
-                                false,
-                                base::Bind(&GeolocationReceiver::OnRequestDone,
-                                           base::Unretained(&receiver)));
+    provider.RequestGeolocation(
+        base::TimeDelta::FromSeconds(1), GetParam(), false,
+        base::BindOnce(&GeolocationReceiver::OnRequestDone,
+                       base::Unretained(&receiver)));
     receiver.WaitUntilRequestDone();
     EXPECT_EQ(kIPOnlyRequestBody, requests_monitor.last_request_body());
 
@@ -423,10 +423,10 @@ TEST_P(SimpleGeolocationWirelessTest, WiFiExists) {
 
   {
     GeolocationReceiver receiver;
-    provider.RequestGeolocation(base::TimeDelta::FromSeconds(1), GetParam(),
-                                false,
-                                base::Bind(&GeolocationReceiver::OnRequestDone,
-                                           base::Unretained(&receiver)));
+    provider.RequestGeolocation(
+        base::TimeDelta::FromSeconds(1), GetParam(), false,
+        base::BindOnce(&GeolocationReceiver::OnRequestDone,
+                       base::Unretained(&receiver)));
     receiver.WaitUntilRequestDone();
     if (GetParam()) {
       // Sending WiFi data is enabled.
@@ -441,7 +441,6 @@ TEST_P(SimpleGeolocationWirelessTest, WiFiExists) {
     // This is total.
     EXPECT_EQ(2U, url_factory.attempts());
   }
-  NetworkHandler::Shutdown();
 }
 
 // This test verifies that WiFi data is sent only if sending was requested.
@@ -450,8 +449,6 @@ INSTANTIATE_TEST_SUITE_P(EnableDisableSendingWifiData,
                          testing::Bool());
 
 TEST_P(SimpleGeolocationWirelessTest, CellularExists) {
-  NetworkHandler::Initialize();
-
   WirelessTestMonitor requests_monitor;
   SimpleGeolocationRequest::SetTestMonitor(&requests_monitor);
 
@@ -466,10 +463,10 @@ TEST_P(SimpleGeolocationWirelessTest, CellularExists) {
   provider.set_geolocation_handler(geolocation_handler_.get());
   {
     GeolocationReceiver receiver;
-    provider.RequestGeolocation(base::TimeDelta::FromSeconds(1), false,
-                                GetParam(),
-                                base::Bind(&GeolocationReceiver::OnRequestDone,
-                                           base::Unretained(&receiver)));
+    provider.RequestGeolocation(
+        base::TimeDelta::FromSeconds(1), false, GetParam(),
+        base::BindOnce(&GeolocationReceiver::OnRequestDone,
+                       base::Unretained(&receiver)));
     receiver.WaitUntilRequestDone();
     EXPECT_EQ(kIPOnlyRequestBody, requests_monitor.last_request_body());
 
@@ -491,10 +488,10 @@ TEST_P(SimpleGeolocationWirelessTest, CellularExists) {
 
   {
     GeolocationReceiver receiver;
-    provider.RequestGeolocation(base::TimeDelta::FromSeconds(1), false,
-                                GetParam(),
-                                base::Bind(&GeolocationReceiver::OnRequestDone,
-                                           base::Unretained(&receiver)));
+    provider.RequestGeolocation(
+        base::TimeDelta::FromSeconds(1), false, GetParam(),
+        base::BindOnce(&GeolocationReceiver::OnRequestDone,
+                       base::Unretained(&receiver)));
     receiver.WaitUntilRequestDone();
     if (GetParam()) {
       // Sending Cellular data is enabled.
@@ -509,7 +506,6 @@ TEST_P(SimpleGeolocationWirelessTest, CellularExists) {
     // This is total.
     EXPECT_EQ(2U, url_factory.attempts());
   }
-  NetworkHandler::Shutdown();
 }
 
 }  // namespace chromeos

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "third_party/blink/public/platform/web_scoped_virtual_time_pauser.h"
+#include "third_party/blink/public/platform/scheduler/web_scoped_virtual_time_pauser.h"
 
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/traced_value.h"
@@ -20,7 +20,7 @@ WebScopedVirtualTimePauser::WebScopedVirtualTimePauser(
     : duration_(duration),
       scheduler_(scheduler),
       debug_name_(name),
-      trace_id_(WebScopedVirtualTimePauser::next_trace_id_++) {}
+      trace_id_(reinterpret_cast<intptr_t>(this)) {}
 
 WebScopedVirtualTimePauser::~WebScopedVirtualTimePauser() {
   if (paused_ && scheduler_)
@@ -57,9 +57,17 @@ void WebScopedVirtualTimePauser::PauseVirtualTime() {
     return;
 
   paused_ = true;
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN1(
-      "renderer.scheduler", "WebScopedVirtualTimePauser::PauseVirtualTime",
-      trace_id_, "name", debug_name_.Latin1());
+  // Note that virtual time can never be disabled after it's enabled once, so we
+  // don't need to worry about the reverse transition.
+  virtual_time_enabled_when_paused_ = scheduler_->IsVirtualTimeEnabled();
+
+  if (virtual_time_enabled_when_paused_) {
+    // This trace event shows when individual pausers are active (instead of the
+    // global paused/unpaused state).
+    TRACE_EVENT_NESTABLE_ASYNC_BEGIN1(
+        "renderer.scheduler", "WebScopedVirtualTimePauser::PauseVirtualTime",
+        trace_id_, "name", debug_name_.Latin1());
+  }
   virtual_time_when_paused_ = scheduler_->IncrementVirtualTimePauseCount();
 }
 
@@ -68,9 +76,6 @@ void WebScopedVirtualTimePauser::UnpauseVirtualTime() {
     return;
 
   paused_ = false;
-  TRACE_EVENT_NESTABLE_ASYNC_END0(
-      "renderer.scheduler", "WebScopedVirtualTimePauser::PauseVirtualTime",
-      trace_id_);
   DecrementVirtualTimePauseCount();
 }
 
@@ -80,8 +85,11 @@ void WebScopedVirtualTimePauser::DecrementVirtualTimePauseCount() {
     scheduler_->MaybeAdvanceVirtualTime(virtual_time_when_paused_ +
                                         base::TimeDelta::FromMilliseconds(10));
   }
+  if (virtual_time_enabled_when_paused_) {
+    TRACE_EVENT_NESTABLE_ASYNC_END0(
+        "renderer.scheduler", "WebScopedVirtualTimePauser::PauseVirtualTime",
+        trace_id_);
+  }
 }
-
-int WebScopedVirtualTimePauser::next_trace_id_ = 0;
 
 }  // namespace blink

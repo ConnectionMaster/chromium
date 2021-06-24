@@ -5,7 +5,7 @@
 #include "mojo/public/cpp/bindings/scoped_interface_endpoint_handle.h"
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/sequenced_task_runner_handle.h"
 #include "mojo/public/cpp/bindings/associated_group_controller.h"
@@ -34,7 +34,7 @@ class ScopedInterfaceEndpointHandle::State
     peer_state_ = std::move(peer);
   }
 
-  void Close(const base::Optional<DisconnectReason>& reason) {
+  void Close(const absl::optional<DisconnectReason>& reason) {
     scoped_refptr<AssociatedGroupController> cached_group_controller;
     InterfaceId cached_id = kInvalidInterfaceId;
     scoped_refptr<State> cached_peer_state;
@@ -159,7 +159,7 @@ class ScopedInterfaceEndpointHandle::State
     return group_controller_.get();
   }
 
-  const base::Optional<DisconnectReason>& disconnect_reason() const {
+  const absl::optional<DisconnectReason>& disconnect_reason() const {
     internal::MayAutoLock locker(&lock_);
     return disconnect_reason_;
   }
@@ -210,7 +210,7 @@ class ScopedInterfaceEndpointHandle::State
 
   // Called by the peer, maybe from a different sequence.
   void OnPeerClosedBeforeAssociation(
-      const base::Optional<DisconnectReason>& reason) {
+      const absl::optional<DisconnectReason>& reason) {
     AssociationEventCallback handler;
     {
       internal::MayAutoLock locker(&lock_);
@@ -264,10 +264,10 @@ class ScopedInterfaceEndpointHandle::State
 
   // Protects the following members if the handle is initially set to pending
   // association.
-  mutable base::Optional<base::Lock> lock_;
+  mutable absl::optional<base::Lock> lock_;
 
   bool pending_association_ = false;
-  base::Optional<DisconnectReason> disconnect_reason_;
+  absl::optional<DisconnectReason> disconnect_reason_;
 
   scoped_refptr<State> peer_state_;
 
@@ -296,16 +296,16 @@ void ScopedInterfaceEndpointHandle::CreatePairPendingAssociation(
 }
 
 ScopedInterfaceEndpointHandle::ScopedInterfaceEndpointHandle()
-    : state_(new State) {}
+    : state_(base::MakeRefCounted<State>()) {}
 
 ScopedInterfaceEndpointHandle::ScopedInterfaceEndpointHandle(
     ScopedInterfaceEndpointHandle&& other)
-    : state_(new State) {
+    : state_(base::MakeRefCounted<State>()) {
   state_.swap(other.state_);
 }
 
 ScopedInterfaceEndpointHandle::~ScopedInterfaceEndpointHandle() {
-  state_->Close(base::nullopt);
+  state_->Close(absl::nullopt);
 }
 
 ScopedInterfaceEndpointHandle& ScopedInterfaceEndpointHandle::operator=(
@@ -332,7 +332,7 @@ AssociatedGroupController* ScopedInterfaceEndpointHandle::group_controller()
   return state_->group_controller();
 }
 
-const base::Optional<DisconnectReason>&
+const absl::optional<DisconnectReason>&
 ScopedInterfaceEndpointHandle::disconnect_reason() const {
   return state_->disconnect_reason();
 }
@@ -343,7 +343,7 @@ void ScopedInterfaceEndpointHandle::SetAssociationEventHandler(
 }
 
 void ScopedInterfaceEndpointHandle::reset() {
-  ResetInternal(base::nullopt);
+  ResetInternal(absl::nullopt);
 }
 
 void ScopedInterfaceEndpointHandle::ResetWithReason(
@@ -355,7 +355,7 @@ void ScopedInterfaceEndpointHandle::ResetWithReason(
 ScopedInterfaceEndpointHandle::ScopedInterfaceEndpointHandle(
     InterfaceId id,
     scoped_refptr<AssociatedGroupController> group_controller)
-    : state_(new State(id, std::move(group_controller))) {
+    : state_(base::MakeRefCounted<State>(id, std::move(group_controller))) {
   DCHECK(!IsValidInterfaceId(state_->id()) || state_->group_controller());
 }
 
@@ -366,18 +366,18 @@ bool ScopedInterfaceEndpointHandle::NotifyAssociation(
 }
 
 void ScopedInterfaceEndpointHandle::ResetInternal(
-    const base::Optional<DisconnectReason>& reason) {
-  scoped_refptr<State> new_state(new State);
+    const absl::optional<DisconnectReason>& reason) {
+  auto new_state = base::MakeRefCounted<State>();
   state_->Close(reason);
   state_.swap(new_state);
 }
 
-base::Callback<AssociatedGroupController*()>
+base::RepeatingCallback<AssociatedGroupController*()>
 ScopedInterfaceEndpointHandle::CreateGroupControllerGetter() const {
   // We allow this callback to be run on any sequence. If this handle is created
   // in non-pending state, we don't have a lock but it should still be safe
   // because the group controller never changes.
-  return base::Bind(&State::group_controller, state_);
+  return base::BindRepeating(&State::group_controller, state_);
 }
 
 }  // namespace mojo

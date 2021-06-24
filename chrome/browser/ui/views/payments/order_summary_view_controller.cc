@@ -8,7 +8,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view.h"
@@ -37,9 +36,9 @@ namespace {
 // if |emphasize| is true, which is only the case for the last row containing
 // the total of the order. |amount_label_id| is specified to recall the view
 // later, e.g. in tests.
-std::unique_ptr<views::View> CreateLineItemView(const base::string16& label,
-                                                const base::string16& currency,
-                                                const base::string16& amount,
+std::unique_ptr<views::View> CreateLineItemView(const std::u16string& label,
+                                                const std::u16string& currency,
+                                                const std::u16string& amount,
                                                 bool emphasize,
                                                 DialogViewID currency_label_id,
                                                 DialogViewID amount_label_id) {
@@ -57,17 +56,18 @@ std::unique_ptr<views::View> CreateLineItemView(const base::string16& label,
       row_insets));
 
   views::GridLayout* layout =
-      row->SetLayoutManager(std::make_unique<views::GridLayout>(row.get()));
+      row->SetLayoutManager(std::make_unique<views::GridLayout>());
 
   views::ColumnSet* columns = layout->AddColumnSet(0);
   // The first column has resize_percent = 1 so that it stretches all the way
   // across the row up to the amount label. This way the first label elides as
   // required.
   columns->AddColumn(views::GridLayout::LEADING, views::GridLayout::CENTER, 1.0,
-                     views::GridLayout::USE_PREF, 0, 0);
+                     views::GridLayout::ColumnSize::kUsePreferred, 0, 0);
   columns->AddColumn(views::GridLayout::FILL, views::GridLayout::CENTER,
-                     views::GridLayout::kFixedSize, views::GridLayout::FIXED,
-                     kAmountSectionWidth, kAmountSectionWidth);
+                     views::GridLayout::kFixedSize,
+                     views::GridLayout::ColumnSize::kFixed, kAmountSectionWidth,
+                     kAmountSectionWidth);
 
   layout->StartRow(views::GridLayout::kFixedSize, 0);
   std::unique_ptr<views::Label> label_text;
@@ -86,7 +86,7 @@ std::unique_ptr<views::View> CreateLineItemView(const base::string16& label,
   // them according to the language of the text. This will result, for example,
   // in "he" labels being right-aligned in a browser that's using "en" locale.
   label_text->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
-  amount_text->set_id(static_cast<int>(amount_label_id));
+  amount_text->SetID(static_cast<int>(amount_label_id));
   amount_text->SetMultiLine(true);
   // The amount is formatted by the browser (and not provided by the website) so
   // it can be aligned to left.
@@ -94,23 +94,24 @@ std::unique_ptr<views::View> CreateLineItemView(const base::string16& label,
   amount_text->SetAllowCharacterBreak(true);
 
   std::unique_ptr<views::View> amount_wrapper = std::make_unique<views::View>();
-  views::GridLayout* wrapper_layout = amount_wrapper->SetLayoutManager(
-      std::make_unique<views::GridLayout>(amount_wrapper.get()));
+  views::GridLayout* wrapper_layout =
+      amount_wrapper->SetLayoutManager(std::make_unique<views::GridLayout>());
   views::ColumnSet* wrapper_columns = wrapper_layout->AddColumnSet(0);
   wrapper_columns->AddColumn(
       views::GridLayout::LEADING, views::GridLayout::CENTER,
-      views::GridLayout::kFixedSize, views::GridLayout::USE_PREF, 0, 0);
-  wrapper_columns->AddColumn(views::GridLayout::TRAILING,
-                             views::GridLayout::CENTER, 1.0,
-                             views::GridLayout::USE_PREF, 0, 0);
+      views::GridLayout::kFixedSize,
+      views::GridLayout::ColumnSize::kUsePreferred, 0, 0);
+  wrapper_columns->AddColumn(
+      views::GridLayout::TRAILING, views::GridLayout::CENTER, 1.0,
+      views::GridLayout::ColumnSize::kUsePreferred, 0, 0);
 
   wrapper_layout->StartRow(views::GridLayout::kFixedSize, 0);
-  currency_text->set_id(static_cast<int>(currency_label_id));
-  wrapper_layout->AddView(currency_text.release());
-  wrapper_layout->AddView(amount_text.release());
+  currency_text->SetID(static_cast<int>(currency_label_id));
+  wrapper_layout->AddView(std::move(currency_text));
+  wrapper_layout->AddView(std::move(amount_text));
 
-  layout->AddView(label_text.release());
-  layout->AddView(amount_wrapper.release());
+  layout->AddView(std::move(label_text));
+  layout->AddView(std::move(amount_wrapper));
 
   return row;
 }
@@ -118,16 +119,20 @@ std::unique_ptr<views::View> CreateLineItemView(const base::string16& label,
 }  // namespace
 
 OrderSummaryViewController::OrderSummaryViewController(
-    PaymentRequestSpec* spec,
-    PaymentRequestState* state,
-    PaymentRequestDialogView* dialog)
-    : PaymentRequestSheetController(spec, state, dialog), pay_button_(nullptr) {
+    base::WeakPtr<PaymentRequestSpec> spec,
+    base::WeakPtr<PaymentRequestState> state,
+    base::WeakPtr<PaymentRequestDialogView> dialog)
+    : PaymentRequestSheetController(spec, state, dialog) {
+  DCHECK(spec);
+  DCHECK(state);
   spec->AddObserver(this);
   state->AddObserver(this);
 }
 
 OrderSummaryViewController::~OrderSummaryViewController() {
-  spec()->RemoveObserver(this);
+  if (spec())
+    spec()->RemoveObserver(this);
+
   state()->RemoveObserver(this);
 }
 
@@ -136,34 +141,26 @@ void OrderSummaryViewController::OnSpecUpdated() {
 }
 
 void OrderSummaryViewController::OnSelectedInformationChanged() {
-  UpdatePayButtonState(state()->is_ready_to_pay());
-}
-
-std::unique_ptr<views::Button>
-OrderSummaryViewController::CreatePrimaryButton() {
-  std::unique_ptr<views::Button> button(
-      views::MdTextButton::CreateSecondaryUiBlueButton(
-          this, l10n_util::GetStringUTF16(IDS_PAYMENTS_PAY_BUTTON)));
-  button->set_tag(static_cast<int>(PaymentRequestCommonTags::PAY_BUTTON_TAG));
-  button->set_id(static_cast<int>(DialogViewID::PAY_BUTTON));
-  pay_button_ = button.get();
-  UpdatePayButtonState(state()->is_ready_to_pay());
-  return button;
+  primary_button()->SetEnabled(GetPrimaryButtonEnabled());
 }
 
 bool OrderSummaryViewController::ShouldShowSecondaryButton() {
   return false;
 }
 
-base::string16 OrderSummaryViewController::GetSheetTitle() {
+std::u16string OrderSummaryViewController::GetSheetTitle() {
   return l10n_util::GetStringUTF16(IDS_PAYMENTS_ORDER_SUMMARY_LABEL);
 }
 
 void OrderSummaryViewController::FillContentView(views::View* content_view) {
-  auto layout = std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical);
-  layout->set_main_axis_alignment(views::BoxLayout::MAIN_AXIS_ALIGNMENT_START);
+  if (!spec())
+    return;
+
+  auto layout = std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical);
+  layout->set_main_axis_alignment(views::BoxLayout::MainAxisAlignment::kStart);
   layout->set_cross_axis_alignment(
-      views::BoxLayout::CROSS_AXIS_ALIGNMENT_STRETCH);
+      views::BoxLayout::CrossAxisAlignment::kStretch);
   content_view->SetLayoutManager(std::move(layout));
 
   bool is_mixed_currency = spec()->IsMixedCurrency();
@@ -172,12 +169,11 @@ void OrderSummaryViewController::FillContentView(views::View* content_view) {
       DialogViewID::ORDER_SUMMARY_LINE_ITEM_1,
       DialogViewID::ORDER_SUMMARY_LINE_ITEM_2,
       DialogViewID::ORDER_SUMMARY_LINE_ITEM_3};
-  const auto& display_items =
-      spec()->GetDisplayItems(state()->selected_instrument());
+  const auto& display_items = spec()->GetDisplayItems(state()->selected_app());
   for (size_t i = 0; i < display_items.size(); i++) {
     DialogViewID view_id =
         i < line_items.size() ? line_items[i] : DialogViewID::VIEW_ID_NONE;
-    base::string16 currency = base::UTF8ToUTF16("");
+    std::u16string currency = u"";
     if (is_mixed_currency) {
       currency = base::UTF8ToUTF16((*display_items[i])->amount->currency);
     }
@@ -190,29 +186,23 @@ void OrderSummaryViewController::FillContentView(views::View* content_view) {
             .release());
   }
 
-  base::string16 total_label_value = l10n_util::GetStringFUTF16(
+  std::u16string total_label_value = l10n_util::GetStringFUTF16(
       IDS_PAYMENT_REQUEST_ORDER_SUMMARY_SHEET_TOTAL_FORMAT,
       base::UTF8ToUTF16(
-          spec()->GetTotal(state()->selected_instrument())->amount->currency),
+          spec()->GetTotal(state()->selected_app())->amount->currency),
       spec()->GetFormattedCurrencyAmount(
-          spec()->GetTotal(state()->selected_instrument())->amount));
+          spec()->GetTotal(state()->selected_app())->amount));
 
   content_view->AddChildView(
       CreateLineItemView(
+          base::UTF8ToUTF16(spec()->GetTotal(state()->selected_app())->label),
           base::UTF8ToUTF16(
-              spec()->GetTotal(state()->selected_instrument())->label),
-          base::UTF8ToUTF16(spec()
-                                ->GetTotal(state()->selected_instrument())
-                                ->amount->currency),
+              spec()->GetTotal(state()->selected_app())->amount->currency),
           spec()->GetFormattedCurrencyAmount(
-              spec()->GetTotal(state()->selected_instrument())->amount),
+              spec()->GetTotal(state()->selected_app())->amount),
           true, DialogViewID::ORDER_SUMMARY_TOTAL_CURRENCY_LABEL,
           DialogViewID::ORDER_SUMMARY_TOTAL_AMOUNT_LABEL)
           .release());
-}
-
-void OrderSummaryViewController::UpdatePayButtonState(bool enabled) {
-  pay_button_->SetEnabled(enabled);
 }
 
 }  // namespace payments

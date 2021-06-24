@@ -3,10 +3,13 @@
 // found in the LICENSE file.
 
 #include "content/public/test/fake_service_worker_context.h"
-#include "content/public/browser/service_worker_context_observer.h"
+
+#include <utility>
 
 #include "base/callback.h"
-#include "base/logging.h"
+#include "base/no_destructor.h"
+#include "base/notreached.h"
+#include "content/public/browser/service_worker_context_observer.h"
 #include "third_party/blink/public/common/messaging/transferable_message.h"
 
 namespace content {
@@ -25,7 +28,7 @@ void FakeServiceWorkerContext::RemoveObserver(
 void FakeServiceWorkerContext::RegisterServiceWorker(
     const GURL& script_url,
     const blink::mojom::ServiceWorkerRegistrationOptions& options,
-    ResultCallback callback) {
+    StatusCodeCallback callback) {
   NOTREACHED();
 }
 void FakeServiceWorkerContext::UnregisterServiceWorker(
@@ -33,38 +36,45 @@ void FakeServiceWorkerContext::UnregisterServiceWorker(
     ResultCallback callback) {
   NOTREACHED();
 }
-bool FakeServiceWorkerContext::StartingExternalRequest(
+ServiceWorkerExternalRequestResult
+FakeServiceWorkerContext::StartingExternalRequest(
     int64_t service_worker_version_id,
     const std::string& request_uuid) {
   NOTREACHED();
-  return false;
+  return ServiceWorkerExternalRequestResult::kWorkerNotFound;
 }
-bool FakeServiceWorkerContext::FinishedExternalRequest(
+ServiceWorkerExternalRequestResult
+FakeServiceWorkerContext::FinishedExternalRequest(
     int64_t service_worker_version_id,
     const std::string& request_uuid) {
   NOTREACHED();
-  return false;
+  return ServiceWorkerExternalRequestResult::kWorkerNotFound;
 }
-void FakeServiceWorkerContext::CountExternalRequestsForTest(
-    const GURL& url,
-    CountExternalRequestsCallback callback) {
+size_t FakeServiceWorkerContext::CountExternalRequestsForTest(
+    const url::Origin& origin) {
   NOTREACHED();
+  return 0u;
+}
+bool FakeServiceWorkerContext::MaybeHasRegistrationForOrigin(
+    const url::Origin& origin) {
+  return registered_origins_.find(origin) != registered_origins_.end();
 }
 void FakeServiceWorkerContext::GetAllOriginsInfo(
     GetUsageInfoCallback callback) {
   NOTREACHED();
 }
-void FakeServiceWorkerContext::DeleteForOrigin(const GURL& origin,
+void FakeServiceWorkerContext::DeleteForOrigin(const url::Origin& origin,
                                                ResultCallback callback) {
-  NOTREACHED();
-}
-void FakeServiceWorkerContext::PerformStorageCleanup(
-    base::OnceClosure callback) {
   NOTREACHED();
 }
 void FakeServiceWorkerContext::CheckHasServiceWorker(
     const GURL& url,
     CheckHasServiceWorkerCallback callback) {
+  NOTREACHED();
+}
+void FakeServiceWorkerContext::CheckOfflineCapability(
+    const GURL& url,
+    const ServiceWorkerContext::CheckOfflineCapabilityCallback callback) {
   NOTREACHED();
 }
 void FakeServiceWorkerContext::ClearAllServiceWorkersForTest(
@@ -74,7 +84,7 @@ void FakeServiceWorkerContext::ClearAllServiceWorkersForTest(
 void FakeServiceWorkerContext::StartWorkerForScope(
     const GURL& scope,
     ServiceWorkerContext::StartWorkerCallback info_callback,
-    base::OnceClosure failure_callback) {
+    ServiceWorkerContext::StatusCodeCallback failure_callback) {
   NOTREACHED();
 }
 void FakeServiceWorkerContext::StartServiceWorkerForNavigationHint(
@@ -91,16 +101,8 @@ void FakeServiceWorkerContext::StartServiceWorkerAndDispatchMessage(
       std::make_tuple(scope, std::move(message), std::move(result_callback)));
 }
 
-void FakeServiceWorkerContext::StartServiceWorkerAndDispatchLongRunningMessage(
-    const GURL& scope,
-    blink::TransferableMessage message,
-    ResultCallback result_callback) {
-  start_service_worker_and_dispatch_long_running_message_calls_.push_back(
-      std::make_tuple(scope, std::move(message), std::move(result_callback)));
-}
-
 void FakeServiceWorkerContext::StopAllServiceWorkersForOrigin(
-    const GURL& origin) {
+    const url::Origin& origin) {
   stop_all_service_workers_for_origin_calls_.push_back(origin);
 }
 
@@ -108,15 +110,13 @@ void FakeServiceWorkerContext::StopAllServiceWorkers(base::OnceClosure) {
   NOTREACHED();
 }
 
-void FakeServiceWorkerContext::GetAllServiceWorkerRunningInfos(
-    GetAllServiceWorkerRunningInfosCallback callback) {
+const base::flat_map<int64_t, ServiceWorkerRunningInfo>&
+FakeServiceWorkerContext::GetRunningServiceWorkerInfos() {
   NOTREACHED();
-}
-
-void FakeServiceWorkerContext::GetServiceWorkerRunningInfo(
-    int64_t service_worker_version_id,
-    GetServiceWorkerRunningInfoCallback callback) {
-  NOTREACHED();
+  static const base::NoDestructor<
+      base::flat_map<int64_t, ServiceWorkerRunningInfo>>
+      empty_running_workers;
+  return *empty_running_workers;
 }
 
 void FakeServiceWorkerContext::NotifyObserversOnVersionActivated(
@@ -138,6 +138,11 @@ void FakeServiceWorkerContext::NotifyObserversOnNoControllees(
     const GURL& scope) {
   for (auto& observer : observers_)
     observer.OnNoControllees(version_id, scope);
+}
+
+void FakeServiceWorkerContext::AddRegistrationToRegisteredOrigins(
+    const url::Origin& origin) {
+  registered_origins_.insert(origin);
 }
 
 }  // namespace content

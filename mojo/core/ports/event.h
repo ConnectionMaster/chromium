@@ -12,7 +12,6 @@
 #include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
-#include "base/optional.h"
 #include "mojo/core/ports/name.h"
 #include "mojo/core/ports/user_message.h"
 
@@ -21,26 +20,6 @@ namespace core {
 namespace ports {
 
 class Event;
-
-using SlotId = uint32_t;
-
-// The default slot on an entangled port pair. When a new port pair is created,
-// this is the only slot available to either endpoint.
-constexpr SlotId kDefaultSlotId = 0;
-
-// Bit toggled on non-default slot IDs when referring to the remote peer's
-// equivalent of a local slot. For example, for entangled ports A and B, if A
-// establishes a new slot 5 when sending a message to B, the slot will always be
-// known to B as (kPeerAllocatedSlotIdBit | 5).
-//
-// Likewise when B sends a message on slot (kPeerAllocatedSlotIdBit | 5), its
-// peer A will receive and queue that message on local slot 5.
-//
-// This allows each endpoint to allocate new slots independently. For any given
-// local slot ID value, having this bit set means the slot was initially
-// established by a message from the remote peer to the local port. Unset means
-// the slot was established by a message from the local port to the remote port.
-constexpr SlotId kPeerAllocatedSlotIdBit = 0x80000000u;
 
 using ScopedEvent = std::unique_ptr<Event>;
 
@@ -78,19 +57,17 @@ class COMPONENT_EXPORT(MOJO_CORE_PORTS) Event {
     // ports, one from each route.
     kMergePort,
 
-    // Used to signal that a slot on a port has been closed.
-    //
-    // NOTE: This event type is not supported by older versions of Mojo core
-    // which lack support for port slots. It is therefore important to ensure
-    // that this event never gets generated unless a port has more than the
-    // single default slot.
-    kSlotClosed,
+    // Used to request that the conjugate port acknowledges read messages by
+    // sending back a UserMessageReadAck.
+    kUserMessageReadAckRequest,
+
+    // Used to acknowledge read messages to the conjugate.
+    kUserMessageReadAck,
   };
 
 #pragma pack(push, 1)
   struct PortDescriptor {
     PortDescriptor();
-    PortDescriptor(const PortDescriptor&);
 
     NodeName peer_node_name;
     PortName peer_port_name;
@@ -100,8 +77,7 @@ class COMPONENT_EXPORT(MOJO_CORE_PORTS) Event {
     uint64_t next_sequence_num_to_receive;
     uint64_t last_sequence_num_to_receive;
     bool peer_closed;
-    char padding[3];
-    uint32_t new_slot_id;
+    char padding[7];
   };
 #pragma pack(pop)
   virtual ~Event();
@@ -136,15 +112,6 @@ class COMPONENT_EXPORT(MOJO_CORE_PORTS) Event {
 
 class COMPONENT_EXPORT(MOJO_CORE_PORTS) UserMessageEvent : public Event {
  public:
-  struct PortAttachment {
-    PortAttachment();
-    PortAttachment(const PortAttachment&);
-    ~PortAttachment();
-
-    PortName name;
-    base::Optional<SlotId> slot_id;
-  };
-
   explicit UserMessageEvent(size_t num_ports);
   ~UserMessageEvent() override;
 
@@ -171,12 +138,9 @@ class COMPONENT_EXPORT(MOJO_CORE_PORTS) UserMessageEvent : public Event {
   uint64_t sequence_num() const { return sequence_num_; }
   void set_sequence_num(uint64_t sequence_num) { sequence_num_ = sequence_num; }
 
-  SlotId slot_id() const { return slot_id_; }
-  void set_slot_id(SlotId id) { slot_id_ = id; }
-
   size_t num_ports() const { return ports_.size(); }
   PortDescriptor* port_descriptors() { return port_descriptors_.data(); }
-  PortAttachment* ports() { return ports_.data(); }
+  PortName* ports() { return ports_.data(); }
 
   static ScopedEvent Deserialize(const PortName& port_name,
                                  const void* buffer,
@@ -191,9 +155,8 @@ class COMPONENT_EXPORT(MOJO_CORE_PORTS) UserMessageEvent : public Event {
   void SerializeData(void* buffer) const override;
 
   uint64_t sequence_num_ = 0;
-  SlotId slot_id_ = 0;
   std::vector<PortDescriptor> port_descriptors_;
-  std::vector<PortAttachment> ports_;
+  std::vector<PortName> ports_;
   std::unique_ptr<UserMessage> message_;
 
   DISALLOW_COPY_AND_ASSIGN(UserMessageEvent);
@@ -321,15 +284,16 @@ class COMPONENT_EXPORT(MOJO_CORE_PORTS) MergePortEvent : public Event {
   DISALLOW_COPY_AND_ASSIGN(MergePortEvent);
 };
 
-class COMPONENT_EXPORT(MOJO_CORE_PORTS) SlotClosedEvent : public Event {
+class COMPONENT_EXPORT(MOJO_CORE_PORTS) UserMessageReadAckRequestEvent
+    : public Event {
  public:
-  SlotClosedEvent(const PortName& port_name,
-                  SlotId slot_id,
-                  uint64_t last_sequence_num);
-  ~SlotClosedEvent() override;
+  UserMessageReadAckRequestEvent(const PortName& port_name,
+                                 uint64_t sequence_num_to_acknowledge);
+  ~UserMessageReadAckRequestEvent() override;
 
-  SlotId slot_id() const { return slot_id_; }
-  uint64_t last_sequence_num() const { return last_sequence_num_; }
+  uint64_t sequence_num_to_acknowledge() const {
+    return sequence_num_to_acknowledge_;
+  }
 
   static ScopedEvent Deserialize(const PortName& port_name,
                                  const void* buffer,
@@ -339,10 +303,28 @@ class COMPONENT_EXPORT(MOJO_CORE_PORTS) SlotClosedEvent : public Event {
   size_t GetSerializedDataSize() const override;
   void SerializeData(void* buffer) const override;
 
-  const SlotId slot_id_;
-  const uint64_t last_sequence_num_;
+  uint64_t sequence_num_to_acknowledge_;
+};
 
-  DISALLOW_COPY_AND_ASSIGN(SlotClosedEvent);
+class COMPONENT_EXPORT(MOJO_CORE_PORTS) UserMessageReadAckEvent : public Event {
+ public:
+  UserMessageReadAckEvent(const PortName& port_name,
+                          uint64_t sequence_num_acknowledged);
+  ~UserMessageReadAckEvent() override;
+
+  uint64_t sequence_num_acknowledged() const {
+    return sequence_num_acknowledged_;
+  }
+
+  static ScopedEvent Deserialize(const PortName& port_name,
+                                 const void* buffer,
+                                 size_t num_bytes);
+
+ private:
+  size_t GetSerializedDataSize() const override;
+  void SerializeData(void* buffer) const override;
+
+  uint64_t sequence_num_acknowledged_;
 };
 
 }  // namespace ports

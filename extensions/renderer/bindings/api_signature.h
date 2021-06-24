@@ -10,55 +10,105 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "extensions/renderer/bindings/api_binding_types.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "v8/include/v8.h"
 
 namespace base {
 class Value;
-class ListValue;
 }
 
 namespace extensions {
 class APITypeReferenceMap;
 class ArgumentSpec;
+class BindingAccessChecker;
+
+// Whether promises are allowed to be used for a given call to an API.
+enum class PromisesAllowed {
+  kAllowed,
+  kDisallowed,
+};
 
 // A representation of the expected signature for an API method, along with the
 // ability to match provided arguments and convert them to base::Values.
 class APISignature {
  public:
-  explicit APISignature(const base::ListValue& specification);
+  APISignature(const base::Value& specification_list,
+               const base::Value* returns_async,
+               BindingAccessChecker* access_checker);
   explicit APISignature(std::vector<std::unique_ptr<ArgumentSpec>> signature);
+  APISignature(std::vector<std::unique_ptr<ArgumentSpec>> signature,
+               bool api_supports_promises,
+               BindingAccessChecker* access_checker);
   ~APISignature();
 
-  // Parses |arguments| against this signature, and populates |args_out| with
-  // the v8 values (performing no conversion). The resulting vector may differ
-  // from the list of arguments passed in because it will include null-filled
-  // optional arguments.
-  // Returns true if the arguments were successfully parsed and converted.
-  bool ParseArgumentsToV8(v8::Local<v8::Context> context,
-                          const std::vector<v8::Local<v8::Value>>& arguments,
-                          const APITypeReferenceMap& type_refs,
-                          std::vector<v8::Local<v8::Value>>* args_out,
-                          std::string* error) const;
+  struct V8ParseResult {
+    // Appease the Chromium style plugin (out of line ctor/dtor).
+    V8ParseResult();
+    ~V8ParseResult();
+    V8ParseResult(V8ParseResult&& other);
+    V8ParseResult& operator=(V8ParseResult&& other);
 
-  // Parses |arguments| against this signature, converting to a base::ListValue.
-  // Returns true if the arguments were successfully parsed and converted, and
-  // populates |args_out| and |callback_out| with the JSON arguments and
-  // callback values, respectively. On failure, returns false populates |error|.
-  bool ParseArgumentsToJSON(v8::Local<v8::Context> context,
-                            const std::vector<v8::Local<v8::Value>>& arguments,
-                            const APITypeReferenceMap& type_refs,
-                            std::unique_ptr<base::ListValue>* args_out,
-                            v8::Local<v8::Function>* callback_out,
-                            std::string* error) const;
+    bool succeeded() const { return arguments.has_value(); }
 
-  // Converts |arguments| to a base::ListValue, ignoring the defined signature.
-  // This is used when custom bindings modify the passed arguments to a form
-  // that doesn't match the documented signature.
-  bool ConvertArgumentsIgnoringSchema(
+    // The parsed v8 arguments. These may differ from the original v8 arguments
+    // since it will include null-filled optional arguments. Populated if
+    // parsing was successful. Note that the callback, if any, is included in
+    // this list.
+    absl::optional<std::vector<v8::Local<v8::Value>>> arguments;
+
+    // Whether the asynchronous response is handled by a callback or a promise.
+    binding::AsyncResponseType async_type = binding::AsyncResponseType::kNone;
+
+    // The parse error, if parsing failed.
+    absl::optional<std::string> error;
+  };
+
+  struct JSONParseResult {
+    // Appease the Chromium style plugin (out of line ctor/dtor).
+    JSONParseResult();
+    ~JSONParseResult();
+    JSONParseResult(JSONParseResult&& other);
+    JSONParseResult& operator=(JSONParseResult&& other);
+
+    bool succeeded() const { return !!arguments_list; }
+
+    // The parsed JSON arguments, with null-filled optional arguments filled in.
+    // Populated if parsing was successful. Does not include the callback (if
+    // any).
+    std::unique_ptr<base::Value> arguments_list;
+
+    // The callback, if one was provided.
+    v8::Local<v8::Function> callback;
+
+    // Whether the asynchronous response is handled by a callback or a promise.
+    binding::AsyncResponseType async_type = binding::AsyncResponseType::kNone;
+
+    // The parse error, if parsing failed.
+    absl::optional<std::string> error;
+  };
+
+  // Parses |arguments| against this signature, returning the result and
+  // performing no argument conversion.
+  V8ParseResult ParseArgumentsToV8(
       v8::Local<v8::Context> context,
       const std::vector<v8::Local<v8::Value>>& arguments,
-      std::unique_ptr<base::ListValue>* json_out,
-      v8::Local<v8::Function>* callback_out) const;
+      const APITypeReferenceMap& type_refs) const;
+
+  // Parses |arguments| against this signature, returning the result after
+  // converting to base::Values.
+  JSONParseResult ParseArgumentsToJSON(
+      v8::Local<v8::Context> context,
+      const std::vector<v8::Local<v8::Value>>& arguments,
+      const APITypeReferenceMap& type_refs) const;
+
+  // Converts |arguments| to base::Values, ignoring the defined signature.
+  // This is used when custom bindings modify the passed arguments to a form
+  // that doesn't match the documented signature. Since we ignore the schema,
+  // this parsing will never fail.
+  JSONParseResult ConvertArgumentsIgnoringSchema(
+      v8::Local<v8::Context> context,
+      const std::vector<v8::Local<v8::Value>>& arguments) const;
 
   // Validates the provided |arguments| as if they were returned as a response
   // to an API call. This validation is much stricter than the versions above,
@@ -76,8 +126,18 @@ class APISignature {
   bool has_callback() const { return has_callback_; }
 
  private:
+  // Checks if promises are allowed to be used for a call to an API from a given
+  // |context|.
+  PromisesAllowed CheckPromisesAllowed(v8::Local<v8::Context> context) const;
+
   // The list of expected arguments.
   std::vector<std::unique_ptr<ArgumentSpec>> signature_;
+
+  binding::APIPromiseSupport api_promise_support_ =
+      binding::APIPromiseSupport::kUnsupported;
+
+  // The associated access checker; required to outlive this object.
+  const BindingAccessChecker* access_checker_;
 
   bool has_callback_ = false;
 

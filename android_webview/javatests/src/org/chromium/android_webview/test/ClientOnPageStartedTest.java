@@ -4,9 +4,10 @@
 
 package org.chromium.android_webview.test;
 
-import android.support.test.filters.MediumTest;
-import android.support.test.filters.SmallTest;
 import android.util.Pair;
+
+import androidx.test.filters.MediumTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -80,12 +81,12 @@ public class ClientOnPageStartedTest {
     }
 
     @Before
-    public void setUp() throws Exception {
+    public void setUp() {
         setTestAwContentsClient(new TestAwContentsClient());
         AwActivityTestRule.enableJavaScriptOnUiThread(mAwContents);
     }
 
-    private void setTestAwContentsClient(TestAwContentsClient contentsClient) throws Exception {
+    private void setTestAwContentsClient(TestAwContentsClient contentsClient) {
         mContentsClient = contentsClient;
         final AwTestContainerView testContainerView =
                 mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);

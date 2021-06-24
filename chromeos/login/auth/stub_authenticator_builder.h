@@ -10,6 +10,7 @@
 #include "base/component_export.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "chromeos/login/auth/auth_status_consumer.h"
 #include "chromeos/login/auth/stub_authenticator.h"
 #include "chromeos/login/auth/user_context.h"
 
@@ -35,6 +36,16 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) StubAuthenticatorBuilder {
       const std::string& old_password,
       const StubAuthenticator::DataRecoveryNotifier& notifier);
 
+  // Sets up the stub Authenticator to report that user's cryptohome was
+  // encrypted using old encryption method, and should be migrated accordingly.
+  // |has_incomplete_migration| - whether a migration was attempted but did not
+  //     complete.
+  void SetUpOldEncryption(bool has_incomplete_migration);
+
+  // Sets up the stub Authenticator to report an auth failure.
+  // |failure_reason| - the failure reason to be reported
+  void SetUpAuthFailure(AuthFailure::FailureReason failure_reason);
+
  private:
   const UserContext expected_user_context_;
 
@@ -48,9 +59,22 @@ class COMPONENT_EXPORT(CHROMEOS_LOGIN_AUTH) StubAuthenticatorBuilder {
   // recovery result.
   StubAuthenticator::DataRecoveryNotifier data_recovery_notifier_;
 
+  // For kOldEncryption action - whether an incomplete migration
+  // attempt exists.
+  bool has_incomplete_encryption_migration_ = false;
+
+  // For kAuthFailure action - the failure reason.
+  AuthFailure::FailureReason failure_reason_ = AuthFailure::NONE;
+
   DISALLOW_COPY_AND_ASSIGN(StubAuthenticatorBuilder);
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+using ::chromeos::StubAuthenticatorBuilder;
+}
 
 #endif  // CHROMEOS_LOGIN_AUTH_STUB_AUTHENTICATOR_BUILDER_H_

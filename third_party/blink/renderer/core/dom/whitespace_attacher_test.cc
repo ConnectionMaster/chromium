@@ -6,25 +6,33 @@
 
 #include <gtest/gtest.h>
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_shadow_root_init.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
-#include "third_party/blink/renderer/core/dom/shadow_root_init.h"
+#include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 
 namespace blink {
 
-class WhitespaceAttacherTest : public PageTestBase {};
+class WhitespaceAttacherTest : public PageTestBase {
+ protected:
+  void AdvanceToRebuildLayoutTree() {
+    GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+    GetDocument().GetStyleEngine().in_layout_tree_rebuild_ = true;
+  }
+};
 
 TEST_F(WhitespaceAttacherTest, WhitespaceAfterReattachedBlock) {
-  GetDocument().body()->SetInnerHTMLFromString("<div id=block></div> ");
+  GetDocument().body()->setInnerHTML("<div id=block></div> ");
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = GetDocument().getElementById("block");
-  Text* text = ToText(div->nextSibling());
+  auto* text = To<Text>(div->nextSibling());
   EXPECT_FALSE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Force LayoutText to see that the reattach works.
   text->SetLayoutObject(text->CreateTextLayoutObject(
@@ -37,14 +45,14 @@ TEST_F(WhitespaceAttacherTest, WhitespaceAfterReattachedBlock) {
 }
 
 TEST_F(WhitespaceAttacherTest, WhitespaceAfterReattachedInline) {
-  GetDocument().body()->SetInnerHTMLFromString("<span id=inline></span> ");
+  GetDocument().body()->setInnerHTML("<span id=inline></span> ");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = GetDocument().getElementById("inline");
-  Text* text = ToText(span->nextSibling());
+  auto* text = To<Text>(span->nextSibling());
   EXPECT_TRUE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   text->SetLayoutObject(nullptr);
@@ -56,18 +64,17 @@ TEST_F(WhitespaceAttacherTest, WhitespaceAfterReattachedInline) {
 }
 
 TEST_F(WhitespaceAttacherTest, WhitespaceAfterReattachedWhitespace) {
-  GetDocument().body()->SetInnerHTMLFromString(
-      "<span id=inline></span> <!-- --> ");
+  GetDocument().body()->setInnerHTML("<span id=inline></span> <!-- --> ");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = GetDocument().getElementById("inline");
-  Text* first_whitespace = ToText(span->nextSibling());
-  Text* second_whitespace =
-      ToText(first_whitespace->nextSibling()->nextSibling());
+  auto* first_whitespace = To<Text>(span->nextSibling());
+  auto* second_whitespace =
+      To<Text>(first_whitespace->nextSibling()->nextSibling());
   EXPECT_TRUE(first_whitespace->GetLayoutObject());
   EXPECT_FALSE(second_whitespace->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Force LayoutText on the second whitespace to see that the reattach works.
   second_whitespace->SetLayoutObject(second_whitespace->CreateTextLayoutObject(
@@ -83,14 +90,14 @@ TEST_F(WhitespaceAttacherTest, WhitespaceAfterReattachedWhitespace) {
 }
 
 TEST_F(WhitespaceAttacherTest, VisitBlockAfterReattachedWhitespace) {
-  GetDocument().body()->SetInnerHTMLFromString("<div id=block></div> ");
+  GetDocument().body()->setInnerHTML("<div id=block></div> ");
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = GetDocument().getElementById("block");
-  Text* text = ToText(div->nextSibling());
+  auto* text = To<Text>(div->nextSibling());
   EXPECT_FALSE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   WhitespaceAttacher attacher;
   attacher.DidReattachText(text);
@@ -101,14 +108,14 @@ TEST_F(WhitespaceAttacherTest, VisitBlockAfterReattachedWhitespace) {
 }
 
 TEST_F(WhitespaceAttacherTest, VisitInlineAfterReattachedWhitespace) {
-  GetDocument().body()->SetInnerHTMLFromString("<span id=inline></span> ");
+  GetDocument().body()->setInnerHTML("<span id=inline></span> ");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = GetDocument().getElementById("inline");
-  Text* text = ToText(span->nextSibling());
+  auto* text = To<Text>(span->nextSibling());
   EXPECT_TRUE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   text->SetLayoutObject(nullptr);
@@ -122,15 +129,15 @@ TEST_F(WhitespaceAttacherTest, VisitInlineAfterReattachedWhitespace) {
 }
 
 TEST_F(WhitespaceAttacherTest, VisitTextAfterReattachedWhitespace) {
-  GetDocument().body()->SetInnerHTMLFromString("Text<!-- --> ");
+  GetDocument().body()->setInnerHTML("Text<!-- --> ");
   UpdateAllLifecyclePhasesForTest();
 
-  Text* text = ToText(GetDocument().body()->firstChild());
-  Text* whitespace = ToText(text->nextSibling()->nextSibling());
+  auto* text = To<Text>(GetDocument().body()->firstChild());
+  auto* whitespace = To<Text>(text->nextSibling()->nextSibling());
   EXPECT_TRUE(text->GetLayoutObject());
   EXPECT_TRUE(whitespace->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   whitespace->SetLayoutObject(nullptr);
@@ -145,14 +152,14 @@ TEST_F(WhitespaceAttacherTest, VisitTextAfterReattachedWhitespace) {
 }
 
 TEST_F(WhitespaceAttacherTest, ReattachWhitespaceInsideBlockExitingScope) {
-  GetDocument().body()->SetInnerHTMLFromString("<div id=block> </div>");
+  GetDocument().body()->setInnerHTML("<div id=block> </div>");
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = GetDocument().getElementById("block");
-  Text* text = ToText(div->firstChild());
+  auto* text = To<Text>(div->firstChild());
   EXPECT_FALSE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   {
     WhitespaceAttacher attacher;
@@ -167,14 +174,14 @@ TEST_F(WhitespaceAttacherTest, ReattachWhitespaceInsideBlockExitingScope) {
 }
 
 TEST_F(WhitespaceAttacherTest, ReattachWhitespaceInsideInlineExitingScope) {
-  GetDocument().body()->SetInnerHTMLFromString("<span id=inline> </span>");
+  GetDocument().body()->setInnerHTML("<span id=inline> </span>");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = GetDocument().getElementById("inline");
-  Text* text = ToText(span->firstChild());
+  auto* text = To<Text>(span->firstChild());
   EXPECT_TRUE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   text->SetLayoutObject(nullptr);
@@ -188,20 +195,20 @@ TEST_F(WhitespaceAttacherTest, ReattachWhitespaceInsideInlineExitingScope) {
 }
 
 TEST_F(WhitespaceAttacherTest, SlottedWhitespaceAfterReattachedBlock) {
-  GetDocument().body()->SetInnerHTMLFromString("<div id=host> </div>");
+  GetDocument().body()->setInnerHTML("<div id=host> </div>");
   Element* host = GetDocument().getElementById("host");
   ASSERT_TRUE(host);
 
   ShadowRoot& shadow_root =
       host->AttachShadowRootInternal(ShadowRootType::kOpen);
-  shadow_root.SetInnerHTMLFromString("<div id=block></div><slot></slot>");
+  shadow_root.setInnerHTML("<div id=block></div><slot></slot>");
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = shadow_root.getElementById("block");
-  Text* text = ToText(host->firstChild());
+  auto* text = To<Text>(host->firstChild());
   EXPECT_FALSE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Force LayoutText to see that the reattach works.
   text->SetLayoutObject(text->CreateTextLayoutObject(host->ComputedStyleRef(),
@@ -216,20 +223,20 @@ TEST_F(WhitespaceAttacherTest, SlottedWhitespaceAfterReattachedBlock) {
 }
 
 TEST_F(WhitespaceAttacherTest, SlottedWhitespaceAfterReattachedInline) {
-  GetDocument().body()->SetInnerHTMLFromString("<div id=host> </div>");
+  GetDocument().body()->setInnerHTML("<div id=host> </div>");
   Element* host = GetDocument().getElementById("host");
   ASSERT_TRUE(host);
 
   ShadowRoot& shadow_root =
       host->AttachShadowRootInternal(ShadowRootType::kOpen);
-  shadow_root.SetInnerHTMLFromString("<span id=inline></span><slot></slot>");
+  shadow_root.setInnerHTML("<span id=inline></span><slot></slot>");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = shadow_root.getElementById("inline");
-  Text* text = ToText(host->firstChild());
+  auto* text = To<Text>(host->firstChild());
   EXPECT_TRUE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   text->SetLayoutObject(nullptr);
@@ -244,17 +251,17 @@ TEST_F(WhitespaceAttacherTest, SlottedWhitespaceAfterReattachedInline) {
 
 TEST_F(WhitespaceAttacherTest,
        WhitespaceInDisplayContentsAfterReattachedBlock) {
-  GetDocument().body()->SetInnerHTMLFromString(
+  GetDocument().body()->setInnerHTML(
       "<div id=block></div><span style='display:contents'> </span>");
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = GetDocument().getElementById("block");
-  Element* contents = ToElement(div->nextSibling());
-  Text* text = ToText(contents->firstChild());
+  auto* contents = To<Element>(div->nextSibling());
+  auto* text = To<Text>(contents->firstChild());
   EXPECT_FALSE(contents->GetLayoutObject());
   EXPECT_FALSE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Force LayoutText to see that the reattach works.
   text->SetLayoutObject(text->CreateTextLayoutObject(
@@ -270,17 +277,17 @@ TEST_F(WhitespaceAttacherTest,
 
 TEST_F(WhitespaceAttacherTest,
        WhitespaceInDisplayContentsAfterReattachedInline) {
-  GetDocument().body()->SetInnerHTMLFromString(
+  GetDocument().body()->setInnerHTML(
       "<span id=inline></span><span style='display:contents'> </span>");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = GetDocument().getElementById("inline");
-  Element* contents = ToElement(span->nextSibling());
-  Text* text = ToText(contents->firstChild());
+  auto* contents = To<Element>(span->nextSibling());
+  auto* text = To<Text>(contents->firstChild());
   EXPECT_FALSE(contents->GetLayoutObject());
   EXPECT_TRUE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   text->SetLayoutObject(nullptr);
@@ -295,17 +302,17 @@ TEST_F(WhitespaceAttacherTest,
 
 TEST_F(WhitespaceAttacherTest,
        WhitespaceAfterEmptyDisplayContentsAfterReattachedBlock) {
-  GetDocument().body()->SetInnerHTMLFromString(
+  GetDocument().body()->setInnerHTML(
       "<div id=block></div><span style='display:contents'></span> ");
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = GetDocument().getElementById("block");
-  Element* contents = ToElement(div->nextSibling());
-  Text* text = ToText(contents->nextSibling());
+  auto* contents = To<Element>(div->nextSibling());
+  auto* text = To<Text>(contents->nextSibling());
   EXPECT_FALSE(contents->GetLayoutObject());
   EXPECT_FALSE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Force LayoutText to see that the reattach works.
   text->SetLayoutObject(text->CreateTextLayoutObject(
@@ -322,18 +329,18 @@ TEST_F(WhitespaceAttacherTest,
 
 TEST_F(WhitespaceAttacherTest,
        WhitespaceAfterDisplayContentsWithDisplayNoneChildAfterReattachedBlock) {
-  GetDocument().body()->SetInnerHTMLFromString(
+  GetDocument().body()->setInnerHTML(
       "<div id=block></div><span style='display:contents'>"
       "<span style='display:none'></span></span> ");
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = GetDocument().getElementById("block");
-  Element* contents = ToElement(div->nextSibling());
-  Text* text = ToText(contents->nextSibling());
+  auto* contents = To<Element>(div->nextSibling());
+  auto* text = To<Text>(contents->nextSibling());
   EXPECT_FALSE(contents->GetLayoutObject());
   EXPECT_FALSE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Force LayoutText to see that the reattach works.
   text->SetLayoutObject(text->CreateTextLayoutObject(
@@ -349,18 +356,18 @@ TEST_F(WhitespaceAttacherTest,
 }
 
 TEST_F(WhitespaceAttacherTest, WhitespaceDeepInsideDisplayContents) {
-  GetDocument().body()->SetInnerHTMLFromString(
+  GetDocument().body()->setInnerHTML(
       "<span id=inline></span><span style='display:contents'>"
       "<span style='display:none'></span>"
       "<span id=inner style='display:contents'> </span></span>");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = GetDocument().getElementById("inline");
-  Element* contents = ToElement(span->nextSibling());
-  Text* text = ToText(GetDocument().getElementById("inner")->firstChild());
+  auto* contents = To<Element>(span->nextSibling());
+  auto* text = To<Text>(GetDocument().getElementById("inner")->firstChild());
   EXPECT_TRUE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   text->SetLayoutObject(nullptr);
@@ -374,7 +381,7 @@ TEST_F(WhitespaceAttacherTest, WhitespaceDeepInsideDisplayContents) {
 }
 
 TEST_F(WhitespaceAttacherTest, MultipleDisplayContents) {
-  GetDocument().body()->SetInnerHTMLFromString(
+  GetDocument().body()->setInnerHTML(
       "<span id=inline></span>"
       "<span style='display:contents'></span>"
       "<span style='display:contents'></span>"
@@ -382,13 +389,13 @@ TEST_F(WhitespaceAttacherTest, MultipleDisplayContents) {
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = GetDocument().getElementById("inline");
-  Element* first_contents = ToElement(span->nextSibling());
-  Element* second_contents = ToElement(first_contents->nextSibling());
-  Element* last_contents = ToElement(second_contents->nextSibling());
-  Text* text = ToText(last_contents->firstChild());
+  auto* first_contents = To<Element>(span->nextSibling());
+  auto* second_contents = To<Element>(first_contents->nextSibling());
+  auto* last_contents = To<Element>(second_contents->nextSibling());
+  auto* text = To<Text>(last_contents->firstChild());
   EXPECT_TRUE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   text->SetLayoutObject(nullptr);
@@ -404,23 +411,23 @@ TEST_F(WhitespaceAttacherTest, MultipleDisplayContents) {
 }
 
 TEST_F(WhitespaceAttacherTest, SlottedWhitespaceInsideDisplayContents) {
-  GetDocument().body()->SetInnerHTMLFromString("<div id=host> </div>");
+  GetDocument().body()->setInnerHTML("<div id=host> </div>");
   Element* host = GetDocument().getElementById("host");
   ASSERT_TRUE(host);
 
   ShadowRoot& shadow_root =
       host->AttachShadowRootInternal(ShadowRootType::kOpen);
-  shadow_root.SetInnerHTMLFromString(
+  shadow_root.setInnerHTML(
       "<span id=inline></span>"
       "<div style='display:contents'><slot></slot></div>");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = shadow_root.getElementById("inline");
-  Element* contents = ToElement(span->nextSibling());
-  Text* text = ToText(host->firstChild());
+  auto* contents = To<Element>(span->nextSibling());
+  auto* text = To<Text>(host->firstChild());
   EXPECT_TRUE(text->GetLayoutObject());
 
-  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  AdvanceToRebuildLayoutTree();
 
   // Clear LayoutText to see that the reattach works.
   text->SetLayoutObject(nullptr);
@@ -434,7 +441,7 @@ TEST_F(WhitespaceAttacherTest, SlottedWhitespaceInsideDisplayContents) {
 }
 
 TEST_F(WhitespaceAttacherTest, RemoveInlineBeforeSpace) {
-  GetDocument().body()->SetInnerHTMLFromString("<span id=inline></span> ");
+  GetDocument().body()->setInnerHTML("<span id=inline></span> ");
   UpdateAllLifecyclePhasesForTest();
 
   Element* span = GetDocument().getElementById("inline");
@@ -456,7 +463,7 @@ TEST_F(WhitespaceAttacherTest, RemoveInlineBeforeSpace) {
 }
 
 TEST_F(WhitespaceAttacherTest, RemoveInlineBeforeOutOfFlowBeforeSpace) {
-  GetDocument().body()->SetInnerHTMLFromString(
+  GetDocument().body()->setInnerHTML(
       "<span id=inline></span><div id=float style='float:right'></div> ");
   UpdateAllLifecyclePhasesForTest();
 
@@ -482,7 +489,7 @@ TEST_F(WhitespaceAttacherTest, RemoveInlineBeforeOutOfFlowBeforeSpace) {
 }
 
 TEST_F(WhitespaceAttacherTest, RemoveSpaceBeforeSpace) {
-  GetDocument().body()->SetInnerHTMLFromString("<span> <!-- --> </span>");
+  GetDocument().body()->setInnerHTML("<span> <!-- --> </span>");
   UpdateAllLifecyclePhasesForTest();
 
   Node* span = GetDocument().body()->firstChild();
@@ -505,7 +512,7 @@ TEST_F(WhitespaceAttacherTest, RemoveSpaceBeforeSpace) {
 }
 
 TEST_F(WhitespaceAttacherTest, RemoveInlineBeforeDisplayContentsWithSpace) {
-  GetDocument().body()->SetInnerHTMLFromString(
+  GetDocument().body()->setInnerHTML(
       "<style>div { display: contents }</style>"
       "<div><span id=inline></span></div>"
       "<div><div><div id=innerdiv> </div></div></div>text");
@@ -526,8 +533,7 @@ TEST_F(WhitespaceAttacherTest, RemoveInlineBeforeDisplayContentsWithSpace) {
 }
 
 TEST_F(WhitespaceAttacherTest, RemoveBlockBeforeSpace) {
-  GetDocument().body()->SetInnerHTMLFromString(
-      "A<div id=block></div> <span>B</span>");
+  GetDocument().body()->setInnerHTML("A<div id=block></div> <span>B</span>");
   UpdateAllLifecyclePhasesForTest();
 
   Node* div = GetDocument().getElementById("block");

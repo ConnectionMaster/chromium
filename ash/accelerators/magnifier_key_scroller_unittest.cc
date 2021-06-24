@@ -4,7 +4,9 @@
 
 #include "ash/accelerators/magnifier_key_scroller.h"
 
-#include "ash/magnifier/magnification_controller.h"
+#include <memory>
+
+#include "ash/accessibility/magnifier/fullscreen_magnifier_controller.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/window_util.h"
@@ -23,8 +25,8 @@ class KeyEventDelegate : public aura::test::TestWindowDelegate {
 
   // ui::EventHandler overrides:
   void OnKeyEvent(ui::KeyEvent* event) override {
-    key_event.reset(
-        new ui::KeyEvent(event->type(), event->key_code(), event->flags()));
+    key_event = std::make_unique<ui::KeyEvent>(event->type(), event->key_code(),
+                                               event->flags());
   }
 
   const ui::KeyEvent* event() const { return key_event.get(); }
@@ -47,8 +49,8 @@ TEST_F(MagnifierKeyScrollerTest, Basic) {
   wm::ActivateWindow(window.get());
 
   MagnifierKeyScroller::ScopedEnablerForTest scoped;
-  MagnificationController* controller =
-      Shell::Get()->magnification_controller();
+  FullscreenMagnifierController* controller =
+      Shell::Get()->fullscreen_magnifier_controller();
   controller->SetEnabled(true);
 
   EXPECT_EQ("200,150", controller->GetWindowPosition().ToString());

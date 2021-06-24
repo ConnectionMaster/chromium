@@ -5,12 +5,17 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_TAB_HOVER_CARD_BUBBLE_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_TAB_HOVER_CARD_BUBBLE_VIEW_H_
 
-#include <memory>
-
-#include "base/memory/weak_ptr.h"
-#include "base/time/time.h"
-#include "base/timer/timer.h"
+#include "base/callback_list.h"
+#include "base/scoped_observation.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/ui/tabs/tab_utils.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/public/cpp/metrics_util.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#endif
 
 namespace gfx {
 class ImageSkia;
@@ -19,60 +24,47 @@ class ImageSkia;
 namespace views {
 class ImageView;
 class Label;
-class Widget;
 }  // namespace views
 
 class Tab;
-struct TabRendererData;
 
 // Dialog that displays an informational hover card containing page information.
 class TabHoverCardBubbleView : public views::BubbleDialogDelegateView {
  public:
+  METADATA_HEADER(TabHoverCardBubbleView);
   explicit TabHoverCardBubbleView(Tab* tab);
-
+  TabHoverCardBubbleView(const TabHoverCardBubbleView&) = delete;
+  TabHoverCardBubbleView& operator=(const TabHoverCardBubbleView&) = delete;
   ~TabHoverCardBubbleView() override;
 
-  // Updates card content and anchoring and shows the tab hover card.
-  void UpdateAndShow(Tab* tab);
+  // Updates and formats title, alert state, domain, and preview image.
+  void UpdateCardContent(const Tab* tab);
 
-  void FadeOutToHide();
+  // Update the text fade to the given percent, which should be between 0 and 1.
+  void SetTextFade(double percent);
 
-  bool IsFadingOut() const;
-
-  // BubbleDialogDelegateView:
-  int GetDialogButtons() const override;
+  void ClearPreviewImage();
+  void SetPreviewImage(gfx::ImageSkia preview_image);
 
  private:
   friend class TabHoverCardBubbleViewBrowserTest;
   friend class TabHoverCardBubbleViewInteractiveUiTest;
-  class WidgetFadeAnimationDelegate;
+  class FadeLabel;
 
-  // Get delay in milliseconds based on tab width.
-  base::TimeDelta GetDelay(int tab_width) const;
-
-  void FadeInToShow();
-
-  // Updates and formats title and domain with given data.
-  void UpdateCardContent(TabRendererData data);
-
-  void UpdatePreviewImage(gfx::ImageSkia preview_image);
-
+  // views::BubbleDialogDelegateView:
+  ax::mojom::Role GetAccessibleWindowRole() override;
+  void Layout() override;
   gfx::Size CalculatePreferredSize() const override;
+  void OnThemeChanged() override;
 
-  base::OneShotTimer delayed_show_timer_;
-
-  // Fade animations interfere with browser tests so we disable them in tests.
-  static bool disable_animations_for_testing_;
-  std::unique_ptr<WidgetFadeAnimationDelegate> fade_animation_delegate_;
-
-  views::Widget* widget_ = nullptr;
   views::Label* title_label_ = nullptr;
+  FadeLabel* title_fade_label_ = nullptr;
+  absl::optional<TabAlertState> alert_state_;
   views::Label* domain_label_ = nullptr;
+  FadeLabel* domain_fade_label_ = nullptr;
   views::ImageView* preview_image_ = nullptr;
 
-  base::WeakPtrFactory<TabHoverCardBubbleView> weak_factory_{this};
-
-  DISALLOW_COPY_AND_ASSIGN(TabHoverCardBubbleView);
+  const bool using_rounded_corners_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_TAB_HOVER_CARD_BUBBLE_VIEW_H_

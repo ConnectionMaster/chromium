@@ -31,8 +31,9 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_GRID_AREA_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_GRID_AREA_H_
 
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/style/grid_positions_resolver.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
@@ -41,7 +42,7 @@
 namespace blink {
 
 // Recommended maximum size for both explicit and implicit grids. Note that this
-// actually allows a [-9999,9999] range. The limit is low on purpouse because
+// actually allows a [-999,999] range. The limit is low on purpouse because
 // higher values easly trigger OOM situations. That will definitely improve once
 // we switch from a vector of vectors based grid representation to a more
 // efficient one memory-wise.
@@ -68,6 +69,17 @@ struct GridSpan {
   bool operator==(const GridSpan& o) const {
     return type_ == o.type_ && start_line_ == o.start_line_ &&
            end_line_ == o.end_line_;
+  }
+
+  bool operator<(const GridSpan& o) const {
+    DCHECK(IsTranslatedDefinite());
+    return start_line_ < o.start_line_ ||
+           (start_line_ == o.start_line_ && end_line_ < o.end_line_);
+  }
+
+  bool operator<=(const GridSpan& o) const {
+    DCHECK(IsTranslatedDefinite());
+    return *this < o || *this == o;
   }
 
   size_t IntegerSpan() const {
@@ -120,8 +132,8 @@ struct GridSpan {
     return end_line_;
   }
 
+  bool IsUntranslatedDefinite() const { return type_ == kUntranslatedDefinite; }
   bool IsTranslatedDefinite() const { return type_ == kTranslatedDefinite; }
-
   bool IsIndefinite() const { return type_ == kIndefinite; }
 
   void Translate(size_t offset) {

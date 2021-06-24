@@ -5,8 +5,9 @@
 #include "net/tools/huffman_trie/trie/trie_writer.h"
 
 #include <algorithm>
+#include <ostream>
 
-#include "base/logging.h"
+#include "base/check.h"
 #include "net/tools/huffman_trie/trie/trie_bit_buffer.h"
 
 namespace net {
@@ -126,10 +127,7 @@ bool TrieWriter::WriteDispatchTables(ReversedEntries::iterator start,
   TrieBitBuffer writer;
 
   std::vector<uint8_t> prefix = LongestCommonPrefix(start, end);
-  for (size_t i = 0; i < prefix.size(); ++i) {
-    writer.WriteBit(1);
-  }
-  writer.WriteBit(0);
+  writer.WriteSize(prefix.size());
 
   if (prefix.size()) {
     for (size_t i = 0; i < prefix.size(); ++i) {

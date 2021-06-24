@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/page/drag_controller.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/page/drag_operation.h"
 #include "third_party/blink/renderer/core/clipboard/data_object.h"
 #include "third_party/blink/renderer/core/clipboard/data_transfer.h"
 #include "third_party/blink/renderer/core/clipboard/data_transfer_access_policy.h"
@@ -24,20 +25,20 @@
 
 namespace blink {
 
-class DragMockChromeClient : public EmptyChromeClient {
+class DragMockChromeClient : public RenderingTestChromeClient {
  public:
   DragMockChromeClient() = default;
 
   void StartDragging(LocalFrame*,
                      const WebDragData&,
-                     WebDragOperationsMask,
+                     DragOperationsMask,
                      const SkBitmap& drag_image,
                      const gfx::Point& drag_image_offset) override {
-    last_drag_image_size = WebSize(drag_image.width(), drag_image.height());
+    last_drag_image_size = gfx::Size(drag_image.width(), drag_image.height());
     last_drag_image_offset = drag_image_offset;
   }
 
-  WebSize last_drag_image_size;
+  gfx::Size last_drag_image_size;
   gfx::Point last_drag_image_offset;
 };
 
@@ -84,7 +85,7 @@ class DragControllerSimTest : public SimTest {};
 // https://crbug.com/733996.
 TEST_F(DragControllerSimTest, DropURLOnNonNavigatingClearsState) {
   WebView().GetPage()->GetSettings().SetNavigateOnDragDrop(false);
-  WebView().MainFrameWidget()->Resize(WebSize(800, 600));
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
   SimRequest main_resource("https://example.com/test.html", "text/html");
 
   LoadURL("https://example.com/test.html");
@@ -100,8 +101,8 @@ TEST_F(DragControllerSimTest, DropURLOnNonNavigatingClearsState) {
   object->SetURLAndTitle("https://www.example.com/index.html", "index");
   DragData data(
       object, FloatPoint(10, 10), FloatPoint(10, 10),
-      static_cast<DragOperation>(kDragOperationCopy | kDragOperationLink |
-                                 kDragOperationMove));
+      static_cast<DragOperationsMask>(kDragOperationCopy | kDragOperationLink |
+                                      kDragOperationMove));
 
   WebView().GetPage()->GetDragController().DragEnteredOrUpdated(
       &data, *GetDocument().GetFrame());
@@ -124,7 +125,7 @@ TEST_F(DragControllerSimTest, DropURLOnNonNavigatingClearsState) {
 // Regression test for https://crbug.com/685030
 TEST_F(DragControllerSimTest, ThrottledDocumentHandled) {
   WebView().GetPage()->GetSettings().SetNavigateOnDragDrop(false);
-  WebView().MainFrameWidget()->Resize(WebSize(800, 600));
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
   SimRequest main_resource("https://example.com/test.html", "text/html");
 
   LoadURL("https://example.com/test.html");
@@ -140,8 +141,8 @@ TEST_F(DragControllerSimTest, ThrottledDocumentHandled) {
   object->SetURLAndTitle("https://www.example.com/index.html", "index");
   DragData data(
       object, FloatPoint(10, 10), FloatPoint(10, 10),
-      static_cast<DragOperation>(kDragOperationCopy | kDragOperationLink |
-                                 kDragOperationMove));
+      static_cast<DragOperationsMask>(kDragOperationCopy | kDragOperationLink |
+                                      kDragOperationMove));
 
   WebView().GetPage()->GetDragController().DragEnteredOrUpdated(
       &data, *GetDocument().GetFrame());
@@ -203,8 +204,8 @@ TEST_F(DragControllerTest, DragImageForSelectionClipsToViewport) {
   // the entire viewport.
   int scroll_offset = 500;
   LocalFrameView* frame_view = GetDocument().View();
-  frame_view->LayoutViewport()->SetScrollOffset(ScrollOffset(0, scroll_offset),
-                                                kProgrammaticScroll);
+  frame_view->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, scroll_offset), mojom::blink::ScrollType::kProgrammatic);
   expected_selection = FloatRect(0, 0, node_width, viewport_height_css);
   EXPECT_EQ(expected_selection, DragController::ClippedSelection(GetFrame()));
   selection_image = DragController::DragImageForSelection(GetFrame(), 1);
@@ -215,8 +216,8 @@ TEST_F(DragControllerTest, DragImageForSelectionClipsToViewport) {
   // Scroll 800 css px down so the top of the node is outside the viewport and
   // the bottom of the node is now visible.
   scroll_offset = 800;
-  frame_view->LayoutViewport()->SetScrollOffset(ScrollOffset(0, scroll_offset),
-                                                kProgrammaticScroll);
+  frame_view->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, scroll_offset), mojom::blink::ScrollType::kProgrammatic);
   expected_selection = FloatRect(0, 0, node_width,
                                  node_height + node_margin_top - scroll_offset);
   EXPECT_EQ(expected_selection, DragController::ClippedSelection(GetFrame()));
@@ -271,8 +272,8 @@ TEST_F(DragControllerTest, DragImageForSelectionClipsChildFrameToViewport) {
   // not include scroll offset.
   int scroll_offset = 50;
   LocalFrameView* frame_view = GetDocument().View();
-  frame_view->LayoutViewport()->SetScrollOffset(ScrollOffset(0, scroll_offset),
-                                                kProgrammaticScroll);
+  frame_view->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, scroll_offset), mojom::blink::ScrollType::kProgrammatic);
   expected_selection = FloatRect(0, 5, 30, 20);
   EXPECT_EQ(expected_selection, DragController::ClippedSelection(child_frame));
   selection_image = DragController::DragImageForSelection(child_frame, 1);
@@ -283,8 +284,8 @@ TEST_F(DragControllerTest, DragImageForSelectionClipsChildFrameToViewport) {
   // be shifted which should cause the iframe's selection rect to be clipped by
   // the visual viewport.
   scroll_offset = 210;
-  frame_view->LayoutViewport()->SetScrollOffset(ScrollOffset(0, scroll_offset),
-                                                kProgrammaticScroll);
+  frame_view->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, scroll_offset), mojom::blink::ScrollType::kProgrammatic);
   expected_selection = FloatRect(0, 10, 30, 15);
   EXPECT_EQ(expected_selection, DragController::ClippedSelection(child_frame));
   selection_image = DragController::DragImageForSelection(child_frame, 1);
@@ -295,7 +296,8 @@ TEST_F(DragControllerTest, DragImageForSelectionClipsChildFrameToViewport) {
   // visual viewport clip.
   int iframe_scroll_offset = 7;
   child_frame.View()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, iframe_scroll_offset), kProgrammaticScroll);
+      ScrollOffset(0, iframe_scroll_offset),
+      mojom::blink::ScrollType::kProgrammatic);
   expected_selection = FloatRect(0, 10, 30, 8);
   EXPECT_EQ(expected_selection, DragController::ClippedSelection(child_frame));
   selection_image = DragController::DragImageForSelection(child_frame, 1);
@@ -352,8 +354,8 @@ TEST_F(DragControllerTest,
   // not include the parent frame's scroll offset.
   int scroll_offset = 50;
   LocalFrameView* frame_view = GetDocument().View();
-  frame_view->LayoutViewport()->SetScrollOffset(ScrollOffset(0, scroll_offset),
-                                                kProgrammaticScroll);
+  frame_view->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, scroll_offset), mojom::blink::ScrollType::kProgrammatic);
   expected_selection = FloatRect(0, 5, 30, 20);
   EXPECT_EQ(expected_selection, DragController::ClippedSelection(child_frame));
   selection_image = DragController::DragImageForSelection(child_frame, 1);
@@ -365,8 +367,8 @@ TEST_F(DragControllerTest,
   // be shifted which should cause the iframe's selection rect to be clipped by
   // the visual viewport.
   scroll_offset = 210;
-  frame_view->LayoutViewport()->SetScrollOffset(ScrollOffset(0, scroll_offset),
-                                                kProgrammaticScroll);
+  frame_view->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, scroll_offset), mojom::blink::ScrollType::kProgrammatic);
   expected_selection = FloatRect(0, 10, 30, 15);
   EXPECT_EQ(expected_selection, DragController::ClippedSelection(child_frame));
   selection_image = DragController::DragImageForSelection(child_frame, 1);
@@ -378,7 +380,8 @@ TEST_F(DragControllerTest,
   // visual viewport clip.
   int iframe_scroll_offset = 7;
   child_frame.View()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, iframe_scroll_offset), kProgrammaticScroll);
+      ScrollOffset(0, iframe_scroll_offset),
+      mojom::blink::ScrollType::kProgrammatic);
   expected_selection = FloatRect(0, 10, 30, 8);
   EXPECT_EQ(expected_selection, DragController::ClippedSelection(child_frame));
   selection_image = DragController::DragImageForSelection(child_frame, 1);
@@ -405,7 +408,7 @@ TEST_F(DragControllerTest, DragImageOffsetWithPageScaleFactor) {
   GetFrame().GetPage()->SetPageScaleFactor(page_scale_factor);
   GetFrame().Selection().SelectAll();
 
-  WebMouseEvent mouse_event(WebInputEvent::kMouseDown,
+  WebMouseEvent mouse_event(WebInputEvent::Type::kMouseDown,
                             WebInputEvent::kNoModifiers,
                             WebInputEvent::GetStaticTimeStampForTests());
   mouse_event.button = WebMouseEvent::Button::kRight;
@@ -450,7 +453,7 @@ TEST_F(DragControllerTest, DragLinkWithPageScaleFactor) {
   GetFrame().GetPage()->SetPageScaleFactor(page_scale_factor);
   GetFrame().Selection().SelectAll();
 
-  WebMouseEvent mouse_event(WebInputEvent::kMouseDown,
+  WebMouseEvent mouse_event(WebInputEvent::Type::kMouseDown,
                             WebInputEvent::kNoModifiers,
                             WebInputEvent::GetStaticTimeStampForTests());
   mouse_event.button = WebMouseEvent::Button::kRight;

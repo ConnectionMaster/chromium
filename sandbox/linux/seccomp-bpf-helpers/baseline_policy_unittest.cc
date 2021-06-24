@@ -10,7 +10,9 @@
 #include <sched.h>
 #include <signal.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -22,11 +24,13 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "base/clang_profiling_buildflags.h"
 #include "base/files/scoped_file.h"
 #include "base/macros.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "sandbox/linux/seccomp-bpf-helpers/sigsys_handlers.h"
 #include "sandbox/linux/seccomp-bpf/bpf_tests.h"
 #include "sandbox/linux/seccomp-bpf/sandbox_bpf.h"
@@ -35,6 +39,7 @@
 #include "sandbox/linux/services/thread_helpers.h"
 #include "sandbox/linux/system_headers/linux_futex.h"
 #include "sandbox/linux/system_headers/linux_syscalls.h"
+#include "sandbox/linux/system_headers/linux_time.h"
 #include "sandbox/linux/tests/test_utils.h"
 #include "sandbox/linux/tests/unit_tests.h"
 
@@ -130,10 +135,50 @@ BPF_TEST_C(BaselinePolicy, ForkArmEperm, BaselinePolicy) {
   BPF_ASSERT_EQ(EPERM, fork_errno);
 }
 
+BPF_TEST_C(BaselinePolicy, SystemEperm, BaselinePolicy) {
+  errno = 0;
+  int ret_val = system("echo SHOULD NEVER RUN");
+  BPF_ASSERT_EQ(-1, ret_val);
+  BPF_ASSERT_EQ(EPERM, errno);
+}
+
+BPF_TEST_C(BaselinePolicy, CloneVforkEperm, BaselinePolicy) {
+  errno = 0;
+  // Allocate a couple pages for the child's stack even though the child should
+  // never start.
+  constexpr size_t kStackSize = 4096 * 4;
+  void* child_stack = mmap(nullptr, kStackSize, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+  BPF_ASSERT_NE(child_stack, nullptr);
+  pid_t pid = syscall(__NR_clone, CLONE_VM | CLONE_VFORK | SIGCHLD,
+                      static_cast<char*>(child_stack) + kStackSize, nullptr,
+                      nullptr, nullptr);
+  const int clone_errno = errno;
+  TestUtils::HandlePostForkReturn(pid);
+
+  munmap(child_stack, kStackSize);
+
+  BPF_ASSERT_EQ(-1, pid);
+  BPF_ASSERT_EQ(EPERM, clone_errno);
+}
+
 BPF_TEST_C(BaselinePolicy, CreateThread, BaselinePolicy) {
   base::Thread thread("sandbox_tests");
   BPF_ASSERT(thread.Start());
 }
+
+// Rseq should be enabled if it exists (i.e. shouldn't receive EPERM).
+#if !defined(OS_ANDROID)
+BPF_TEST_C(BaselinePolicy, RseqEnabled, BaselinePolicy) {
+  errno = 0;
+  int res = syscall(__NR_rseq, 0, 0, 0, 0);
+
+  BPF_ASSERT_EQ(-1, res);
+  // The parameters above are invalid so the system call should fail with
+  // EINVAL, or ENOSYS if the kernel is too old to recognize the system call.
+  BPF_ASSERT(EINVAL == errno || ENOSYS == errno);
+}
+#endif  // !defined(OS_ANDROID)
 
 BPF_DEATH_TEST_C(BaselinePolicy,
                  DisallowedCloneFlagCrashes,
@@ -213,7 +258,7 @@ BPF_TEST_C(BaselinePolicy, EPERM_getcwd, BaselinePolicy) {
   errno = 0;
   char buf[1024];
   char* cwd = getcwd(buf, sizeof(buf));
-  BPF_ASSERT_EQ(NULL, cwd);
+  BPF_ASSERT_EQ(nullptr, cwd);
   BPF_ASSERT_EQ(EPERM, errno);
 }
 
@@ -258,12 +303,11 @@ TEST_BASELINE_SIGSYS(__NR_syslog)
 TEST_BASELINE_SIGSYS(__NR_timer_create)
 
 #if !defined(__aarch64__)
-TEST_BASELINE_SIGSYS(__NR_eventfd)
 TEST_BASELINE_SIGSYS(__NR_inotify_init)
 TEST_BASELINE_SIGSYS(__NR_vserver)
 #endif
 
-#if defined(LIBC_GLIBC) && !defined(OS_CHROMEOS)
+#if defined(LIBC_GLIBC) && !BUILDFLAG(IS_CHROMEOS_ASH)
 BPF_TEST_C(BaselinePolicy, FutexEINVAL, BaselinePolicy) {
   int ops[] = {
       FUTEX_CMP_REQUEUE_PI, FUTEX_CMP_REQUEUE_PI_PRIVATE,
@@ -271,7 +315,7 @@ BPF_TEST_C(BaselinePolicy, FutexEINVAL, BaselinePolicy) {
   };
 
   for (int op : ops) {
-    BPF_ASSERT_EQ(-1, syscall(__NR_futex, NULL, op, 0, NULL, NULL, 0));
+    BPF_ASSERT_EQ(-1, syscall(__NR_futex, nullptr, op, 0, nullptr, nullptr, 0));
     BPF_ASSERT_EQ(EINVAL, errno);
   }
 }
@@ -280,7 +324,7 @@ BPF_DEATH_TEST_C(BaselinePolicy,
                  FutexWithRequeuePriorityInheritence,
                  DEATH_SEGV_MESSAGE(GetFutexErrorMessageContentForTests()),
                  BaselinePolicy) {
-  syscall(__NR_futex, NULL, FUTEX_CMP_REQUEUE_PI, 0, NULL, NULL, 0);
+  syscall(__NR_futex, nullptr, FUTEX_CMP_REQUEUE_PI, 0, nullptr, nullptr, 0);
   _exit(1);
 }
 
@@ -288,7 +332,8 @@ BPF_DEATH_TEST_C(BaselinePolicy,
                  FutexWithRequeuePriorityInheritencePrivate,
                  DEATH_SEGV_MESSAGE(GetFutexErrorMessageContentForTests()),
                  BaselinePolicy) {
-  syscall(__NR_futex, NULL, FUTEX_CMP_REQUEUE_PI_PRIVATE, 0, NULL, NULL, 0);
+  syscall(__NR_futex, nullptr, FUTEX_CMP_REQUEUE_PI_PRIVATE, 0, nullptr,
+          nullptr, 0);
   _exit(1);
 }
 
@@ -296,10 +341,10 @@ BPF_DEATH_TEST_C(BaselinePolicy,
                  FutexWithUnlockPIPrivate,
                  DEATH_SEGV_MESSAGE(GetFutexErrorMessageContentForTests()),
                  BaselinePolicy) {
-  syscall(__NR_futex, NULL, FUTEX_UNLOCK_PI_PRIVATE, 0, NULL, NULL, 0);
+  syscall(__NR_futex, nullptr, FUTEX_UNLOCK_PI_PRIVATE, 0, nullptr, nullptr, 0);
   _exit(1);
 }
-#endif  // defined(LIBC_GLIBC) && !defined(OS_CHROMEOS)
+#endif  // defined(LIBC_GLIBC) && !BUILDFLAG(IS_CHROMEOS_ASH)
 
 BPF_TEST_C(BaselinePolicy, PrctlDumpable, BaselinePolicy) {
   const int is_dumpable = prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
@@ -313,6 +358,7 @@ BPF_TEST_C(BaselinePolicy, PrctlDumpable, BaselinePolicy) {
 #define PR_CAPBSET_READ 23
 #endif
 
+#if !BUILDFLAG(CLANG_PROFILING_INSIDE_SANDBOX)
 BPF_DEATH_TEST_C(BaselinePolicy,
                  PrctlSigsys,
                  DEATH_SEGV_MESSAGE(GetPrctlErrorMessageContentForTests()),
@@ -320,6 +366,7 @@ BPF_DEATH_TEST_C(BaselinePolicy,
   prctl(PR_CAPBSET_READ, 0, 0, 0, 0);
   _exit(1);
 }
+#endif
 
 BPF_TEST_C(BaselinePolicy, GetOrSetPriority, BaselinePolicy) {
   errno = 0;
@@ -358,10 +405,21 @@ BPF_DEATH_TEST_C(BaselinePolicy,
 
 BPF_DEATH_TEST_C(BaselinePolicy,
                  ClockGettimeWithDisallowedClockCrashes,
-                 DEATH_SEGV_MESSAGE(sandbox::GetErrorMessageContentForTests()),
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
                  BaselinePolicy) {
   struct timespec ts;
-  syscall(SYS_clock_gettime, CLOCK_MONOTONIC_RAW, &ts);
+  syscall(SYS_clock_gettime, (~0) | CLOCKFD, &ts);
+}
+
+BPF_DEATH_TEST_C(BaselinePolicy,
+                 ClockNanosleepWithDisallowedClockCrashes,
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
+                 BaselinePolicy) {
+  struct timespec ts;
+  struct timespec out_ts;
+  ts.tv_sec = 0;
+  ts.tv_nsec = 0;
+  syscall(SYS_clock_nanosleep, (~0) | CLOCKFD, 0, &ts, &out_ts);
 }
 
 #if !defined(GRND_RANDOM)
@@ -370,15 +428,15 @@ BPF_DEATH_TEST_C(BaselinePolicy,
 
 BPF_DEATH_TEST_C(BaselinePolicy,
                  GetRandomOfDevRandomCrashes,
-                 DEATH_SEGV_MESSAGE(sandbox::GetErrorMessageContentForTests()),
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
                  BaselinePolicy) {
-  syscall(__NR_getrandom, NULL, 0, GRND_RANDOM);
+  syscall(__NR_getrandom, nullptr, 0, GRND_RANDOM);
 }
 
 #if !defined(__i386__)
 BPF_DEATH_TEST_C(BaselinePolicy,
                  GetSockOptWrongLevelSigsys,
-                 DEATH_SEGV_MESSAGE(sandbox::GetErrorMessageContentForTests()),
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
                  BaselinePolicy) {
   int fds[2];
   PCHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
@@ -389,7 +447,7 @@ BPF_DEATH_TEST_C(BaselinePolicy,
 
 BPF_DEATH_TEST_C(BaselinePolicy,
                  GetSockOptWrongOptionSigsys,
-                 DEATH_SEGV_MESSAGE(sandbox::GetErrorMessageContentForTests()),
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
                  BaselinePolicy) {
   int fds[2];
   PCHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
@@ -400,7 +458,7 @@ BPF_DEATH_TEST_C(BaselinePolicy,
 
 BPF_DEATH_TEST_C(BaselinePolicy,
                  SetSockOptWrongLevelSigsys,
-                 DEATH_SEGV_MESSAGE(sandbox::GetErrorMessageContentForTests()),
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
                  BaselinePolicy) {
   int fds[2];
   PCHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
@@ -408,10 +466,9 @@ BPF_DEATH_TEST_C(BaselinePolicy,
   setsockopt(fds[0], IPPROTO_TCP, SO_PEEK_OFF, &id, sizeof(id));
 }
 
-
 BPF_DEATH_TEST_C(BaselinePolicy,
                  SetSockOptWrongOptionSigsys,
-                 DEATH_SEGV_MESSAGE(sandbox::GetErrorMessageContentForTests()),
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
                  BaselinePolicy) {
   int fds[2];
   PCHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);

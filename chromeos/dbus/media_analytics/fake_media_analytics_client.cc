@@ -18,8 +18,7 @@ FakeMediaAnalyticsClient* g_instance = nullptr;
 
 }  // namespace
 
-FakeMediaAnalyticsClient::FakeMediaAnalyticsClient()
-    : process_running_(false), weak_ptr_factory_(this) {
+FakeMediaAnalyticsClient::FakeMediaAnalyticsClient() : process_running_(false) {
   current_state_.set_status(mri::State::UNINITIALIZED);
   DCHECK(!g_instance);
   g_instance = this;
@@ -63,7 +62,7 @@ void FakeMediaAnalyticsClient::RemoveObserver(Observer* observer) {
 void FakeMediaAnalyticsClient::GetState(
     DBusMethodCallback<mri::State> callback) {
   if (!process_running_) {
-    std::move(callback).Run(base::nullopt);
+    std::move(callback).Run(absl::nullopt);
     return;
   }
   base::ThreadTaskRunnerHandle::Get()->PostTask(
@@ -76,7 +75,7 @@ void FakeMediaAnalyticsClient::SetState(
     const mri::State& state,
     DBusMethodCallback<mri::State> callback) {
   if (!process_running_) {
-    std::move(callback).Run(base::nullopt);
+    std::move(callback).Run(absl::nullopt);
     return;
   }
   DCHECK(state.has_status()) << "Trying to set state without status.";
@@ -110,7 +109,7 @@ void FakeMediaAnalyticsClient::GetDiagnostics(
     DBusMethodCallback<mri::Diagnostics> callback) {
   if (!process_running_) {
     LOG(ERROR) << "Fake media analytics process not running.";
-    std::move(callback).Run(base::nullopt);
+    std::move(callback).Run(absl::nullopt);
     return;
   }
   base::ThreadTaskRunnerHandle::Get()->PostTask(

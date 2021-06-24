@@ -5,34 +5,64 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_CHROMEOS_LOGIN_NETWORK_SCREEN_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_CHROMEOS_LOGIN_NETWORK_SCREEN_HANDLER_H_
 
+#include <string>
+
 #include "base/macros.h"
-#include "base/strings/string16.h"
-#include "chrome/browser/chromeos/login/screens/network_screen_view.h"
 #include "chrome/browser/ui/webui/chromeos/login/base_screen_handler.h"
+
+namespace ash {
+class NetworkScreen;
+}
 
 namespace chromeos {
 
-class CoreOobeView;
+// Interface of network screen. Owned by NetworkScreen.
+class NetworkScreenView {
+ public:
+  constexpr static StaticOobeScreenId kScreenId{"network-selection"};
+
+  virtual ~NetworkScreenView() = default;
+
+  // Shows the contents of the screen.
+  virtual void Show() = 0;
+
+  // Hides the contents of the screen.
+  virtual void Hide() = 0;
+
+  // Binds `screen` to the view.
+  virtual void Bind(ash::NetworkScreen* screen) = 0;
+
+  // Unbinds model from the view.
+  virtual void Unbind() = 0;
+
+  // Shows error message in a bubble.
+  virtual void ShowError(const std::u16string& message) = 0;
+
+  // Hides error messages showing no error state.
+  virtual void ClearErrors() = 0;
+
+  // Enables or disables offline Demo Mode during Demo Mode network selection.
+  virtual void SetOfflineDemoModeEnabled(bool enabled) = 0;
+};
 
 // WebUI implementation of NetworkScreenView. It is used to interact with
 // the OOBE network selection screen.
 class NetworkScreenHandler : public NetworkScreenView,
                              public BaseScreenHandler {
  public:
-  NetworkScreenHandler(JSCallsContainer* js_calls_container,
-                       CoreOobeView* core_oobe_view);
+  using TView = NetworkScreenView;
+
+  explicit NetworkScreenHandler(JSCallsContainer* js_calls_container);
   ~NetworkScreenHandler() override;
 
  private:
   // NetworkScreenView:
   void Show() override;
   void Hide() override;
-  void Bind(NetworkScreen* screen) override;
+  void Bind(ash::NetworkScreen* screen) override;
   void Unbind() override;
-  void ShowError(const base::string16& message) override;
+  void ShowError(const std::u16string& message) override;
   void ClearErrors() override;
-  void ShowConnectingStatus(bool connecting,
-                            const base::string16& network_id) override;
   void SetOfflineDemoModeEnabled(bool enabled) override;
 
   // BaseScreenHandler:
@@ -41,8 +71,7 @@ class NetworkScreenHandler : public NetworkScreenView,
   void GetAdditionalParameters(base::DictionaryValue* dict) override;
   void Initialize() override;
 
-  CoreOobeView* core_oobe_view_ = nullptr;
-  NetworkScreen* screen_ = nullptr;
+  ash::NetworkScreen* screen_ = nullptr;
 
   // Keeps whether screen should be shown right after initialization.
   bool show_on_init_ = false;
@@ -51,5 +80,12 @@ class NetworkScreenHandler : public NetworkScreenView,
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
+// source migration is finished.
+namespace ash {
+using ::chromeos::NetworkScreenHandler;
+using ::chromeos::NetworkScreenView;
+}
 
 #endif  // CHROME_BROWSER_UI_WEBUI_CHROMEOS_LOGIN_NETWORK_SCREEN_HANDLER_H_

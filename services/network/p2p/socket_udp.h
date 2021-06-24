@@ -18,6 +18,8 @@
 #include "base/containers/circular_deque.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/base/ip_endpoint.h"
 #include "net/socket/diff_serv_code_point.h"
 #include "net/socket/udp_server_socket.h"
@@ -36,18 +38,18 @@ class P2PMessageThrottler;
 
 class COMPONENT_EXPORT(NETWORK_SERVICE) P2PSocketUdp : public P2PSocket {
  public:
-  typedef base::Callback<std::unique_ptr<net::DatagramServerSocket>(
-      net::NetLog* net_log)>
-      DatagramServerSocketFactory;
+  using DatagramServerSocketFactory =
+      base::RepeatingCallback<std::unique_ptr<net::DatagramServerSocket>(
+          net::NetLog* net_log)>;
   P2PSocketUdp(Delegate* delegate,
-               mojom::P2PSocketClientPtr client,
-               mojom::P2PSocketRequest socket,
+               mojo::PendingRemote<mojom::P2PSocketClient> client,
+               mojo::PendingReceiver<mojom::P2PSocket> socket,
                P2PMessageThrottler* throttler,
                net::NetLog* net_log,
                const DatagramServerSocketFactory& socket_factory);
   P2PSocketUdp(Delegate* delegate,
-               mojom::P2PSocketClientPtr client,
-               mojom::P2PSocketRequest socket,
+               mojo::PendingRemote<mojom::P2PSocketClient> client,
+               mojo::PendingReceiver<mojom::P2PSocket> socket,
                P2PMessageThrottler* throttler,
                net::NetLog* net_log);
   ~P2PSocketUdp() override;
@@ -56,7 +58,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) P2PSocketUdp : public P2PSocket {
   void Init(const net::IPEndPoint& local_address,
             uint16_t min_port,
             uint16_t max_port,
-            const P2PHostAndIPEndPoint& remote_address) override;
+            const P2PHostAndIPEndPoint& remote_address,
+            const net::NetworkIsolationKey& network_isolation_key) override;
 
   // mojom::P2PSocket implementation:
   void Send(const std::vector<int8_t>& data,

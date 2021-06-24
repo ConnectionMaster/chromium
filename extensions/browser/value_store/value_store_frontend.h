@@ -14,9 +14,12 @@
 #include "base/values.h"
 #include "extensions/browser/value_store/value_store.h"
 
+namespace base {
+class SequencedTaskRunner;
+}
+
 namespace extensions {
 class ValueStoreFactory;
-}  // namespace extensions
 
 // A frontend for a LeveldbValueStore, for use on the UI thread.
 class ValueStoreFrontend {
@@ -24,16 +27,17 @@ class ValueStoreFrontend {
   // The kind of extensions data stored in a backend.
   enum class BackendType { RULES, STATE };
 
-  typedef base::Callback<void(std::unique_ptr<base::Value>)> ReadCallback;
+  using ReadCallback = base::OnceCallback<void(std::unique_ptr<base::Value>)>;
 
   ValueStoreFrontend(
       const scoped_refptr<extensions::ValueStoreFactory>& store_factory,
-      BackendType backend_type);
+      BackendType backend_type,
+      const scoped_refptr<base::SequencedTaskRunner>& task_runner);
   ~ValueStoreFrontend();
 
   // Retrieves a value from the database asynchronously, passing a copy to
   // |callback| when ready. NULL is passed if no matching entry is found.
-  void Get(const std::string& key, const ReadCallback& callback);
+  void Get(const std::string& key, ReadCallback callback);
 
   // Sets a value with the given key.
   void Set(const std::string& key, std::unique_ptr<base::Value> value);
@@ -48,7 +52,11 @@ class ValueStoreFrontend {
   // on the FILE thread.
   scoped_refptr<Backend> backend_;
 
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
+
   DISALLOW_COPY_AND_ASSIGN(ValueStoreFrontend);
 };
+
+}  // namespace extensions
 
 #endif  // EXTENSIONS_BROWSER_VALUE_STORE_VALUE_STORE_FRONTEND_H_

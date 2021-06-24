@@ -6,8 +6,8 @@
 #define CHROME_BROWSER_HISTORY_HISTORY_TAB_HELPER_H_
 
 #include "base/macros.h"
-#include "base/memory/ref_counted.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 
@@ -22,7 +22,7 @@ class HistoryTabHelper : public content::WebContentsObserver,
   ~HistoryTabHelper() override;
 
   // Updates history with the specified navigation. This is called by
-  // OnMsgNavigate to update history state.
+  // DidFinishNavigation to update history state.
   void UpdateHistoryForNavigation(
       const history::HistoryAddPageArgs& add_page_args);
 
@@ -34,6 +34,11 @@ class HistoryTabHelper : public content::WebContentsObserver,
       int nav_entry_id,
       content::NavigationHandle* navigation_handle);
 
+  // Fakes that the WebContents is a tab for testing purposes.
+  void SetForceEligibleTabForTesting(bool force) {
+    force_eligibile_tab_for_testing_ = force;
+  }
+
  private:
   explicit HistoryTabHelper(content::WebContents* web_contents);
   friend class content::WebContentsUserData<HistoryTabHelper>;
@@ -41,6 +46,8 @@ class HistoryTabHelper : public content::WebContentsObserver,
   // content::WebContentsObserver implementation.
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
+  void DidActivatePortal(content::WebContents* predecessor_contents,
+                         base::TimeTicks activation_time) override;
   void DidFinishLoad(content::RenderFrameHost* render_frame_host,
                      const GURL& validated_url) override;
   void TitleWasSet(content::NavigationEntry* entry) override;
@@ -48,6 +55,9 @@ class HistoryTabHelper : public content::WebContentsObserver,
 
   // Helper function to return the history service.  May return null.
   history::HistoryService* GetHistoryService();
+
+  // Returns true if our observed web contents is an eligible tab.
+  bool IsEligibleTab(const history::HistoryAddPageArgs& add_page_args) const;
 
   // True after navigation to a page is complete and the page is currently
   // loading. Only applies to the main frame of the page.
@@ -60,6 +70,9 @@ class HistoryTabHelper : public content::WebContentsObserver,
   // a certain time period after the page load is complete will be saved to the
   // history system. Only applies to the main frame of the page.
   base::TimeTicks last_load_completion_;
+
+  // Set to true in unit tests to avoid need for a Browser instance.
+  bool force_eligibile_tab_for_testing_ = false;
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

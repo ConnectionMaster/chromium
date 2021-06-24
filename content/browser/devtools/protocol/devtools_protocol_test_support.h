@@ -16,7 +16,7 @@
 
 namespace content {
 
-class DevToolsProtocolTest : public ContentBrowserTest,
+class DevToolsProtocolTest : virtual public ContentBrowserTest,
                              public DevToolsAgentHostClient,
                              public WebContentsDelegate {
  public:
@@ -31,12 +31,12 @@ class DevToolsProtocolTest : public ContentBrowserTest,
  protected:
   // WebContentsDelegate methods:
   bool DidAddMessageToConsole(WebContents* source,
-                              int32_t level,
-                              const base::string16& message,
+                              blink::mojom::ConsoleMessageLevel log_level,
+                              const std::u16string& message,
                               int32_t line_no,
-                              const base::string16& source_id) override;
+                              const std::u16string& source_id) override;
 
-  blink::WebSecurityStyle GetSecurityStyle(
+  blink::SecurityStyle GetSecurityStyle(
       content::WebContents* web_contents,
       content::SecurityStyleExplanations* security_style_explanations) override;
 
@@ -47,7 +47,20 @@ class DevToolsProtocolTest : public ContentBrowserTest,
 
   base::DictionaryValue* SendCommand(const std::string& method,
                                      std::unique_ptr<base::Value> params,
-                                     bool wait);
+                                     bool wait) {
+    return SendSessionCommand(method, std::move(params), std::string(), wait);
+  }
+
+  base::DictionaryValue* SendSessionCommand(const std::string& method,
+                                            std::unique_ptr<base::Value> params,
+                                            const std::string& session_id) {
+    return SendSessionCommand(method, std::move(params), session_id, true);
+  }
+
+  base::DictionaryValue* SendSessionCommand(const std::string& method,
+                                            std::unique_ptr<base::Value> params,
+                                            const std::string& session_id,
+                                            bool wait);
 
   void WaitForResponse();
 
@@ -70,6 +83,7 @@ class DevToolsProtocolTest : public ContentBrowserTest,
 
   void TearDownOnMainThread() override;
 
+  bool HasExistingNotification(const std::string& notification) const;
   std::unique_ptr<base::DictionaryValue> WaitForNotification(
       const std::string& notification) {
     return WaitForNotification(notification, false);
@@ -129,7 +143,7 @@ class DevToolsProtocolTest : public ContentBrowserTest,
  private:
   void RunLoopUpdatingQuitClosure();
   void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
-                               const std::string& message) override;
+                               base::span<const uint8_t> message) override;
 
   void AgentHostClosed(DevToolsAgentHost* agent_host) override;
 

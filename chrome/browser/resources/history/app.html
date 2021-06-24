@@ -1,25 +1,4 @@
-<link rel="import" href="chrome://resources/html/polymer.html">
-
-<link rel="import" href="chrome://resources/cr_elements/shared_vars_css.html">
-<link rel="import" href="chrome://resources/html/cr/ui.html">
-<link rel="import" href="chrome://resources/html/cr/ui/command.html">
-<link rel="import" href="chrome://resources/html/find_shortcut_behavior.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/iron-media-query/iron-media-query.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/iron-pages/iron-pages.html">
-<link rel="import" href="chrome://resources/polymer/v1_0/iron-scroll-target-behavior/iron-scroll-target-behavior.html">
-<link rel="import" href="history_list.html">
-<link rel="import" href="history_toolbar.html">
-<link rel="import" href="query_manager.html">
-<link rel="import" href="router.html">
-<link rel="import" href="shared_style.html">
-<link rel="import" href="side_bar.html">
-<link rel="import" href="strings.html">
-
-<!-- Lazy loaded: history-synced-device-manager, cr-drawer. -->
-
-<dom-module id="history-app">
-  <template>
-    <style include="shared-style">
+    <style include="cr-shared-style shared-style">
       :host {
         color: var(--cr-primary-text-color);
         display: block;
@@ -48,17 +27,14 @@
         height: 100%;
       }
 
-      #drop-shadow {
-        @apply --cr-container-shadow;
-      }
-
       :host([toolbar-shadow_]) #drop-shadow {
         opacity: var(--cr-container-shadow-max-opacity);
       }
     </style>
     <history-query-manager query-state="{{queryState_}}"
-        query-result="[[queryResult_]]"
-        router="[[$$('#router')]]">
+        query-result="{{queryResult_}}"
+        router="[[$$('#router')]]"
+        on-query-finished="onQueryFinished_">
     </history-query-manager>
     <history-router id="router"
         selected-page="{{selectedPage_}}"
@@ -67,16 +43,16 @@
     <history-toolbar id="toolbar"
         has-drawer="[[hasDrawer_]]"
         has-more-results="[[!queryResult_.info.finished]]"
+        pending-delete="[[pendingDelete_]]"
         query-info="[[queryResult_.info]]"
         querying="[[queryState_.querying]]"
         search-term="[[queryState_.searchTerm]]"
-        show-menu-promo="[[showMenuPromo_]]"
         spinner-active="[[shouldShowSpinner_(queryState_.querying,
                                              queryState_.incremental,
                                              queryState_.searchTerm)]]">
     </history-toolbar>
 
-    <div id="drop-shadow"></div>
+    <div id="drop-shadow" class="cr-container-shadow"></div>
     <div id="main-container">
       <history-side-bar id="content-side-bar" selected-page="{{selectedPage_}}"
           footer-info="[[footerInfo]]"
@@ -89,6 +65,7 @@
           items="{{items}}">
         <history-list id="history" query-state="[[queryState_]]"
             searched-term="[[queryResult_.info.term]]"
+            pending-delete="{{pendingDelete_}}"
             query-result="[[queryResult_]]"
             path="history">
         </history-list>
@@ -117,6 +94,3 @@
     <iron-media-query query="(max-width: 1023px)"
         query-matches="{{hasDrawer_}}">
     </iron-media-query>
-  </template>
-  <script src="app.js"></script>
-</dom-module>

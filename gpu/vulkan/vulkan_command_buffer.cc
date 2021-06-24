@@ -8,8 +8,81 @@
 #include "gpu/vulkan/vulkan_command_pool.h"
 #include "gpu/vulkan/vulkan_device_queue.h"
 #include "gpu/vulkan/vulkan_function_pointers.h"
+#include "gpu/vulkan/vulkan_util.h"
 
 namespace gpu {
+
+namespace {
+
+VkPipelineStageFlags GetPipelineStageFlags(
+    const VulkanDeviceQueue* device_queue,
+    const VkImageLayout layout) {
+  switch (layout) {
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+      return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    case VK_IMAGE_LAYOUT_GENERAL:
+      return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    case VK_IMAGE_LAYOUT_PREINITIALIZED:
+      return VK_PIPELINE_STAGE_HOST_BIT;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+      return VK_PIPELINE_STAGE_TRANSFER_BIT;
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+      return VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: {
+      VkPipelineStageFlags flags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                   VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+      if (device_queue->enabled_device_features().tessellationShader) {
+        flags |= VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+                 VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
+      }
+      if (device_queue->enabled_device_features().geometryShader) {
+        flags |= VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+      }
+      return flags;
+    }
+    case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+      return VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    default:
+      NOTREACHED() << "layout=" << layout;
+  }
+  return 0;
+}
+
+VkAccessFlags GetAccessMask(const VkImageLayout layout) {
+  switch (layout) {
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+      return 0;
+    case VK_IMAGE_LAYOUT_GENERAL:
+      LOG(WARNING) << "VK_IMAGE_LAYOUT_GENERAL is used.";
+      return VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+             VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_HOST_WRITE_BIT |
+             VK_ACCESS_HOST_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+             VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+             VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_PREINITIALIZED:
+      return VK_ACCESS_HOST_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+      return VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+      return VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+      return VK_ACCESS_TRANSFER_READ_BIT;
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+      return VK_ACCESS_TRANSFER_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+      return 0;
+    default:
+      NOTREACHED() << "layout=" << layout;
+  }
+  return 0;
+}
+
+}  // namespace
 
 VulkanCommandBuffer::VulkanCommandBuffer(VulkanDeviceQueue* device_queue,
                                          VulkanCommandPool* command_pool,
@@ -31,17 +104,20 @@ bool VulkanCommandBuffer::Initialize() {
   VkResult result = VK_SUCCESS;
   VkDevice device = device_queue_->GetVulkanDevice();
 
-  VkCommandBufferAllocateInfo command_buffer_info = {};
-  command_buffer_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  command_buffer_info.commandPool = command_pool_->handle();
-  command_buffer_info.level = primary_ ? VK_COMMAND_BUFFER_LEVEL_PRIMARY
-                                       : VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-  command_buffer_info.commandBufferCount = 1;
+  VkCommandBufferAllocateInfo command_buffer_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .pNext = nullptr,
+      .commandPool = command_pool_->handle(),
+      .level = primary_ ? VK_COMMAND_BUFFER_LEVEL_PRIMARY
+                        : VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+      .commandBufferCount = 1,
+  };
 
+  DCHECK_EQ(static_cast<VkCommandBuffer>(VK_NULL_HANDLE), command_buffer_);
   result =
       vkAllocateCommandBuffers(device, &command_buffer_info, &command_buffer_);
   if (VK_SUCCESS != result) {
-    DLOG(ERROR) << "vkAllocateCommandBuffers() failed: " << result;
+    LOG(ERROR) << "vkAllocateCommandBuffers() failed: " << result;
     return false;
   }
 
@@ -66,17 +142,19 @@ bool VulkanCommandBuffer::Submit(uint32_t num_wait_semaphores,
                                  VkSemaphore* wait_semaphores,
                                  uint32_t num_signal_semaphores,
                                  VkSemaphore* signal_semaphores) {
-  VkPipelineStageFlags wait_dst_stage_mask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-
   DCHECK(primary_);
+
+  std::vector<VkPipelineStageFlags> wait_dst_stage_mask(
+      num_wait_semaphores, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
   VkSubmitInfo submit_info = {};
   submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  submit_info.commandBufferCount = 1;
-  submit_info.pCommandBuffers = &command_buffer_;
+  submit_info.pNext = nullptr;
   submit_info.waitSemaphoreCount = num_wait_semaphores;
   submit_info.pWaitSemaphores = wait_semaphores;
-  submit_info.pWaitDstStageMask = &wait_dst_stage_mask;
+  submit_info.pWaitDstStageMask = wait_dst_stage_mask.data();
+  submit_info.commandBufferCount = 1;
+  submit_info.pCommandBuffers = &command_buffer_;
   submit_info.signalSemaphoreCount = num_signal_semaphores;
   submit_info.pSignalSemaphores = signal_semaphores;
 
@@ -85,12 +163,12 @@ bool VulkanCommandBuffer::Submit(uint32_t num_wait_semaphores,
   VkFence fence;
   result = device_queue_->GetFenceHelper()->GetFence(&fence);
   if (VK_SUCCESS != result) {
-    DLOG(ERROR) << "Failed to create fence: " << result;
+    LOG(ERROR) << "Failed to create fence: " << result;
     return false;
   }
 
   result =
-      vkQueueSubmit(device_queue_->GetVulkanQueue(), 1, &submit_info, fence);
+      QueueSubmitHook(device_queue_->GetVulkanQueue(), 1, &submit_info, fence);
 
   if (VK_SUCCESS != result) {
     vkDestroyFence(device_queue_->GetVulkanDevice(), fence, nullptr);
@@ -101,7 +179,7 @@ bool VulkanCommandBuffer::Submit(uint32_t num_wait_semaphores,
 
   PostExecution();
   if (VK_SUCCESS != result) {
-    DLOG(ERROR) << "vkQueueSubmit() failed: " << result;
+    LOG(ERROR) << "vkQueueSubmit() failed: " << result;
     return false;
   }
 
@@ -135,6 +213,52 @@ bool VulkanCommandBuffer::SubmissionFinished() {
   return device_queue_->GetFenceHelper()->HasPassed(submission_fence_);
 }
 
+void VulkanCommandBuffer::TransitionImageLayout(
+    VkImage image,
+    VkImageLayout old_layout,
+    VkImageLayout new_layout,
+    uint32_t src_queue_family_index,
+    uint32_t dst_queue_family_index) {
+  VkImageMemoryBarrier barrier = {};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.srcAccessMask = GetAccessMask(old_layout);
+  barrier.dstAccessMask = GetAccessMask(new_layout);
+  barrier.oldLayout = old_layout;
+  barrier.newLayout = new_layout;
+  barrier.srcQueueFamilyIndex = src_queue_family_index;
+  barrier.dstQueueFamilyIndex = dst_queue_family_index;
+  barrier.image = image;
+  barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  barrier.subresourceRange.baseMipLevel = 0;
+  barrier.subresourceRange.levelCount = 1;
+  barrier.subresourceRange.baseArrayLayer = 0;
+  barrier.subresourceRange.layerCount = 1;
+  vkCmdPipelineBarrier(command_buffer_,
+                       GetPipelineStageFlags(device_queue_, old_layout),
+                       GetPipelineStageFlags(device_queue_, new_layout), 0, 0,
+                       nullptr, 0, nullptr, 1, &barrier);
+}
+
+void VulkanCommandBuffer::CopyBufferToImage(VkBuffer buffer,
+                                            VkImage image,
+                                            uint32_t buffer_width,
+                                            uint32_t buffer_height,
+                                            uint32_t width,
+                                            uint32_t height) {
+  VkBufferImageCopy region = {};
+  region.bufferOffset = 0;
+  region.bufferRowLength = buffer_width;
+  region.bufferImageHeight = buffer_height;
+  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  region.imageSubresource.mipLevel = 0;
+  region.imageSubresource.baseArrayLayer = 0;
+  region.imageSubresource.layerCount = 1;
+  region.imageOffset = {0, 0, 0};
+  region.imageExtent = {width, height, 1};
+  vkCmdCopyBufferToImage(command_buffer_, buffer, image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+}
+
 void VulkanCommandBuffer::PostExecution() {
   if (record_type_ == RECORD_TYPE_SINGLE_USE) {
     // Clear upon next use.
@@ -153,7 +277,7 @@ void VulkanCommandBuffer::ResetIfDirty() {
     Wait(UINT64_MAX);
     VkResult result = vkResetCommandBuffer(command_buffer_, 0);
     if (VK_SUCCESS != result) {
-      DLOG(ERROR) << "vkResetCommandBuffer() failed: " << result;
+      LOG(ERROR) << "vkResetCommandBuffer() failed: " << result;
     } else {
       record_type_ = RECORD_TYPE_EMPTY;
     }
@@ -163,7 +287,7 @@ void VulkanCommandBuffer::ResetIfDirty() {
 CommandBufferRecorderBase::~CommandBufferRecorderBase() {
   VkResult result = vkEndCommandBuffer(handle_);
   if (VK_SUCCESS != result) {
-    DLOG(ERROR) << "vkEndCommandBuffer() failed: " << result;
+    LOG(ERROR) << "vkEndCommandBuffer() failed: " << result;
   }
 }
 
@@ -176,7 +300,7 @@ ScopedMultiUseCommandBufferRecorder::ScopedMultiUseCommandBufferRecorder(
   VkResult result = vkBeginCommandBuffer(handle_, &begin_info);
 
   if (VK_SUCCESS != result) {
-    DLOG(ERROR) << "vkBeginCommandBuffer() failed: " << result;
+    LOG(ERROR) << "vkBeginCommandBuffer() failed: " << result;
   }
 }
 
@@ -190,7 +314,7 @@ ScopedSingleUseCommandBufferRecorder::ScopedSingleUseCommandBufferRecorder(
   VkResult result = vkBeginCommandBuffer(handle_, &begin_info);
 
   if (VK_SUCCESS != result) {
-    DLOG(ERROR) << "vkBeginCommandBuffer() failed: " << result;
+    LOG(ERROR) << "vkBeginCommandBuffer() failed: " << result;
   }
 }
 

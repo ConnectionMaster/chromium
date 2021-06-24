@@ -11,6 +11,7 @@
 
 #include "base/memory/ref_counted.h"
 #include "base/process/process.h"
+#include "base/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/browser_thread.h"
@@ -19,10 +20,6 @@
 #if defined(OS_WIN)
 #include "base/synchronization/lock.h"
 #endif
-
-namespace base {
-class TaskRunner;
-}
 
 namespace IPC {
 class MessageFilter;
@@ -34,11 +31,17 @@ struct BrowserMessageFilterTraits;
 
 // Base class for message filters in the browser process.  You can receive and
 // send messages on any thread.
+//
+// BrowserMessageFilters are ref-counted, and a reference to them is held by the
+// IPC ChannelProxy for which they have been installed, so do not rely on the
+// destructor being called on a specific sequence unless you specify otherwise
+// in OnDestruct().
 class CONTENT_EXPORT BrowserMessageFilter
     : public base::RefCountedThreadSafe<
           BrowserMessageFilter, BrowserMessageFilterTraits>,
       public IPC::Sender {
  public:
+  BrowserMessageFilter();  // For mojo-only BrowserAssociatedInterface.
   explicit BrowserMessageFilter(uint32_t message_class_to_filter);
   BrowserMessageFilter(const uint32_t* message_classes_to_filter,
                        size_t num_message_classes_to_filter);
@@ -75,7 +78,7 @@ class CONTENT_EXPORT BrowserMessageFilter
   // return a non-null task runner which will target tasks accordingly.
   // Note: To target the UI thread, please use OverrideThreadForMessage
   // since that has extra checks to avoid deadlocks.
-  virtual base::TaskRunner* OverrideTaskRunnerForMessage(
+  virtual scoped_refptr<base::SequencedTaskRunner> OverrideTaskRunnerForMessage(
       const IPC::Message& message);
 
   // Override this to receive messages.
@@ -121,6 +124,7 @@ class CONTENT_EXPORT BrowserMessageFilter
                                           BrowserMessageFilterTraits>;
 
   class Internal;
+  friend class AgentSchedulingGroupHost;
   friend class BrowserAssociatedInterfaceTest;
   friend class BrowserChildProcessHostImpl;
   friend class BrowserPpapiHost;
@@ -137,9 +141,9 @@ class CONTENT_EXPORT BrowserMessageFilter
   // classes. Internal keeps a reference to this class, which is why there's a
   // weak pointer back. This class could outlive Internal based on what the
   // child class does in its OnDestruct method.
-  Internal* internal_;
+  Internal* internal_ = nullptr;
 
-  IPC::Sender* sender_;
+  IPC::Sender* sender_ = nullptr;
   base::Process peer_process_;
 
   std::vector<uint32_t> message_classes_to_filter_;

@@ -9,13 +9,14 @@
 #include "base/bind.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/task/post_task.h"
-#include "chrome/browser/media/router/media_router_metrics.h"
+#include "base/task/thread_pool.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/media_router/issue.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/media_router/browser/media_router_metrics.h"
+#include "components/media_router/common/issue.h"
 #include "media/base/container_names.h"
 #include "media/base/mime_util.h"
 #include "net/base/filename_util.h"
@@ -26,7 +27,7 @@ namespace media_router {
 
 namespace {
 
-base::string16 GetFileName(const ui::SelectedFileInfo& file_info) {
+std::u16string GetFileName(const ui::SelectedFileInfo& file_info) {
   return file_info.file_path.BaseName().LossyDisplayName();
 }
 
@@ -69,9 +70,12 @@ ui::SelectFileDialog::FileTypeInfo GetAudioVideoFileTypeInfo() {
 
 }  // namespace
 
-// FileSystemDelegate default implementations
 MediaRouterFileDialog::FileSystemDelegate::FileSystemDelegate() = default;
-MediaRouterFileDialog::FileSystemDelegate::~FileSystemDelegate() = default;
+
+MediaRouterFileDialog::FileSystemDelegate::~FileSystemDelegate() {
+  if (select_file_dialog_)
+    select_file_dialog_->ListenerDestroyed();
+}
 
 bool MediaRouterFileDialog::FileSystemDelegate::FileExists(
     const base::FilePath& file_path) const {
@@ -116,24 +120,25 @@ void MediaRouterFileDialog::FileSystemDelegate::OpenFileDialog(
   gfx::NativeWindow parent_window = browser->window()->GetNativeWindow();
 
   select_file_dialog_->SelectFile(
-      ui::SelectFileDialog::SELECT_OPEN_FILE, base::string16(),
+      ui::SelectFileDialog::SELECT_OPEN_FILE, std::u16string(),
       default_directory, file_type_info, 0, base::FilePath::StringType(),
       parent_window, nullptr /* |params| passed to the listener */);
 }
 // End of FileSystemDelegate default implementations
 
 MediaRouterFileDialog::MediaRouterFileDialog(
-    MediaRouterFileDialogDelegate* delegate)
-    : MediaRouterFileDialog(delegate, std::make_unique<FileSystemDelegate>()) {}
+    base::WeakPtr<MediaRouterFileDialogDelegate> delegate)
+    : MediaRouterFileDialog(std::move(delegate),
+                            std::make_unique<FileSystemDelegate>()) {}
 
 // Used for tests
 MediaRouterFileDialog::MediaRouterFileDialog(
-    MediaRouterFileDialogDelegate* delegate,
+    base::WeakPtr<MediaRouterFileDialogDelegate> delegate,
     std::unique_ptr<FileSystemDelegate> file_system_delegate)
-    : task_runner_(base::CreateTaskRunnerWithTraits(
+    : task_runner_(base::ThreadPool::CreateTaskRunner(
           {base::MayBlock(), base::TaskPriority::USER_VISIBLE})),
       file_system_delegate_(std::move(file_system_delegate)),
-      delegate_(delegate) {}
+      delegate_(std::move(delegate)) {}
 
 MediaRouterFileDialog::~MediaRouterFileDialog() = default;
 
@@ -143,9 +148,9 @@ GURL MediaRouterFileDialog::GetLastSelectedFileUrl() {
              : GURL();
 }
 
-base::string16 MediaRouterFileDialog::GetLastSelectedFileName() {
+std::u16string MediaRouterFileDialog::GetLastSelectedFileName() {
   return selected_file_.has_value() ? GetFileName(selected_file_.value())
-                                    : base::string16();
+                                    : std::u16string();
 }
 
 void MediaRouterFileDialog::MaybeReportLastSelectedFileInformation() {
@@ -224,15 +229,17 @@ void MediaRouterFileDialog::OnValidationResults(
     MediaRouterFileDialog::ValidationResult validation_result) {
   if (validation_result == MediaRouterFileDialog::FILE_OK) {
     selected_file_ = file_info;
-    delegate_->FileDialogFileSelected(file_info);
-  } else {
+    if (delegate_)
+      delegate_->FileDialogFileSelected(file_info);
+  } else if (delegate_) {
     delegate_->FileDialogSelectionFailed(
         CreateIssue(file_info, validation_result));
   }
 }
 
 void MediaRouterFileDialog::FileSelectionCanceled(void* params) {
-  delegate_->FileDialogSelectionCanceled();
+  if (delegate_)
+    delegate_->FileDialogSelectionCanceled();
 }
 
 IssueInfo MediaRouterFileDialog::CreateIssue(

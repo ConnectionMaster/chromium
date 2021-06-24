@@ -27,26 +27,27 @@ class FakeContentLayerClient : public ContentLayerClient {
   struct ImageData {
     ImageData(PaintImage image,
               const gfx::Point& point,
+              const SkSamplingOptions&,
               const PaintFlags& flags);
     ImageData(PaintImage image,
               const gfx::Transform& transform,
+              const SkSamplingOptions&,
               const PaintFlags& flags);
     ImageData(const ImageData& other);
     ~ImageData();
     PaintImage image;
     gfx::Point point;
     gfx::Transform transform;
+    SkSamplingOptions sampling;
     PaintFlags flags;
   };
 
   FakeContentLayerClient();
   ~FakeContentLayerClient() override;
 
-  gfx::Rect PaintableRegion() override;
-  scoped_refptr<DisplayItemList> PaintContentsToDisplayList(
-      PaintingControlSetting painting_control) override;
+  gfx::Rect PaintableRegion() const override;
+  scoped_refptr<DisplayItemList> PaintContentsToDisplayList() override;
   bool FillsBoundsCompletely() const override;
-  size_t GetApproximateUnsharedMemoryUsage() const override;
 
   void set_fill_with_nonsolid_color(bool nonsolid) {
     fill_with_nonsolid_color_ = nonsolid;
@@ -55,6 +56,12 @@ class FakeContentLayerClient : public ContentLayerClient {
   void set_contains_slow_paths(bool contains_slow_paths) {
     contains_slow_paths_ = contains_slow_paths;
   }
+
+  void set_has_non_aa_paint(bool has_non_aa_paint) {
+    has_non_aa_paint_ = has_non_aa_paint;
+  }
+
+  void set_has_draw_text_op() { has_draw_text_op_ = true; }
 
   void add_draw_rect(const gfx::Rect& rect, const PaintFlags& flags) {
     draw_rects_.push_back(std::make_pair(gfx::RectF(rect), flags));
@@ -66,37 +73,44 @@ class FakeContentLayerClient : public ContentLayerClient {
 
   void add_draw_image(sk_sp<SkImage> image,
                       const gfx::Point& point,
+                      const SkSamplingOptions& sampling,
                       const PaintFlags& flags) {
     add_draw_image(
         PaintImageBuilder::WithDefault()
             .set_id(PaintImage::GetNextId())
             .set_image(std::move(image), PaintImage::GetNextContentId())
             .TakePaintImage(),
-        point, flags);
+        point, sampling, flags);
+  }
+  void add_draw_image(sk_sp<SkImage> image, const gfx::Point& point) {
+    add_draw_image(
+        PaintImageBuilder::WithDefault()
+            .set_id(PaintImage::GetNextId())
+            .set_image(std::move(image), PaintImage::GetNextContentId())
+            .TakePaintImage(),
+        point, SkSamplingOptions(), PaintFlags());
   }
   void add_draw_image(PaintImage image,
                       const gfx::Point& point,
+                      const SkSamplingOptions& sampling,
                       const PaintFlags& flags) {
-    ImageData data(std::move(image), point, flags);
+    ImageData data(std::move(image), point, sampling, flags);
+    draw_images_.push_back(data);
+  }
+  void add_draw_image(PaintImage image, const gfx::Point& point) {
+    ImageData data(std::move(image), point, SkSamplingOptions(), PaintFlags());
     draw_images_.push_back(data);
   }
 
   void add_draw_image_with_transform(PaintImage image,
                                      const gfx::Transform& transform,
+                                     const SkSamplingOptions& sampling,
                                      const PaintFlags& flags) {
-    ImageData data(std::move(image), transform, flags);
+    ImageData data(std::move(image), transform, sampling, flags);
     draw_images_.push_back(data);
   }
 
   SkCanvas* last_canvas() const { return last_canvas_; }
-
-  PaintingControlSetting last_painting_control() const {
-    return last_painting_control_;
-  }
-
-  void set_reported_memory_usage(size_t reported_memory_usage) {
-    reported_memory_usage_ = reported_memory_usage;
-  }
 
   void set_bounds(gfx::Size bounds) {
     bounds_ = bounds;
@@ -107,15 +121,15 @@ class FakeContentLayerClient : public ContentLayerClient {
   using RectPaintVector = std::vector<std::pair<gfx::RectF, PaintFlags>>;
   using ImageVector = std::vector<ImageData>;
 
-  bool fill_with_nonsolid_color_;
+  bool fill_with_nonsolid_color_ = false;
   RectPaintVector draw_rects_;
   ImageVector draw_images_;
-  SkCanvas* last_canvas_;
-  PaintingControlSetting last_painting_control_;
-  size_t reported_memory_usage_;
+  SkCanvas* last_canvas_ = nullptr;
   gfx::Size bounds_;
-  bool bounds_set_;
-  bool contains_slow_paths_;
+  bool bounds_set_ = false;
+  bool contains_slow_paths_ = false;
+  bool has_non_aa_paint_ = false;
+  bool has_draw_text_op_ = false;
 };
 
 }  // namespace cc

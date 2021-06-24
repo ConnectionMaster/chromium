@@ -13,6 +13,7 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/values.h"
 #include "chrome/browser/devtools/device/android_device_manager.h"
 #include "content/public/browser/devtools_agent_host.h"
 
@@ -32,7 +33,7 @@ class DevToolsDeviceDiscovery {
     RemotePage(scoped_refptr<AndroidDeviceManager::Device> device,
                const std::string& browser_id,
                const std::string& browser_version,
-               const base::DictionaryValue& dict);
+               base::Value dict);
 
     virtual ~RemotePage();
 
@@ -40,7 +41,7 @@ class DevToolsDeviceDiscovery {
     std::string browser_id_;
     std::string browser_version_;
     std::string frontend_url_;
-    std::unique_ptr<base::DictionaryValue> dict_;
+    base::Value dict_;
     scoped_refptr<content::DevToolsAgentHost> agent_host_;
 
     DISALLOW_COPY_AND_ASSIGN(RemotePage);
@@ -119,14 +120,14 @@ class DevToolsDeviceDiscovery {
       std::pair<scoped_refptr<AndroidDeviceManager::Device>,
                 scoped_refptr<RemoteDevice>>;
   using CompleteDevices = std::vector<CompleteDevice>;
-  using DeviceListCallback = base::Callback<void(const CompleteDevices&)>;
+  using DeviceListCallback =
+      base::RepeatingCallback<void(const CompleteDevices&)>;
 
-  DevToolsDeviceDiscovery(
-      AndroidDeviceManager* device_manager,
-      const DeviceListCallback& callback);
+  DevToolsDeviceDiscovery(AndroidDeviceManager* device_manager,
+                          DeviceListCallback callback);
   ~DevToolsDeviceDiscovery();
 
-  void SetScheduler(base::Callback<void(const base::Closure&)> scheduler);
+  void SetScheduler(base::RepeatingCallback<void(base::OnceClosure)> scheduler);
 
   static scoped_refptr<content::DevToolsAgentHost> CreateBrowserAgentHost(
       scoped_refptr<AndroidDeviceManager::Device> device,
@@ -140,8 +141,8 @@ class DevToolsDeviceDiscovery {
 
   AndroidDeviceManager* device_manager_;
   const DeviceListCallback callback_;
-  base::Callback<void(const base::Closure&)> task_scheduler_;
-  base::WeakPtrFactory<DevToolsDeviceDiscovery> weak_factory_;
+  base::RepeatingCallback<void(base::OnceClosure)> task_scheduler_;
+  base::WeakPtrFactory<DevToolsDeviceDiscovery> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DevToolsDeviceDiscovery);
 };

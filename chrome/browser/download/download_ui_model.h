@@ -7,24 +7,23 @@
 
 #include <stdint.h>
 
+#include <string>
+
 #include "base/files/file_path.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/sequenced_task_runner.h"
-#include "base/strings/string16.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/safe_browsing/download_file_types.pb.h"
 #include "components/download/public/common/download_item.h"
 #include "components/offline_items_collection/core/offline_item.h"
+#include "components/safe_browsing/buildflags.h"
+#include "components/safe_browsing/core/proto/download_file_types.pb.h"
 
 #if !defined(OS_ANDROID)
 #include "chrome/browser/download/download_commands.h"
 #endif
-
-namespace gfx {
-class FontList;
-}
 
 using offline_items_collection::ContentId;
 
@@ -51,6 +50,8 @@ class DownloadUIModel {
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
+  base::WeakPtr<DownloadUIModel> GetWeakPtr();
+
   // Does this download have a MIME type (either explicit or inferred from its
   // extension) suggesting that it is a supported image type?
   bool HasSupportedImageMimeType() const;
@@ -60,14 +61,14 @@ class DownloadUIModel {
   // "100/200 MB" where the numerator is the transferred size and the
   // denominator is the total size. If the total isn't known, returns the
   // transferred size as a string (e.g.: "100 MB").
-  base::string16 GetProgressSizesString() const;
+  std::u16string GetProgressSizesString() const;
 
   // Returns a long descriptive string for a download that's in the INTERRUPTED
   // state. For other downloads, the returned string will be empty.
-  base::string16 GetInterruptReasonText() const;
+  std::u16string GetInterruptReasonText() const;
 
   // Returns a short one-line status string for the download.
-  base::string16 GetStatusText() const;
+  std::u16string GetStatusText() const;
 
   // Returns a string suitable for use as a tooltip. For a regular download, the
   // tooltip is the filename. For an interrupted download, the string states the
@@ -75,22 +76,17 @@ class DownloadUIModel {
   // example:
   //    Report.pdf
   //    Network disconnected
-  // |font_list| and |max_width| are used to elide the filename and/or interrupt
-  // reason as necessary to keep the width of the tooltip text under
-  // |max_width|. The tooltip will be at most 2 lines.
-  base::string16 GetTooltipText(const gfx::FontList& font_list,
-                                int max_width) const;
+  std::u16string GetTooltipText() const;
 
-  // Get the warning text to display for a dangerous download. The |base_width|
-  // is the maximum width of an embedded filename (if there is one). The metrics
-  // for the filename will be based on |font_list|. Should only be called if
-  // IsDangerous() is true.
-  base::string16 GetWarningText(const gfx::FontList& font_list,
-                                int base_width) const;
+  // Get the warning text to display for a dangerous download. |filename| is the
+  // (possibly-elided) filename; if it is present in the resulting string,
+  // |offset| will be set to the starting position of the filename.
+  std::u16string GetWarningText(const std::u16string& filename,
+                                size_t* offset) const;
 
   // Get the caption text for a button for confirming a dangerous download
   // warning.
-  base::string16 GetWarningConfirmButtonText() const;
+  std::u16string GetWarningConfirmButtonText() const;
 
   // Returns the profile associated with this download.
   virtual Profile* profile() const;
@@ -100,7 +96,7 @@ class DownloadUIModel {
 
   // Returns the localized status text for an in-progress download. This
   // is the progress status used in the WebUI interface.
-  virtual base::string16 GetTabProgressStatusText() const;
+  virtual std::u16string GetTabProgressStatusText() const;
 
   // Get the number of bytes that has completed so far.
   virtual int64_t GetCompletedBytes() const;
@@ -121,6 +117,10 @@ class DownloadUIModel {
   // Is this considered a malicious download with very high confidence?
   // Implies IsDangerous() and MightBeMalicious().
   virtual bool IsMalicious() const;
+
+  // Is this download a mixed content download, but not something more severe?
+  // Implies IsDangerous() and !IsMalicious().
+  virtual bool IsMixedContent() const;
 
   // Is safe browsing download feedback feature available for this download?
   virtual bool ShouldAllowDownloadFeedback() const;
@@ -181,6 +181,11 @@ class DownloadUIModel {
   virtual void SetDangerLevel(
       safe_browsing::DownloadFileType::DangerLevel danger_level);
 
+  // Return the mixed content status determined during download target
+  // determination.
+  virtual download::DownloadItem::MixedContentStatus GetMixedContentStatus()
+      const;
+
   // Open the download using the platform handler for the download. The behavior
   // of this method will be different from DownloadItem::OpenDownload() if
   // ShouldPreferOpeningInBrowser().
@@ -218,6 +223,9 @@ class DownloadUIModel {
 
   // Returns true if the download will be auto-opened when complete.
   virtual bool GetOpenWhenComplete() const;
+
+  // Returns true if the download will be auto-opened when complete by policy.
+  virtual bool IsOpenWhenCompleteByPolicy() const;
 
   // Simple calculation of the amount of time remaining to completion. Fills
   // |*remaining| with the amount of time remaining if successful. Fails and
@@ -274,6 +282,10 @@ class DownloadUIModel {
   // Returns the URL represented by this download.
   virtual GURL GetURL() const;
 
+  // Returns whether the download request was initiated in response to a user
+  // gesture.
+  virtual bool HasUserGesture() const;
+
   // Returns the most recent failure reason for this download. Returns
   // |FailState::NO_FAILURE| if there is no previous failure reason.
   virtual offline_items_collection::FailState GetLastFailState() const;
@@ -300,6 +312,14 @@ class DownloadUIModel {
                               DownloadCommands::Command command);
 #endif
 
+#if BUILDFLAG(FULL_SAFE_BROWSING)
+  // Complete the Safe Browsing scan early.
+  virtual void CompleteSafeBrowsingScan();
+#endif
+
+  // Whether the dropdown menu button should be shown or not.
+  virtual bool ShouldShowDropdown() const;
+
  protected:
   // Returns the MIME type of the download.
   virtual std::string GetMimeType() const;
@@ -311,7 +331,9 @@ class DownloadUIModel {
 
  private:
   // Returns a string indicating the status of an in-progress download.
-  base::string16 GetInProgressStatusString() const;
+  std::u16string GetInProgressStatusString() const;
+
+  base::WeakPtrFactory<DownloadUIModel> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(DownloadUIModel);
 };

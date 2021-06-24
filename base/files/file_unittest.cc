@@ -14,7 +14,12 @@
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "build/buildflag.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(ENABLE_BASE_TRACING)
+#include "third_party/perfetto/include/perfetto/test/traced_value_test_support.h"  // no-presubmit-check nogncheck
+#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 
 using base::File;
 using base::FilePath;
@@ -432,6 +437,29 @@ TEST(FileTest, DISABLED_TouchGetInfo) {
             creation_time.ToInternalValue());
 }
 
+// Test we can retrieve the file's creation time through File::GetInfo().
+TEST(FileTest, GetInfoForCreationTime) {
+  int64_t before_creation_time_s =
+      base::Time::Now().ToDeltaSinceWindowsEpoch().InSeconds();
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  FilePath file_path = temp_dir.GetPath().AppendASCII("test_file");
+  File file(file_path, base::File::FLAG_CREATE | base::File::FLAG_READ |
+                           base::File::FLAG_WRITE);
+  EXPECT_TRUE(file.IsValid());
+
+  int64_t after_creation_time_s =
+      base::Time::Now().ToDeltaSinceWindowsEpoch().InSeconds();
+
+  base::File::Info info;
+  EXPECT_TRUE(file.GetInfo(&info));
+  EXPECT_GE(info.creation_time.ToDeltaSinceWindowsEpoch().InSeconds(),
+            before_creation_time_s);
+  EXPECT_LE(info.creation_time.ToDeltaSinceWindowsEpoch().InSeconds(),
+            after_creation_time_s);
+}
+
 TEST(FileTest, ReadAtCurrentPosition) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
@@ -541,6 +569,22 @@ TEST(FileTest, DuplicateDeleteOnClose) {
   ASSERT_FALSE(base::PathExists(file_path));
 }
 
+#if BUILDFLAG(ENABLE_BASE_TRACING)
+TEST(FileTest, TracedValueSupport) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  FilePath file_path = temp_dir.GetPath().AppendASCII("file");
+
+  File file(file_path,
+            (base::File::FLAG_CREATE | base::File::FLAG_READ |
+             base::File::FLAG_WRITE | base::File::FLAG_DELETE_ON_CLOSE));
+  ASSERT_TRUE(file.IsValid());
+
+  EXPECT_EQ(perfetto::TracedValueToString(file),
+            "{is_valid:true,created:true,async:false,error_details:FILE_OK}");
+}
+#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
+
 #if defined(OS_WIN)
 // Flakily times out on Windows, see http://crbug.com/846276.
 #define MAYBE_WriteDataToLargeOffset DISABLED_WriteDataToLargeOffset
@@ -576,12 +620,12 @@ TEST(FileTest, GetInfoForDirectory) {
       temp_dir.GetPath().Append(FILE_PATH_LITERAL("gpfi_test"));
   ASSERT_TRUE(CreateDirectory(empty_dir));
 
-  base::File dir(::CreateFile(
-      base::as_wcstr(empty_dir.value()), GENERIC_READ | GENERIC_WRITE,
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-      OPEN_EXISTING,
-      FILE_FLAG_BACKUP_SEMANTICS,  // Needed to open a directory.
-      NULL));
+  base::File dir(
+      ::CreateFile(empty_dir.value().c_str(), GENERIC_READ | GENERIC_WRITE,
+                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                   OPEN_EXISTING,
+                   FILE_FLAG_BACKUP_SEMANTICS,  // Needed to open a directory.
+                   NULL));
   ASSERT_TRUE(dir.IsValid());
 
   base::File::Info info;

@@ -4,8 +4,10 @@
 
 #include "extensions/shell/browser/shell_app_delegate.h"
 
+#include "content/public/browser/color_chooser.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "extensions/browser/media_capture_util.h"
 #include "extensions/common/constants.h"
 #include "extensions/shell/browser/shell_extension_web_contents_observer.h"
@@ -22,11 +24,16 @@ void ShellAppDelegate::InitWebContents(content::WebContents* web_contents) {
   ShellExtensionWebContentsObserver::CreateForWebContents(web_contents);
 }
 
-void ShellAppDelegate::RenderViewCreated(
-    content::RenderViewHost* render_view_host) {
-  // The views implementation of AppWindow takes focus via SetInitialFocus()
-  // and views::WebView but app_shell is aura-only and must do it manually.
-  content::WebContents::FromRenderViewHost(render_view_host)->Focus();
+void ShellAppDelegate::RenderFrameCreated(
+    content::RenderFrameHost* frame_host) {
+  content::WebContents* contents =
+      content::WebContents::FromRenderFrameHost(frame_host);
+  // Only do this for the initial main frame.
+  if (frame_host == contents->GetMainFrame()) {
+    // The views implementation of AppWindow takes focus via SetInitialFocus()
+    // and views::WebView but app_shell is aura-only and must do it manually.
+    contents->Focus();
+  }
 }
 
 void ShellAppDelegate::ResizeWebContents(content::WebContents* web_contents,
@@ -45,13 +52,14 @@ content::WebContents* ShellAppDelegate::OpenURLFromTab(
 void ShellAppDelegate::AddNewContents(
     content::BrowserContext* context,
     std::unique_ptr<content::WebContents> new_contents,
+    const GURL& target_url,
     WindowOpenDisposition disposition,
     const gfx::Rect& initial_rect,
     bool user_gesture) {
   NOTIMPLEMENTED();
 }
 
-content::ColorChooser* ShellAppDelegate::ShowColorChooser(
+std::unique_ptr<content::ColorChooser> ShellAppDelegate::ShowColorChooser(
     content::WebContents* web_contents,
     SkColor initial_color) {
   NOTIMPLEMENTED();
@@ -60,7 +68,7 @@ content::ColorChooser* ShellAppDelegate::ShowColorChooser(
 
 void ShellAppDelegate::RunFileChooser(
     content::RenderFrameHost* render_frame_host,
-    std::unique_ptr<content::FileSelectListener> listener,
+    scoped_refptr<content::FileSelectListener> listener,
     const blink::mojom::FileChooserParams& params) {
   NOTIMPLEMENTED();
   listener->FileSelectionCanceled();
@@ -78,7 +86,7 @@ void ShellAppDelegate::RequestMediaAccessPermission(
 bool ShellAppDelegate::CheckMediaAccessPermission(
     content::RenderFrameHost* render_frame_host,
     const GURL& security_origin,
-    blink::MediaStreamType type,
+    blink::mojom::MediaStreamType type,
     const Extension* extension) {
   media_capture_util::VerifyMediaAccessPermission(type, extension);
   return true;
@@ -99,7 +107,7 @@ bool ShellAppDelegate::IsWebContentsVisible(
   return true;
 }
 
-void ShellAppDelegate::SetTerminatingCallback(const base::Closure& callback) {
+void ShellAppDelegate::SetTerminatingCallback(base::OnceClosure callback) {
   // TODO(jamescook): Should app_shell continue to close the app window
   // manually or should it use a browser termination callback like Chrome?
 }
@@ -109,12 +117,12 @@ bool ShellAppDelegate::TakeFocus(content::WebContents* web_contents,
   return false;
 }
 
-gfx::Size ShellAppDelegate::EnterPictureInPicture(
+content::PictureInPictureResult ShellAppDelegate::EnterPictureInPicture(
     content::WebContents* web_contents,
     const viz::SurfaceId& surface_id,
     const gfx::Size& natural_size) {
   NOTREACHED();
-  return gfx::Size();
+  return content::PictureInPictureResult::kNotSupported;
 }
 
 void ShellAppDelegate::ExitPictureInPicture() {

@@ -8,10 +8,12 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "url/gurl.h"
 
@@ -27,14 +29,13 @@ IN_PROC_BROWSER_TEST_F(PrefsInternalsTest, TestPrefsAreServed) {
                                               fake_homepage_url.spec());
 
   // First, check that navigation succeeds.
-  GURL kUrl("chrome://prefs-internals");
+  GURL kUrl(content::GetWebUIURL(chrome::kChromeUIPrefsInternalsHost));
   ui_test_utils::NavigateToURL(browser(), kUrl);
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
   EXPECT_EQ(kUrl, web_contents->GetLastCommittedURL());
   EXPECT_FALSE(web_contents->IsCrashed());
-  EXPECT_FALSE(web_contents->GetInterstitialPage());
 
   // It's difficult to test the content of the page without duplicating the
   // implementation, but we can at least assert that something is being shown.

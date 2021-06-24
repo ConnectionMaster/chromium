@@ -17,7 +17,11 @@
 #include "base/observer_list.h"
 #include "components/sync/model/string_ordinal.h"
 
-namespace app_list {
+namespace ash {
+
+namespace test {
+class AppsGridViewTest;
+}  // namespace test
 
 class AppListItem;
 
@@ -54,10 +58,6 @@ class APP_LIST_MODEL_EXPORT AppListItemList {
   // Add a "page break" item right after the specified item in item list.
   AppListItem* AddPageBreakItemAfter(const AppListItem* previous_item);
 
-  // Highlights the given item in the app list. If not present and it is later
-  // added, the item will be highlighted after being added.
-  void HighlightItemInstalledFromUI(const std::string& id);
-
   AppListItem* item_at(size_t index) {
     DCHECK_LT(index, app_list_items_.size());
     return app_list_items_[index].get();
@@ -71,6 +71,7 @@ class APP_LIST_MODEL_EXPORT AppListItemList {
  private:
   friend class AppListItemListTest;
   friend class AppListModel;
+  friend class test::AppsGridViewTest;
 
   // Returns a unique, valid StringOrdinal immediately before |position| or at
   // the end of the list if |position| is invalid.
@@ -112,12 +113,11 @@ class APP_LIST_MODEL_EXPORT AppListItemList {
   void FixItemPosition(size_t index);
 
   std::vector<std::unique_ptr<AppListItem>> app_list_items_;
-  base::ObserverList<AppListItemListObserver, true>::Unchecked observers_;
-  std::string highlighted_id_;
+  base::ObserverList<AppListItemListObserver, true> observers_;
 
   DISALLOW_COPY_AND_ASSIGN(AppListItemList);
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_MODEL_APP_LIST_ITEM_LIST_H_

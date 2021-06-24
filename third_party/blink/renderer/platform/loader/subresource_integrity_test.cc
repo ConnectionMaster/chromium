@@ -4,8 +4,8 @@
 
 #include "third_party/blink/renderer/platform/loader/subresource_integrity.h"
 
+#include "base/cxx17_backports.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/stl_util.h"
 #include "services/network/public/mojom/fetch_api.mojom-blink.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/crypto.h"
@@ -21,7 +21,6 @@
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
-#include "third_party/blink/renderer/platform/wtf/dtoa/utils.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -189,7 +188,7 @@ class SubresourceIntegrityTest : public testing::Test {
 
   struct TestCase {
     const KURL url;
-    network::mojom::FetchRequestMode request_mode;
+    network::mojom::RequestMode request_mode;
     network::mojom::FetchResponseType response_type;
     const Expectation expectation;
   };
@@ -219,20 +218,19 @@ class SubresourceIntegrityTest : public testing::Test {
 
   Resource* CreateTestResource(
       const KURL& url,
-      network::mojom::FetchRequestMode request_mode,
+      network::mojom::RequestMode request_mode,
       network::mojom::FetchResponseType response_type) {
-    Resource* resource = RawResource::CreateForTest(
-        url, SecurityOrigin::CreateUniqueOpaque(), ResourceType::kRaw);
-
     ResourceRequest request;
-    request.SetURL(url);
-    request.SetFetchRequestMode(request_mode);
+    request.SetUrl(url);
+    request.SetMode(request_mode);
+    request.SetRequestorOrigin(SecurityOrigin::CreateUniqueOpaque());
+    Resource* resource =
+        RawResource::CreateForTest(request, ResourceType::kRaw);
 
     ResourceResponse response(url);
     response.SetHttpStatusCode(200);
     response.SetType(response_type);
 
-    resource->SetResourceRequest(request);
     resource->SetResponse(response);
     return resource;
   }
@@ -259,9 +257,6 @@ TEST_F(SubresourceIntegrityTest, Prioritization) {
   EXPECT_EQ(
       IntegrityAlgorithm::kSha512,
       std::max({IntegrityAlgorithm::kSha512, IntegrityAlgorithm::kSha512}));
-  EXPECT_EQ(
-      IntegrityAlgorithm::kEd25519,
-      std::max({IntegrityAlgorithm::kEd25519, IntegrityAlgorithm::kEd25519}));
 
   // Check a mix of algorithms.
   EXPECT_EQ(IntegrityAlgorithm::kSha384,
@@ -270,11 +265,6 @@ TEST_F(SubresourceIntegrityTest, Prioritization) {
   EXPECT_EQ(IntegrityAlgorithm::kSha512,
             std::max({IntegrityAlgorithm::kSha384, IntegrityAlgorithm::kSha512,
                       IntegrityAlgorithm::kSha256}));
-  EXPECT_EQ(
-      IntegrityAlgorithm::kEd25519,
-      std::max({IntegrityAlgorithm::kSha384, IntegrityAlgorithm::kSha512,
-                IntegrityAlgorithm::kEd25519, IntegrityAlgorithm::kSha512,
-                IntegrityAlgorithm::kSha256, IntegrityAlgorithm::kSha512}));
 }
 
 TEST_F(SubresourceIntegrityTest, ParseAlgorithm) {
@@ -285,12 +275,7 @@ TEST_F(SubresourceIntegrityTest, ParseAlgorithm) {
   ExpectAlgorithm("sha-384-", IntegrityAlgorithm::kSha384);
   ExpectAlgorithm("sha-512-", IntegrityAlgorithm::kSha512);
 
-  {
-    ScopedSignatureBasedIntegrityForTest signature_based_integrity(true);
-    ExpectAlgorithm("ed25519-", IntegrityAlgorithm::kEd25519);
-  }
   ScopedSignatureBasedIntegrityForTest signature_based_integrity(false);
-  ExpectAlgorithmFailure("ed25519-", SubresourceIntegrity::kAlgorithmUnknown);
 
   ExpectAlgorithmFailure("sha1-", SubresourceIntegrity::kAlgorithmUnknown);
   ExpectAlgorithmFailure("sha-1-", SubresourceIntegrity::kAlgorithmUnknown);
@@ -298,8 +283,6 @@ TEST_F(SubresourceIntegrityTest, ParseAlgorithm) {
                          SubresourceIntegrity::kAlgorithmUnknown);
   ExpectAlgorithmFailure("foobar-", SubresourceIntegrity::kAlgorithmUnknown);
   ExpectAlgorithmFailure("-", SubresourceIntegrity::kAlgorithmUnknown);
-  ExpectAlgorithmFailure("ed-25519-", SubresourceIntegrity::kAlgorithmUnknown);
-  ExpectAlgorithmFailure("ed25518-", SubresourceIntegrity::kAlgorithmUnknown);
 
   ExpectAlgorithmFailure("sha256", SubresourceIntegrity::kAlgorithmUnparsable);
   ExpectAlgorithmFailure("", SubresourceIntegrity::kAlgorithmUnparsable);
@@ -476,25 +459,6 @@ TEST_F(SubresourceIntegrityTest, Parsing) {
   ExpectParse("sha256-BpfBw7ivV8q2jLiT13fxDYAe2tJllusRSZ273h2nFSE=?foo:bar",
               "BpfBw7ivV8q2jLiT13fxDYAe2tJllusRSZ273h2nFSE=",
               IntegrityAlgorithm::kSha256);
-
-  {
-    ScopedSignatureBasedIntegrityForTest signature_based_integrity(false);
-    ExpectEmptyParseResult("ed25519-xxxx");
-    ExpectEmptyParseResult(
-        "ed25519-qGFmwTxlocg707D1cX4w60iTwtfwbMLf8ITDyfko7s0=");
-  }
-
-  ScopedSignatureBasedIntegrityForTest signature_based_integrity(true);
-  ExpectParse("ed25519-xxxx", "xxxx", IntegrityAlgorithm::kEd25519);
-  ExpectParse("ed25519-qGFmwTxlocg707D1cX4w60iTwtfwbMLf8ITDyfko7s0=",
-              "qGFmwTxlocg707D1cX4w60iTwtfwbMLf8ITDyfko7s0=",
-              IntegrityAlgorithm::kEd25519);
-  ExpectParse("ed25519-qGFmwTxlocg707D1cX4w60iTwtfwbMLf8ITDyfko7s0=?foo=bar",
-              "qGFmwTxlocg707D1cX4w60iTwtfwbMLf8ITDyfko7s0=",
-              IntegrityAlgorithm::kEd25519);
-  ExpectEmptyParseResult("ed-25519-xxx");
-  ExpectEmptyParseResult(
-      "ed-25519-qGFmwTxlocg707D1cX4w60iTwtfwbMLf8ITDyfko7s0=");
 }
 
 TEST_F(SubresourceIntegrityTest, ParsingBase64) {
@@ -509,28 +473,27 @@ TEST_F(SubresourceIntegrityTest, ParsingBase64) {
 // requests, successful and failing CORS checks as well as when the response was
 // handled by a service worker.
 TEST_F(SubresourceIntegrityTest, OriginIntegrity) {
-  using network::mojom::FetchRequestMode;
   using network::mojom::FetchResponseType;
+  using network::mojom::RequestMode;
   constexpr auto kOk = kIntegritySuccess;
   constexpr auto kFail = kIntegrityFailure;
   const KURL& url = sec_url;
 
   const TestCase cases[] = {
       // FetchResponseType::kError never arrives because it is a loading error.
-      {url, FetchRequestMode::kNoCors, FetchResponseType::kBasic, kOk},
-      {url, FetchRequestMode::kNoCors, FetchResponseType::kCors, kOk},
-      {url, FetchRequestMode::kNoCors, FetchResponseType::kDefault, kOk},
-      {url, FetchRequestMode::kNoCors, FetchResponseType::kOpaque, kFail},
-      {url, FetchRequestMode::kNoCors, FetchResponseType::kOpaqueRedirect,
-       kFail},
+      {url, RequestMode::kNoCors, FetchResponseType::kBasic, kOk},
+      {url, RequestMode::kNoCors, FetchResponseType::kCors, kOk},
+      {url, RequestMode::kNoCors, FetchResponseType::kDefault, kOk},
+      {url, RequestMode::kNoCors, FetchResponseType::kOpaque, kFail},
+      {url, RequestMode::kNoCors, FetchResponseType::kOpaqueRedirect, kFail},
 
       // FetchResponseType::kError never arrives because it is a loading error.
       // FetchResponseType::kOpaque and FetchResponseType::kOpaqueResponse
       // never arrives: even when service worker is involved, it's handled as
       // an error.
-      {url, FetchRequestMode::kCors, FetchResponseType::kBasic, kOk},
-      {url, FetchRequestMode::kCors, FetchResponseType::kCors, kOk},
-      {url, FetchRequestMode::kCors, FetchResponseType::kDefault, kOk},
+      {url, RequestMode::kCors, FetchResponseType::kBasic, kOk},
+      {url, RequestMode::kCors, FetchResponseType::kCors, kOk},
+      {url, RequestMode::kCors, FetchResponseType::kDefault, kOk},
   };
 
   for (const auto& test : cases) {
@@ -587,9 +550,6 @@ TEST_F(SubresourceIntegrityTest, FindBestAlgorithm) {
   EXPECT_EQ(IntegrityAlgorithm::kSha512,
             SubresourceIntegrity::FindBestAlgorithm(
                 IntegrityMetadataSet({{"", IntegrityAlgorithm::kSha512}})));
-  EXPECT_EQ(IntegrityAlgorithm::kEd25519,
-            SubresourceIntegrity::FindBestAlgorithm(
-                IntegrityMetadataSet({{"", IntegrityAlgorithm::kEd25519}})));
 
   // Test combinations of multiple algorithms.
   EXPECT_EQ(IntegrityAlgorithm::kSha384,
@@ -601,26 +561,6 @@ TEST_F(SubresourceIntegrityTest, FindBestAlgorithm) {
                 IntegrityMetadataSet({{"", IntegrityAlgorithm::kSha256},
                                       {"", IntegrityAlgorithm::kSha512},
                                       {"", IntegrityAlgorithm::kSha384}})));
-  EXPECT_EQ(IntegrityAlgorithm::kEd25519,
-            SubresourceIntegrity::FindBestAlgorithm(
-                IntegrityMetadataSet({{"", IntegrityAlgorithm::kSha256},
-                                      {"", IntegrityAlgorithm::kSha512},
-                                      {"", IntegrityAlgorithm::kEd25519}})));
-}
-
-TEST_F(SubresourceIntegrityTest, GetCheckFunctionForAlgorithm) {
-  EXPECT_TRUE(SubresourceIntegrity::CheckSubresourceIntegrityDigest ==
-              SubresourceIntegrity::GetCheckFunctionForAlgorithm(
-                  IntegrityAlgorithm::kSha256));
-  EXPECT_TRUE(SubresourceIntegrity::CheckSubresourceIntegrityDigest ==
-              SubresourceIntegrity::GetCheckFunctionForAlgorithm(
-                  IntegrityAlgorithm::kSha384));
-  EXPECT_TRUE(SubresourceIntegrity::CheckSubresourceIntegrityDigest ==
-              SubresourceIntegrity::GetCheckFunctionForAlgorithm(
-                  IntegrityAlgorithm::kSha512));
-  EXPECT_TRUE(SubresourceIntegrity::CheckSubresourceIntegritySignature ==
-              SubresourceIntegrity::GetCheckFunctionForAlgorithm(
-                  IntegrityAlgorithm::kEd25519));
 }
 
 }  // namespace blink

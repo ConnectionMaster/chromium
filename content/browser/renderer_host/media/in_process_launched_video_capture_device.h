@@ -20,7 +20,7 @@ class InProcessLaunchedVideoCaptureDevice : public LaunchedVideoCaptureDevice {
   ~InProcessLaunchedVideoCaptureDevice() override;
 
   void GetPhotoState(
-      media::VideoCaptureDevice::GetPhotoStateCallback callback) const override;
+      media::VideoCaptureDevice::GetPhotoStateCallback callback) override;
   void SetPhotoOptions(
       media::mojom::PhotoSettingsPtr settings,
       media::VideoCaptureDevice::SetPhotoOptionsCallback callback) override;
@@ -33,7 +33,8 @@ class InProcessLaunchedVideoCaptureDevice : public LaunchedVideoCaptureDevice {
   void SetDesktopCaptureWindowIdAsync(gfx::NativeViewId window_id,
                                       base::OnceClosure done_cb) override;
 
-  void OnUtilizationReport(int frame_feedback_id, double utilization) override;
+  void OnUtilizationReport(int frame_feedback_id,
+                           media::VideoCaptureFeedback feedback) override;
 
  private:
   void SetDesktopCaptureWindowIdOnDeviceThread(

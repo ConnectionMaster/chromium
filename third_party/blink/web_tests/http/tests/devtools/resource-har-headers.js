@@ -3,9 +3,10 @@
 // found in the LICENSE file.
 
 (async function() {
+  'use strict';
   TestRunner.addResult(`Tests the nondeterministic bits of HAR conversion via the magic of hard-coded values.\n`);
-  await TestRunner.loadModule('application_test_runner');
-  await TestRunner.loadModule('network_test_runner');
+  await TestRunner.loadModule('console'); await TestRunner.loadTestModule('application_test_runner');
+  await TestRunner.loadTestModule('network_test_runner');
 
   function visibleNewlines(s) {
     return s.replace(/\r/, '\\r').replace(/\n/, '\\n');
@@ -18,7 +19,6 @@
     request.responseHeaders = [{name: 'Response', value: 'response-value'}];
     request.responseHeadersText = 'HTTP/1.1 200 OK\r\nResponse: headers-text';
 
-    request.documentURL = 'http://example.com/inspector-test.js';
     request.requestMethod = 'GET';
     request.mimeType = 'text/html';
     request.statusCode = 200;
@@ -82,7 +82,7 @@
     '_transferSize': 'formatAsTypeName',
     '_error': 'skip'
   };
-  var har = await SDK.HARLog.Entry.build(testRequest);
+  var har = await NetworkTestRunner.buildHARLogEntry(testRequest);
   TestRunner.addObject(har, stillNondeterministic, '', 'HAR:');
   TestRunner.completeTest();
 })();

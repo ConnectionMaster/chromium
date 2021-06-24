@@ -8,14 +8,22 @@
 #include <utility>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/containers/circular_deque.h"
-#include "base/logging.h"
 #include "base/trace_event/memory_usage_estimator.h"
 #include "net/spdy/spdy_buffer.h"
 #include "net/spdy/spdy_buffer_producer.h"
 #include "net/spdy/spdy_stream.h"
 
 namespace net {
+
+bool IsSpdyFrameTypeWriteCapped(spdy::SpdyFrameType frame_type) {
+  return frame_type == spdy::SpdyFrameType::RST_STREAM ||
+         frame_type == spdy::SpdyFrameType::SETTINGS ||
+         frame_type == spdy::SpdyFrameType::WINDOW_UPDATE ||
+         frame_type == spdy::SpdyFrameType::PING ||
+         frame_type == spdy::SpdyFrameType::GOAWAY;
+}
 
 SpdyWriteQueue::PendingWrite::PendingWrite() = default;
 
@@ -36,13 +44,10 @@ SpdyWriteQueue::PendingWrite::PendingWrite(PendingWrite&& other) = default;
 SpdyWriteQueue::PendingWrite& SpdyWriteQueue::PendingWrite::operator=(
     PendingWrite&& other) = default;
 
-size_t SpdyWriteQueue::PendingWrite::EstimateMemoryUsage() const {
-  return base::trace_event::EstimateMemoryUsage(frame_producer);
-}
-
 SpdyWriteQueue::SpdyWriteQueue() : removing_writes_(false) {}
 
 SpdyWriteQueue::~SpdyWriteQueue() {
+  DCHECK_GE(num_queued_capped_frames_, 0);
   Clear();
 }
 
@@ -68,6 +73,10 @@ void SpdyWriteQueue::Enqueue(
   queue_[priority].push_back(
       {frame_type, std::move(frame_producer), stream,
        MutableNetworkTrafficAnnotationTag(traffic_annotation)});
+  if (IsSpdyFrameTypeWriteCapped(frame_type)) {
+    DCHECK_GE(num_queued_capped_frames_, 0);
+    num_queued_capped_frames_++;
+  }
 }
 
 bool SpdyWriteQueue::Dequeue(
@@ -86,6 +95,10 @@ bool SpdyWriteQueue::Dequeue(
       *traffic_annotation = pending_write.traffic_annotation;
       if (pending_write.has_stream)
         DCHECK(stream->get());
+      if (IsSpdyFrameTypeWriteCapped(*frame_type)) {
+        num_queued_capped_frames_--;
+        DCHECK_GE(num_queued_capped_frames_, 0);
+      }
       return true;
     }
   }
@@ -116,6 +129,10 @@ void SpdyWriteQueue::RemovePendingWritesForStream(SpdyStream* stream) {
   base::circular_deque<PendingWrite>& queue = queue_[priority];
   for (auto it = queue.begin(); it != queue.end();) {
     if (it->stream.get() == stream) {
+      if (IsSpdyFrameTypeWriteCapped(it->frame_type)) {
+        num_queued_capped_frames_--;
+        DCHECK_GE(num_queued_capped_frames_, 0);
+      }
       erased_buffer_producers.push_back(std::move(it->frame_producer));
       it = queue.erase(it);
     } else {
@@ -141,6 +158,10 @@ void SpdyWriteQueue::RemovePendingWritesForStreamsAfter(
     for (auto it = queue.begin(); it != queue.end();) {
       if (it->stream.get() && (it->stream->stream_id() > last_good_stream_id ||
                                it->stream->stream_id() == 0)) {
+        if (IsSpdyFrameTypeWriteCapped(it->frame_type)) {
+          num_queued_capped_frames_--;
+          DCHECK_GE(num_queued_capped_frames_, 0);
+        }
         erased_buffer_producers.push_back(std::move(it->frame_producer));
         it = queue.erase(it);
       } else {
@@ -196,10 +217,7 @@ void SpdyWriteQueue::Clear() {
     queue_[i].clear();
   }
   removing_writes_ = false;
-}
-
-size_t SpdyWriteQueue::EstimateMemoryUsage() const {
-  return base::trace_event::EstimateMemoryUsage(queue_);
+  num_queued_capped_frames_ = 0;
 }
 
 }  // namespace net

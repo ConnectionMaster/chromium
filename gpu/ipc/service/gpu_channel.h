@@ -17,37 +17,43 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/process/process.h"
+#include "base/process/process_handle.h"
 #include "base/single_thread_task_runner.h"
 #include "base/trace_event/memory_dump_provider.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
+#include "gpu/command_buffer/common/capabilities.h"
 #include "gpu/command_buffer/common/context_result.h"
 #include "gpu/command_buffer/service/sync_point_manager.h"
+#include "gpu/ipc/common/gpu_channel.mojom.h"
 #include "gpu/ipc/service/command_buffer_stub.h"
 #include "gpu/ipc/service/gpu_ipc_service_export.h"
 #include "gpu/ipc/service/shared_image_stub.h"
 #include "ipc/ipc_sender.h"
 #include "ipc/ipc_sync_channel.h"
-#include "ipc/message_router.h"
+#include "mojo/public/cpp/bindings/generic_pending_associated_receiver.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/gl/gl_share_group.h"
 #include "ui/gl/gpu_preference.h"
-
-struct GPUCreateCommandBufferConfig;
 
 namespace base {
 class WaitableEvent;
 }
 
 namespace gpu {
-
 class GpuChannelManager;
 class GpuChannelMessageFilter;
+class ImageDecodeAcceleratorStub;
 class ImageDecodeAcceleratorWorker;
 class Scheduler;
 class SharedImageStub;
+class StreamTexture;
 class SyncPointManager;
+
+namespace mojom {
+class GpuChannel;
+}
 
 // Encapsulates an IPC channel between the GPU process and one renderer
 // process. On the renderer side there's a corresponding GpuChannelHost.
@@ -58,6 +64,7 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
 
   static std::unique_ptr<GpuChannel> Create(
       GpuChannelManager* gpu_channel_manager,
+      const base::UnguessableToken& channel_token,
       Scheduler* scheduler,
       SyncPointManager* sync_point_manager,
       scoped_refptr<gl::GLShareGroup> share_group,
@@ -77,7 +84,16 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
 
   base::WeakPtr<GpuChannel> AsWeakPtr();
 
-  void SetUnhandledMessageListener(IPC::Listener* listener);
+  using CommandBufferMediaBinder =
+      base::RepeatingCallback<void(CommandBufferStub*,
+                                   mojo::GenericPendingAssociatedReceiver)>;
+  void set_command_buffer_media_binder(CommandBufferMediaBinder binder) {
+    command_buffer_media_binder_ = std::move(binder);
+  }
+
+  const CommandBufferMediaBinder& command_buffer_media_binder() const {
+    return command_buffer_media_binder_;
+  }
 
   // Get the GpuChannelManager that owns this channel.
   GpuChannelManager* gpu_channel_manager() const {
@@ -94,8 +110,8 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
     return task_runner_;
   }
 
-  base::ProcessId GetClientPID() const;
-  bool IsConnected() const;
+  void set_client_pid(base::ProcessId pid) { client_pid_ = pid; }
+  base::ProcessId client_pid() const { return client_pid_; }
 
   int client_id() const { return client_id_; }
 
@@ -105,9 +121,10 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
     return io_task_runner_;
   }
 
+  bool is_gpu_host() const { return is_gpu_host_; }
+
   // IPC::Listener implementation:
   bool OnMessageReceived(const IPC::Message& msg) override;
-  void OnChannelConnected(int32_t peer_pid) override;
   void OnChannelError() override;
 
   // IPC::Sender implementation:
@@ -128,9 +145,7 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
 
   // Called to add a listener for a particular message routing ID.
   // Returns true if succeeded.
-  bool AddRoute(int32_t route_id,
-                SequenceId sequence_id,
-                IPC::Listener* listener);
+  bool AddRoute(int32_t route_id, SequenceId sequence_id);
 
   // Called to remove a listener for a particular message routing ID.
   void RemoveRoute(int32_t route_id);
@@ -143,28 +158,67 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
       gfx::GpuMemoryBufferHandle handle,
       const gfx::Size& size,
       gfx::BufferFormat format,
+      gfx::BufferPlane plane,
       SurfaceHandle surface_handle);
 
-  void HandleMessage(const IPC::Message& msg);
+  // Executes a DeferredRequest that was previously received and has now been
+  // scheduled by the scheduler.
+  void ExecuteDeferredRequest(mojom::DeferredRequestParamsPtr params);
 
-  // Some messages such as WaitForGetOffsetInRange and WaitForTokenInRange are
-  // processed as soon as possible because the client is blocked until they
-  // are completed.
-  void HandleOutOfOrderMessage(const IPC::Message& msg);
+  void WaitForTokenInRange(
+      int32_t routing_id,
+      int32_t start,
+      int32_t end,
+      mojom::GpuChannel::WaitForTokenInRangeCallback callback);
+  void WaitForGetOffsetInRange(
+      int32_t routing_id,
+      uint32_t set_get_buffer_count,
+      int32_t start,
+      int32_t end,
+      mojom::GpuChannel::WaitForGetOffsetInRangeCallback callback);
 
-  void HandleMessageForTesting(const IPC::Message& msg);
+  mojom::GpuChannel& GetGpuChannelForTesting();
+
+  ImageDecodeAcceleratorStub* GetImageDecodeAcceleratorStub() const;
 
 #if defined(OS_ANDROID)
   const CommandBufferStub* GetOneStub() const;
+
+  bool CreateStreamTexture(
+      int32_t stream_id,
+      mojo::PendingAssociatedReceiver<mojom::StreamTexture> receiver);
+
+  // Called by StreamTexture to remove the GpuChannel's reference to the
+  // StreamTexture.
+  void DestroyStreamTexture(int32_t stream_id);
 #endif
 
   SharedImageStub* shared_image_stub() const {
     return shared_image_stub_.get();
   }
 
+  void CreateCommandBuffer(
+      mojom::CreateCommandBufferParamsPtr init_params,
+      int32_t routing_id,
+      base::UnsafeSharedMemoryRegion shared_state_shm,
+      mojo::PendingAssociatedReceiver<mojom::CommandBuffer> receiver,
+      mojo::PendingAssociatedRemote<mojom::CommandBufferClient> client,
+      mojom::GpuChannel::CreateCommandBufferCallback callback);
+  void DestroyCommandBuffer(int32_t routing_id);
+
+#if defined(OS_FUCHSIA)
+  void RegisterSysmemBufferCollection(const base::UnguessableToken& id,
+                                      mojo::PlatformHandle token,
+                                      gfx::BufferFormat format,
+                                      gfx::BufferUsage usage,
+                                      bool register_with_image_pipe);
+  void ReleaseSysmemBufferCollection(const base::UnguessableToken& id);
+#endif  // defined(OS_FUCHSIA)
+
  private:
   // Takes ownership of the renderer process handle.
   GpuChannel(GpuChannelManager* gpu_channel_manager,
+             const base::UnguessableToken& channel_token,
              Scheduler* scheduler,
              SyncPointManager* sync_point_manager,
              scoped_refptr<gl::GLShareGroup> share_group,
@@ -175,26 +229,22 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
              bool is_gpu_host,
              ImageDecodeAcceleratorWorker* image_decode_accelerator_worker);
 
-  bool OnControlMessageReceived(const IPC::Message& msg);
-
-  void HandleMessageHelper(const IPC::Message& msg);
+  void OnDestroyCommandBuffer(int32_t route_id);
 
   // Message handlers for control messages.
-  void OnCreateCommandBuffer(const GPUCreateCommandBufferConfig& init_params,
-                             int32_t route_id,
-                             base::UnsafeSharedMemoryRegion shared_state_shm,
-                             gpu::ContextResult* result,
-                             gpu::Capabilities* capabilities);
-  void OnDestroyCommandBuffer(int32_t route_id);
   bool CreateSharedImageStub();
 
   std::unique_ptr<IPC::SyncChannel> sync_channel_;  // nullptr in tests.
   IPC::Sender* channel_;  // Same as sync_channel_.get() except in tests.
 
-  base::ProcessId peer_pid_ = base::kNullProcessId;
+  base::ProcessId client_pid_ = base::kNullProcessId;
 
   // The message filter on the io thread.
   scoped_refptr<GpuChannelMessageFilter> filter_;
+
+  // An optional binder to handle associated interface requests from the Media
+  // stack, targeting a specific CommandBuffer.
+  CommandBufferMediaBinder command_buffer_media_binder_;
 
   // Map of routing id to command buffer stub.
   base::flat_map<int32_t, std::unique_ptr<CommandBufferStub>> stubs_;
@@ -212,11 +262,6 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
   // Sync point manager. Outlives the channel and is guaranteed to outlive the
   // message loop.
   SyncPointManager* const sync_point_manager_;
-
-  IPC::Listener* unhandled_message_listener_ = nullptr;
-
-  // Used to implement message routing functionality to CommandBuffer objects
-  IPC::MessageRouter router_;
 
   // The id of the client who is on the other side of the channel.
   const int32_t client_id_;
@@ -237,10 +282,15 @@ class GPU_IPC_SERVICE_EXPORT GpuChannel : public IPC::Listener,
 
   const bool is_gpu_host_;
 
+#if defined(OS_ANDROID)
+  // Set of active StreamTextures.
+  base::flat_map<int32_t, scoped_refptr<StreamTexture>> stream_textures_;
+#endif
+
   // Member variables should appear before the WeakPtrFactory, to ensure that
   // any WeakPtrs to Controller are invalidated before its members variable's
   // destructors are executed, rendering them invalid.
-  base::WeakPtrFactory<GpuChannel> weak_factory_;
+  base::WeakPtrFactory<GpuChannel> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(GpuChannel);
 };

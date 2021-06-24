@@ -17,13 +17,13 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
-#include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/trace_event/trace_log.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/tracing/crash_service_uploader.h"
-#include "components/heap_profiling/supervisor.h"
+#include "components/heap_profiling/multi_process/supervisor.h"
 #include "components/services/heap_profiling/public/cpp/controller.h"
 #include "components/services/heap_profiling/public/cpp/settings.h"
 #include "components/version_info/version_info.h"
@@ -51,8 +51,7 @@ const char kOOPHeapProfilingUploadUrl[] = "upload_url";
 void OnTraceUploadComplete(TraceCrashServiceUploader* uploader,
                            bool success,
                            const std::string& feedback) {
-  UMA_HISTOGRAM_BOOLEAN("OutOfProcessHeapProfiling.UploadTrace.Success",
-                        success);
+  UMA_HISTOGRAM_BOOLEAN("HeapProfiling.UploadTrace.Success", success);
 
   if (!success) {
     LOG(ERROR) << "Cannot upload trace file: " << feedback;
@@ -71,14 +70,14 @@ void UploadTraceToCrashServer(std::string upload_url,
   // account for all potentially too-small traces, we set the lower bounds to
   // 512 bytes. The upper bounds is set to 300MB as an extra-high threshold,
   // just in case something goes wrong.
-  UMA_HISTOGRAM_CUSTOM_COUNTS("OutOfProcessHeapProfiling.UploadTrace.Size",
+  UMA_HISTOGRAM_CUSTOM_COUNTS("HeapProfiling.UploadTrace.Size",
                               file_contents.size(), 512, 300 * 1024 * 1024, 50);
 
   base::Value rules_list(base::Value::Type::LIST);
   base::Value rule(base::Value::Type::DICTIONARY);
   rule.SetKey("rule", base::Value("MEMLOG"));
   rule.SetKey("trigger_name", base::Value(std::move(trigger_name)));
-  rules_list.GetList().push_back(std::move(rule));
+  rules_list.Append(std::move(rule));
 
   std::string sampling_mode = base::StringPrintf("SAMPLING_%u", sampling_rate);
 
@@ -97,10 +96,10 @@ void UploadTraceToCrashServer(std::string upload_url,
   if (!upload_url.empty())
     uploader->SetUploadURL(upload_url);
 
-  uploader->DoUpload(file_contents, content::TraceUploader::COMPRESSED_UPLOAD,
-                     std::move(metadata),
-                     content::TraceUploader::UploadProgressCallback(),
-                     base::Bind(&OnTraceUploadComplete, base::Owned(uploader)));
+  uploader->DoUpload(
+      file_contents, content::TraceUploader::COMPRESSED_UPLOAD,
+      std::move(metadata), content::TraceUploader::UploadProgressCallback(),
+      base::BindOnce(&OnTraceUploadComplete, base::Owned(uploader)));
 }
 
 }  // namespace
@@ -119,9 +118,9 @@ void ProfilingProcessHost::Start() {
   // Developers can still manually upload via chrome://memory-internals.
   if (IsBackgroundHeapProfilingEnabled())
     background_triggers_.StartTimer();
-  metrics_timer_.Start(
-      FROM_HERE, base::TimeDelta::FromHours(24),
-      base::Bind(&ProfilingProcessHost::ReportMetrics, base::Unretained(this)));
+  metrics_timer_.Start(FROM_HERE, base::TimeDelta::FromHours(24),
+                       base::BindRepeating(&ProfilingProcessHost::ReportMetrics,
+                                           base::Unretained(this)));
 }
 
 // static
@@ -141,12 +140,11 @@ void ProfilingProcessHost::SaveTraceWithHeapDumpToFile(
       [](base::FilePath dest, SaveTraceFinishedCallback done, bool success,
          std::string trace) {
         if (!success) {
-          base::CreateSingleThreadTaskRunnerWithTraits(
-              {content::BrowserThread::UI})
-              ->PostTask(FROM_HERE, base::BindOnce(std::move(done), false));
+          content::GetUIThreadTaskRunner({})->PostTask(
+              FROM_HERE, base::BindOnce(std::move(done), false));
           return;
         }
-        base::PostTaskWithTraits(
+        base::ThreadPool::PostTask(
             FROM_HERE, {base::TaskPriority::USER_VISIBLE, base::MayBlock()},
             base::BindOnce(
                 &ProfilingProcessHost::SaveTraceToFileOnBlockingThread,
@@ -167,8 +165,7 @@ void ProfilingProcessHost::RequestProcessReport(std::string trigger_name) {
   auto finish_report_callback = base::BindOnce(
       [](std::string upload_url, std::string trigger_name,
          uint32_t sampling_rate, bool success, std::string trace) {
-        UMA_HISTOGRAM_BOOLEAN("OutOfProcessHeapProfiling.RecordTrace.Success",
-                              success);
+        UMA_HISTOGRAM_BOOLEAN("HeapProfiling.RecordTrace.Success", success);
         if (success) {
           UploadTraceToCrashServer(std::move(upload_url), std::move(trace),
                                    std::move(trigger_name), sampling_rate);
@@ -198,21 +195,21 @@ void ProfilingProcessHost::SaveTraceToFileOnBlockingThread(
   gzFile gz_file = gzdopen(fd, "w");
   if (!gz_file) {
     DLOG(ERROR) << "Cannot compress trace file";
-    base::CreateSingleThreadTaskRunnerWithTraits({content::BrowserThread::UI})
-        ->PostTask(FROM_HERE, base::BindOnce(std::move(done), false));
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(std::move(done), false));
     return;
   }
 
   size_t written_bytes = gzwrite(gz_file, trace.c_str(), trace.size());
   gzclose(gz_file);
 
-  base::CreateSingleThreadTaskRunnerWithTraits({content::BrowserThread::UI})
-      ->PostTask(FROM_HERE, base::BindOnce(std::move(done),
-                                           written_bytes == trace.size()));
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(std::move(done), written_bytes == trace.size()));
 }
 
 void ProfilingProcessHost::ReportMetrics() {
-  UMA_HISTOGRAM_ENUMERATION("OutOfProcessHeapProfiling.ProfilingMode",
+  UMA_HISTOGRAM_ENUMERATION("HeapProfiling.ProfilingMode",
                             Supervisor::GetInstance()->GetMode(), Mode::kCount);
 }
 

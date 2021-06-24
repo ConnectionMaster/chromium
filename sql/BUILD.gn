@@ -18,8 +18,30 @@ component("sql") {
     "internal_api_token.h",
     "meta_table.cc",
     "meta_table.h",
+    "recover_module/btree.cc",
+    "recover_module/btree.h",
+    "recover_module/cursor.cc",
+    "recover_module/cursor.h",
+    "recover_module/integers.cc",
+    "recover_module/integers.h",
+    "recover_module/module.cc",
+    "recover_module/module.h",
+    "recover_module/pager.cc",
+    "recover_module/pager.h",
+    "recover_module/parsing.cc",
+    "recover_module/parsing.h",
+    "recover_module/payload.cc",
+    "recover_module/payload.h",
+    "recover_module/record.cc",
+    "recover_module/record.h",
+    "recover_module/table.cc",
+    "recover_module/table.h",
     "recovery.cc",
     "recovery.h",
+    "sandboxed_vfs.cc",
+    "sandboxed_vfs.h",
+    "sandboxed_vfs_file.cc",
+    "sandboxed_vfs_file.h",
     "sql_features.cc",
     "sql_features.h",
     "sql_memory_dump_provider.cc",
@@ -44,7 +66,7 @@ component("sql") {
 
   # For vfs_wrapper.cc time-machine exclusions.
   if (is_mac) {
-    libs = [
+    frameworks = [
       "CoreFoundation.framework",
       "CoreServices.framework",
     ]
@@ -69,9 +91,7 @@ static_library("test_support") {
     "test/test_helpers.h",
   ]
 
-  public_deps = [
-    ":sql",
-  ]
+  public_deps = [ ":sql" ]
   deps = [
     "//base",
     "//testing/gtest",
@@ -81,19 +101,16 @@ static_library("test_support") {
 
 bundle_data("sql_unittests_bundle_data") {
   testonly = true
-  sources = [
-    "test/data/recovery_387868",
-  ]
-  outputs = [
-    "{{bundle_resources_dir}}/" +
-        "{{source_root_relative_dir}}/{{source_file_part}}",
-  ]
+  sources = [ "test/data/recovery_387868" ]
+  outputs = [ "{{bundle_resources_dir}}/" +
+              "{{source_root_relative_dir}}/{{source_file_part}}" ]
 }
 
 test("sql_unittests") {
   sources = [
     "database_unittest.cc",
     "meta_table_unittest.cc",
+    "recover_module/module_unittest.cc",
     "recovery_unittest.cc",
     "sql_memory_dump_provider_unittest.cc",
     "sqlite_features_unittest.cc",
@@ -104,16 +121,12 @@ test("sql_unittests") {
     "test/paths.cc",
     "test/paths.h",
     "test/run_all_unittests.cc",
-    "test/sql_test_base.cc",
-    "test/sql_test_base.h",
     "test/sql_test_suite.cc",
     "test/sql_test_suite.h",
     "transaction_unittest.cc",
   ]
 
-  data = [
-    "test/data/",
-  ]
+  data = [ "test/data/" ]
 
   deps = [
     ":sql",

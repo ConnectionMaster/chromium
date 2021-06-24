@@ -4,12 +4,12 @@
 
 #include "headless/lib/headless_content_main_delegate.h"
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
-#include "base/debug/crash_logging.h"
 #include "base/environment.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -22,37 +22,37 @@
 #include "build/build_config.h"
 #include "cc/base/switches.h"
 #include "components/crash/core/common/crash_key.h"
+#include "components/crash/core/common/crash_keys.h"
 #include "components/viz/common/switches.h"
 #include "content/public/browser/browser_main_runner.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/profiling.h"
+#include "gpu/config/gpu_switches.h"
 #include "headless/lib/browser/headless_browser_impl.h"
 #include "headless/lib/browser/headless_content_browser_client.h"
 #include "headless/lib/headless_crash_reporter_client.h"
 #include "headless/lib/headless_macros.h"
+#include "headless/lib/renderer/headless_content_renderer_client.h"
 #include "headless/lib/utility/headless_content_utility_client.h"
-#include "services/service_manager/embedder/switches.h"
-#include "services/service_manager/sandbox/switches.h"
+#include "sandbox/policy/switches.h"
+#include "third_party/blink/public/common/switches.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/gfx/switches.h"
 #include "ui/gl/gl_switches.h"
 #include "ui/ozone/public/ozone_switches.h"
 
-#ifdef HEADLESS_USE_EMBEDDED_RESOURCES
+#if defined(HEADLESS_USE_EMBEDDED_RESOURCES)
 #include "headless/embedded_resource_pak.h"
 #endif
 
-#if defined(OS_MACOSX) || defined(OS_WIN)
-#include "components/crash/content/app/crashpad.h"
+#if defined(OS_MAC) || defined(OS_WIN)
+#include "components/crash/core/app/crashpad.h"
 #endif
 
-#if defined(OS_LINUX)
-#include "components/crash/content/app/breakpad_linux.h"
-#endif
-
-#if !defined(CHROME_MULTIPLE_DLL_BROWSER)
-#include "headless/lib/renderer/headless_content_renderer_client.h"
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+#include "components/crash/core/app/breakpad_linux.h"
 #endif
 
 #if defined(OS_POSIX)
@@ -66,12 +66,14 @@ const base::Feature kVirtualTime{"VirtualTime",
                                  base::FEATURE_DISABLED_BY_DEFAULT};
 }
 
+const base::FilePath::CharType kDefaultProfileName[] =
+    FILE_PATH_LITERAL("Default");
+
 namespace {
+
 // Keep in sync with content/common/content_constants_internal.h.
-#if !defined(CHROME_MULTIPLE_DLL_CHILD)
 // TODO(skyostil): Add a tracing test for this.
 const int kTraceEventBrowserProcessSortIndex = -6;
-#endif
 
 HeadlessContentMainDelegate* g_current_headless_content_main_delegate = nullptr;
 
@@ -82,19 +84,93 @@ base::LazyInstance<HeadlessCrashReporterClient>::Leaky g_headless_crash_client =
 
 const char kLogFileName[] = "CHROME_LOG_FILE";
 const char kHeadlessCrashKey[] = "headless";
+
+void InitializeResourceBundle(const base::CommandLine& command_line) {
+  const std::string locale =
+      command_line.GetSwitchValueASCII(::switches::kLang);
+  ui::ResourceBundle::InitSharedInstanceWithLocale(
+      locale, nullptr, ui::ResourceBundle::DO_NOT_LOAD_COMMON_RESOURCES);
+
+#ifdef HEADLESS_USE_EMBEDDED_RESOURCES
+  ui::ResourceBundle::GetSharedInstance().AddDataPackFromBuffer(
+      {kHeadlessResourcePak.contents, kHeadlessResourcePak.length},
+      ui::SCALE_FACTOR_NONE);
+
+#else
+  base::FilePath dir_module;
+
+// Fuchsia doesn't implement DIR_MODULE
+#if !defined(OS_FUCHSIA)
+  bool result = base::PathService::Get(base::DIR_MODULE, &dir_module);
+#else
+  bool result = base::PathService::Get(base::DIR_ASSETS, &dir_module);
+#endif  // !defined(OS_FUCHSIA)
+
+  DCHECK(result);
+
+  // Try loading the headless library pak file first. If it doesn't exist (i.e.,
+  // when we're running with the --headless switch), fall back to the browser's
+  // resource pak.
+  base::FilePath headless_pak =
+      dir_module.Append(FILE_PATH_LITERAL("headless_lib.pak"));
+  if (base::PathExists(headless_pak)) {
+    ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
+        headless_pak, ui::SCALE_FACTOR_NONE);
+    return;
+  }
+
+  // Otherwise, load resources.pak, chrome_100 and chrome_200.
+  base::FilePath resources_pak =
+      dir_module.Append(FILE_PATH_LITERAL("resources.pak"));
+  base::FilePath chrome_100_pak =
+      dir_module.Append(FILE_PATH_LITERAL("chrome_100_percent.pak"));
+  base::FilePath chrome_200_pak =
+      dir_module.Append(FILE_PATH_LITERAL("chrome_200_percent.pak"));
+
+#if defined(OS_MAC) && !defined(COMPONENT_BUILD)
+  // In non component builds, check if fall back in Resources/ folder is
+  // available.
+  if (!base::PathExists(resources_pak)) {
+    resources_pak =
+        dir_module.Append(FILE_PATH_LITERAL("Resources/resources.pak"));
+    chrome_100_pak = dir_module.Append(
+        FILE_PATH_LITERAL("Resources/chrome_100_percent.pak"));
+    chrome_200_pak = dir_module.Append(
+        FILE_PATH_LITERAL("Resources/chrome_200_percent.pak"));
+  }
+#endif
+
+  ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
+      resources_pak, ui::SCALE_FACTOR_NONE);
+  ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
+      chrome_100_pak, ui::SCALE_FACTOR_100P);
+  ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
+      chrome_200_pak, ui::SCALE_FACTOR_200P);
+#endif
+}
+
+void InitApplicationLocale(const base::CommandLine& command_line) {
+  l10n_util::GetApplicationLocale(
+      command_line.GetSwitchValueASCII(::switches::kLang));
+}
+
 }  // namespace
 
 HeadlessContentMainDelegate::HeadlessContentMainDelegate(
     std::unique_ptr<HeadlessBrowserImpl> browser)
-    : browser_(std::move(browser)),
-      headless_crash_key_(base::debug::AllocateCrashKeyString(
-          kHeadlessCrashKey,
-          base::debug::CrashKeySize::Size32)) {
+    : browser_(std::move(browser)) {
+  Init();
+}
+
+HeadlessContentMainDelegate::HeadlessContentMainDelegate(
+    HeadlessBrowser::Options options)
+    : options_(std::make_unique<HeadlessBrowser::Options>(std::move(options))) {
+  Init();
+}
+
+void HeadlessContentMainDelegate::Init() {
   DCHECK(!g_current_headless_content_main_delegate);
   g_current_headless_content_main_delegate = this;
-
-  // Mark any bug reports from headless mode as such.
-  base::debug::SetCrashKeyString(headless_crash_key_, "true");
 }
 
 HeadlessContentMainDelegate::~HeadlessContentMainDelegate() {
@@ -109,13 +185,13 @@ bool HeadlessContentMainDelegate::BasicStartupComplete(int* exit_code) {
   if (!command_line->HasSwitch(::switches::kHeadless))
     command_line->AppendSwitch(::switches::kHeadless);
 
-  if (browser_->options()->single_process_mode)
+  if (options()->single_process_mode)
     command_line->AppendSwitch(::switches::kSingleProcess);
 
-  if (browser_->options()->disable_sandbox)
-    command_line->AppendSwitch(service_manager::switches::kNoSandbox);
+  if (options()->disable_sandbox)
+    command_line->AppendSwitch(sandbox::policy::switches::kNoSandbox);
 
-  if (!browser_->options()->enable_resource_scheduler)
+  if (!options()->enable_resource_scheduler)
     command_line->AppendSwitch(::switches::kDisableResourceScheduler);
 
 #if defined(USE_OZONE)
@@ -134,17 +210,31 @@ bool HeadlessContentMainDelegate::BasicStartupComplete(int* exit_code) {
       command_line->AppendSwitch(::switches::kDisableGpuCompositing);
     }
   } else {
-    if (!browser_->options()->gl_implementation.empty()) {
+    if (!options()->gl_implementation.empty()) {
       command_line->AppendSwitchASCII(::switches::kUseGL,
-                                      browser_->options()->gl_implementation);
+                                      options()->gl_implementation);
+      if (!options()->angle_implementation.empty()) {
+        command_line->AppendSwitchASCII(::switches::kUseANGLE,
+                                        options()->angle_implementation);
+      }
     } else {
       command_line->AppendSwitch(::switches::kDisableGpu);
     }
   }
 
-  content::Profiling::ProcessStarted();
+  // When running headless there is no need to suppress input until content
+  // is ready for display (because it isn't displayed to users). Nor is it
+  // necessary to delay compositor commits in any way via PaintHolding,
+  // but we disable that feature based on the --headless switch. The code is
+  // in content/public/common/content_switch_dependent_feature_overrides.cc
+  command_line->AppendSwitch(::blink::switches::kAllowPreCommitInput);
 
-  SetContentClient(&content_client_);
+#if defined(OS_WIN)
+  command_line->AppendSwitch(
+      ::switches::kDisableGpuProcessForDX12InfoCollection);
+#endif
+
+  content::Profiling::ProcessStarted();
   return false;
 }
 
@@ -165,7 +255,7 @@ void HeadlessContentMainDelegate::InitLogging(
   base::FilePath log_filename(FILE_PATH_LITERAL("chrome_debug.log"));
   if (command_line.GetSwitchValueASCII(::switches::kEnableLogging) ==
       "stderr") {
-    log_mode = logging::LOG_TO_SYSTEM_DEBUG_LOG;
+    log_mode = logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
   } else {
     base::FilePath custom_filename(
         command_line.GetSwitchValuePath(::switches::kEnableLogging));
@@ -183,7 +273,7 @@ void HeadlessContentMainDelegate::InitLogging(
         command_line.GetSwitchValueASCII(::switches::kLoggingLevel);
     int level = 0;
     if (base::StringToInt(log_level, &level) && level >= 0 &&
-        level < logging::LOG_NUM_SEVERITIES) {
+        level < logging::LOGGING_NUM_SEVERITIES) {
       logging::SetMinLogLevel(level);
     } else {
       DLOG(WARNING) << "Bad log level: " << log_level;
@@ -195,8 +285,8 @@ void HeadlessContentMainDelegate::InitLogging(
 
 // In release builds we should log into the user profile directory.
 #ifdef NDEBUG
-  if (!browser_->options()->user_data_dir.empty()) {
-    log_path = browser_->options()->user_data_dir;
+  if (!options()->user_data_dir.empty()) {
+    log_path = options()->user_data_dir;
     log_path = log_path.Append(kDefaultProfileName);
     base::CreateDirectory(log_path);
     log_path = log_path.Append(log_filename);
@@ -218,15 +308,18 @@ void HeadlessContentMainDelegate::InitLogging(
     log_path = base::FilePath::FromUTF8Unsafe(filename);
   }
 
+  // On Windows, having non canonical forward slashes in log file name causes
+  // problems with sandbox filters, see https://crbug.com/859676
+  log_path = log_path.NormalizePathSeparators();
+
   settings.logging_dest = log_mode;
-  settings.log_file = log_path.value().c_str();
+  settings.log_file_path = log_path.value().c_str();
   settings.lock_log = logging::DONT_LOCK_LOG_FILE;
   settings.delete_old = process_type.empty() ? logging::DELETE_OLD_LOG_FILE
                                              : logging::APPEND_TO_OLD_LOG_FILE;
   bool success = logging::InitLogging(settings);
   DCHECK(success);
 }
-
 
 void HeadlessContentMainDelegate::InitCrashReporter(
     const base::CommandLine& command_line) {
@@ -241,27 +334,32 @@ void HeadlessContentMainDelegate::InitCrashReporter(
       command_line.GetSwitchValueASCII(::switches::kProcessType);
   crash_reporter::SetCrashReporterClient(g_headless_crash_client.Pointer());
   g_headless_crash_client.Pointer()->set_crash_dumps_dir(
-      browser_->options()->crash_dumps_dir);
+      options()->crash_dumps_dir);
 
   crash_reporter::InitializeCrashKeys();
+  crash_keys::SetSwitchesFromCommandLine(command_line, nullptr);
 
 #if defined(HEADLESS_USE_BREAKPAD)
-  if (!browser_->options()->enable_crash_reporter) {
+  if (!options()->enable_crash_reporter) {
     DCHECK(!breakpad::IsCrashReporterEnabled());
     return;
   }
-  if (process_type != service_manager::switches::kZygoteProcess)
+  if (process_type != switches::kZygoteProcess)
     breakpad::InitCrashReporter(process_type);
-#elif defined(OS_MACOSX)
+#elif defined(OS_MAC)
   crash_reporter::InitializeCrashpad(process_type.empty(), process_type);
 // Avoid adding this dependency in Windows Chrome non component builds, since
 // crashpad is already enabled.
 // TODO(dvallet): Ideally we would also want to avoid this for component builds.
-#elif defined(OS_WIN) && !defined(CHROME_MULTIPLE_DLL)
-  crash_reporter::InitializeCrashpadWithEmbeddedHandler(
-      process_type.empty(), process_type, "", base::FilePath());
+#elif defined(OS_WIN)
+  // InitializeCrashpad is already called from main() on Windows, no need to
+  // call it from here.
 #endif  // defined(HEADLESS_USE_BREAKPAD)
 #endif  // defined(OS_FUCHSIA)
+
+  // Mark any bug reports from headless mode as such.
+  static crash_reporter::CrashKeyString<32> headless_key(kHeadlessCrashKey);
+  headless_key.Set("true");
 }
 
 
@@ -278,10 +376,15 @@ void HeadlessContentMainDelegate::PreSandboxStartup() {
 #endif  // defined(OS_WIN)
 
   InitCrashReporter(command_line);
-  InitializeResourceBundle();
+
+  InitializeResourceBundle(command_line);
+
+  // Even though InitializeResourceBundle() has indirectly done the locale
+  // initialization, do it again explicitly to avoid depending on the resource
+  // bundle, which may go away in the future in Headless code.
+  InitApplicationLocale(command_line);
 }
 
-#if !defined(CHROME_MULTIPLE_DLL_CHILD)
 int HeadlessContentMainDelegate::RunProcess(
     const std::string& process_type,
     const content::MainFunctionParams& main_function_params) {
@@ -301,7 +404,6 @@ int HeadlessContentMainDelegate::RunProcess(
   DCHECK_LT(exit_code, 0) << "content::BrowserMainRunner::Initialize failed in "
                              "HeadlessContentMainDelegate::RunProcess";
 
-  browser_->RunOnStartCallback();
   browser_runner->Run();
   browser_runner->Shutdown();
   browser_.reset();
@@ -309,9 +411,8 @@ int HeadlessContentMainDelegate::RunProcess(
   // Return value >=0 here to disable calling content::BrowserMain.
   return 0;
 }
-#endif  // !defined(CHROME_MULTIPLE_DLL_CHILD)
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
 void SIGTERMProfilingShutdown(int signal) {
   content::Profiling::Stop();
   struct sigaction sigact;
@@ -346,85 +447,30 @@ void HeadlessContentMainDelegate::ZygoteForked() {
   breakpad::InitCrashReporter(process_type);
 #endif
 }
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
 // static
 HeadlessContentMainDelegate* HeadlessContentMainDelegate::GetInstance() {
   return g_current_headless_content_main_delegate;
 }
 
-// static
-void HeadlessContentMainDelegate::InitializeResourceBundle() {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  const std::string locale =
-      command_line->GetSwitchValueASCII(::switches::kLang);
-  ui::ResourceBundle::InitSharedInstanceWithLocale(
-      locale, nullptr, ui::ResourceBundle::DO_NOT_LOAD_COMMON_RESOURCES);
-
-#ifdef HEADLESS_USE_EMBEDDED_RESOURCES
-  ui::ResourceBundle::GetSharedInstance().AddDataPackFromBuffer(
-      base::StringPiece(
-          reinterpret_cast<const char*>(kHeadlessResourcePak.contents),
-          kHeadlessResourcePak.length),
-      ui::SCALE_FACTOR_NONE);
-
-#else
-
-  base::FilePath dir_module;
-  bool result = base::PathService::Get(base::DIR_MODULE, &dir_module);
-  DCHECK(result);
-
-  // Try loading the headless library pak file first. If it doesn't exist (i.e.,
-  // when we're running with the --headless switch), fall back to the browser's
-  // resource pak.
-  base::FilePath headless_pak =
-      dir_module.Append(FILE_PATH_LITERAL("headless_lib.pak"));
-  if (base::PathExists(headless_pak)) {
-    ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
-        headless_pak, ui::SCALE_FACTOR_NONE);
-    return;
-  }
-
-  // Otherwise, load resources.pak, chrome_100 and chrome_200.
-  base::FilePath resources_pak =
-      dir_module.Append(FILE_PATH_LITERAL("resources.pak"));
-  base::FilePath chrome_100_pak =
-      dir_module.Append(FILE_PATH_LITERAL("chrome_100_percent.pak"));
-  base::FilePath chrome_200_pak =
-      dir_module.Append(FILE_PATH_LITERAL("chrome_200_percent.pak"));
-
-#if defined(OS_MACOSX) && !defined(COMPONENT_BUILD)
-  // In non component builds, check if fall back in Resources/ folder is
-  // available.
-  if (!base::PathExists(resources_pak)) {
-    resources_pak =
-        dir_module.Append(FILE_PATH_LITERAL("Resources/resources.pak"));
-    chrome_100_pak = dir_module.Append(
-        FILE_PATH_LITERAL("Resources/chrome_100_percent.pak"));
-    chrome_200_pak = dir_module.Append(
-        FILE_PATH_LITERAL("Resources/chrome_200_percent.pak"));
-  }
-#endif
-
-  ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
-      resources_pak, ui::SCALE_FACTOR_NONE);
-  ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
-      chrome_100_pak, ui::SCALE_FACTOR_100P);
-  ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
-      chrome_200_pak, ui::SCALE_FACTOR_200P);
-#endif
+HeadlessBrowser::Options* HeadlessContentMainDelegate::options() {
+  if (browser_)
+    return browser_->options();
+  return options_.get();
 }
 
-#if !defined(CHROME_MULTIPLE_DLL_CHILD)
+content::ContentClient* HeadlessContentMainDelegate::CreateContentClient() {
+  return &content_client_;
+}
+
 content::ContentBrowserClient*
 HeadlessContentMainDelegate::CreateContentBrowserClient() {
   browser_client_ =
       std::make_unique<HeadlessContentBrowserClient>(browser_.get());
   return browser_client_.get();
 }
-#endif  // !defined(CHROME_MULTIPLE_DLL_CHILD)
 
-#if !defined(CHROME_MULTIPLE_DLL_BROWSER)
 content::ContentRendererClient*
 HeadlessContentMainDelegate::CreateContentRendererClient() {
   renderer_client_ = std::make_unique<HeadlessContentRendererClient>();
@@ -433,11 +479,10 @@ HeadlessContentMainDelegate::CreateContentRendererClient() {
 
 content::ContentUtilityClient*
 HeadlessContentMainDelegate::CreateContentUtilityClient() {
-  utility_client_ = std::make_unique<HeadlessContentUtilityClient>(
-      browser_->options()->user_agent);
+  utility_client_ =
+      std::make_unique<HeadlessContentUtilityClient>(options()->user_agent);
   return utility_client_.get();
 }
-#endif  // !defined(CHROME_MULTIPLE_DLL_BROWSER)
 
 void HeadlessContentMainDelegate::PostEarlyInitialization(
     bool is_running_tests) {
@@ -454,13 +499,13 @@ void HeadlessContentMainDelegate::PostEarlyInitialization(
         ::switches::kRunAllCompositorStagesBeforeDraw,
         ::switches::kDisableNewContentRenderingTimeout,
         cc::switches::kDisableThreadedAnimation,
-        ::switches::kDisableThreadedScrolling,
         // Animtion-only BeginFrames are only supported when updates from the
         // impl-thread are disabled, see go/headless-rendering.
         cc::switches::kDisableCheckerImaging,
+        blink::switches::kDisableThreadedScrolling,
         // Ensure that image animations don't resync their animation timestamps
         // when looping back around.
-        ::switches::kDisableImageAnimationResync,
+        blink::switches::kDisableImageAnimationResync,
     };
     for (const auto* flag : switches)
       base::CommandLine::ForCurrentProcess()->AppendSwitch(flag);

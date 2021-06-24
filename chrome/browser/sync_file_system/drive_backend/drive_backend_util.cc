@@ -4,7 +4,10 @@
 
 #include "chrome/browser/sync_file_system/drive_backend/drive_backend_util.h"
 
-#include "base/logging.h"
+#include <memory>
+
+#include "base/check.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/threading/scoped_blocking_call.h"
@@ -164,11 +167,11 @@ std::unique_ptr<ServiceMetadata> InitializeServiceMetadata(LevelDBWrapper* db) {
   std::string value;
   leveldb::Status status = db->Get(kServiceMetadataKey, &value);
   if (status.ok()) {
-    service_metadata.reset(new ServiceMetadata);
+    service_metadata = std::make_unique<ServiceMetadata>();
     if (!service_metadata->ParseFromString(value))
       service_metadata.reset();
   } else if (status.IsNotFound()) {
-    service_metadata.reset(new ServiceMetadata);
+    service_metadata = std::make_unique<ServiceMetadata>();
     service_metadata->set_next_tracker_id(1);
   }
 

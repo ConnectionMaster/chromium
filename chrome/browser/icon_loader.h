@@ -5,9 +5,6 @@
 #ifndef CHROME_BROWSER_ICON_LOADER_H_
 #define CHROME_BROWSER_ICON_LOADER_H_
 
-#include <memory>
-#include <string>
-
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "base/macros.h"
@@ -41,15 +38,16 @@ class IconLoader {
   };
 
   // The callback invoked when an icon has been read. The parameters are:
-  // - The icon that was loaded, or null if there was a failure to load it.
+  // - The icon that was loaded (IsEmpty() will be true on failure to load).
   // - The determined group from the original requested path.
   using IconLoadedCallback =
-      base::OnceCallback<void(std::unique_ptr<gfx::Image>, const IconGroup&)>;
+      base::OnceCallback<void(gfx::Image, const IconGroup&)>;
 
   // Creates an IconLoader, which owns itself. If the IconLoader might outlive
   // the caller, be sure to use a weak pointer in the |callback|.
   static IconLoader* Create(const base::FilePath& file_path,
                             IconSize size,
+                            float scale,
                             IconLoadedCallback callback);
 
   // Starts the process of reading the icon. When the reading of the icon is
@@ -60,6 +58,7 @@ class IconLoader {
  private:
   IconLoader(const base::FilePath& file_path,
              IconSize size,
+             float scale,
              IconLoadedCallback callback);
 
   ~IconLoader();
@@ -72,10 +71,16 @@ class IconLoader {
 
   void ReadGroup();
   void ReadIcon();
+#if defined(OS_WIN)
+  // Reads an icon in a sandboxed service. Use this when the file itself must
+  // be parsed.
+  void ReadIconInSandbox();
+#endif
 
-  // The traits of the tasks posted by this class. These operations may block,
-  // because they are fetching icons from the disk, yet the result will be seen
-  // by the user so they should be prioritized accordingly.
+  // The traits of the tasks posted to base::ThreadPool by this class. These
+  // operations may block, because they are fetching icons from the disk, yet
+  // the result will be seen by the user so they should be prioritized
+  // accordingly.
   static constexpr base::TaskTraits traits() {
     return {base::MayBlock(), base::TaskPriority::USER_VISIBLE};
   }
@@ -90,7 +95,7 @@ class IconLoader {
 #if !defined(OS_ANDROID)
   IconSize icon_size_;
 #endif  // !defined(OS_ANDROID)
-
+  const float scale_;
   IconLoadedCallback callback_;
 
   DISALLOW_COPY_AND_ASSIGN(IconLoader);

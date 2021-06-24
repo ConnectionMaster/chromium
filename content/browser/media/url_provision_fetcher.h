@@ -24,9 +24,9 @@ class URLProvisionFetcher : public media::ProvisionFetcher {
   ~URLProvisionFetcher() override;
 
   // media::ProvisionFetcher implementation.
-  void Retrieve(const std::string& default_url,
+  void Retrieve(const GURL& default_url,
                 const std::string& request_data,
-                const ProvisionFetcher::ResponseCB& response_cb) override;
+                ProvisionFetcher::ResponseCB response_cb) override;
 
  private:
   void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body);

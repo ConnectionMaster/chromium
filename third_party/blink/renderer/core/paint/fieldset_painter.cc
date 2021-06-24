@@ -24,23 +24,31 @@ FieldsetPaintInfo CreateFieldsetPaintInfo(const LayoutBox& fieldset,
       fieldset.BorderTop(), fieldset.BorderRight(),
       LayoutUnit(),  // bottom border will always be left alone.
       fieldset.BorderLeft());
-  return FieldsetPaintInfo(fieldset.StyleRef(), fieldset.Size(),
-                           fieldset_borders, legend.FrameRect());
+  // Using legend.FrameRect() is incorrect in vertical-rl mode, but we probably
+  // won't fix this here which is for legacy layout.
+  return FieldsetPaintInfo(fieldset.StyleRef(),
+                           PhysicalSizeToBeNoop(fieldset.Size()),
+                           fieldset_borders, PhysicalRect(legend.FrameRect()));
 }
 
 }  // anonymous namespace
 
 void FieldsetPainter::PaintBoxDecorationBackground(
     const PaintInfo& paint_info,
-    const LayoutPoint& paint_offset) {
-  LayoutRect paint_rect(paint_offset, layout_fieldset_.Size());
+    const PhysicalOffset& paint_offset) {
+  if (layout_fieldset_.StyleRef().Visibility() != EVisibility::kVisible)
+    return;
+
+  PhysicalRect paint_rect(paint_offset, layout_fieldset_.Size());
   LayoutBox* legend = layout_fieldset_.FindInFlowLegend();
-  if (!legend) {
+  if (!legend || paint_info.DescendantPaintingBlocked()) {
     return BoxPainter(layout_fieldset_)
         .PaintBoxDecorationBackground(paint_info, paint_offset);
   }
 
   BoxDecorationData box_decoration_data(paint_info, layout_fieldset_);
+  // TODO(crbug.com/786475): Fieldset should not scroll.
+  DCHECK(!box_decoration_data.IsPaintingScrollingBackground());
   if (box_decoration_data.ShouldPaint() &&
       !DrawingRecorder::UseCachedDrawingIfPossible(
           paint_info.context, layout_fieldset_, paint_info.phase)) {
@@ -48,8 +56,8 @@ void FieldsetPainter::PaintBoxDecorationBackground(
         CreateFieldsetPaintInfo(layout_fieldset_, *legend);
     paint_rect.Contract(fieldset_paint_info.border_outsets);
 
-    DrawingRecorder recorder(paint_info.context, layout_fieldset_,
-                             paint_info.phase);
+    BoxDrawingRecorder recorder(paint_info.context, layout_fieldset_,
+                                paint_info.phase, paint_offset);
 
     if (box_decoration_data.ShouldPaintShadow()) {
       BoxPainterBase::PaintNormalBoxShadow(paint_info, paint_rect,
@@ -73,8 +81,8 @@ void FieldsetPainter::PaintBoxDecorationBackground(
       GraphicsContext& graphics_context = paint_info.context;
       GraphicsContextStateSaver state_saver(graphics_context);
 
-      LayoutRect legend_cutout_rect = fieldset_paint_info.legend_cutout_rect;
-      legend_cutout_rect.MoveBy(paint_offset);
+      PhysicalRect legend_cutout_rect = fieldset_paint_info.legend_cutout_rect;
+      legend_cutout_rect.Move(paint_offset);
       graphics_context.ClipOut(PixelSnappedIntRect(legend_cutout_rect));
 
       Node* node = nullptr;
@@ -92,14 +100,14 @@ void FieldsetPainter::PaintBoxDecorationBackground(
 }
 
 void FieldsetPainter::PaintMask(const PaintInfo& paint_info,
-                                const LayoutPoint& paint_offset) {
+                                const PhysicalOffset& paint_offset) {
   if (layout_fieldset_.StyleRef().Visibility() != EVisibility::kVisible ||
       paint_info.phase != PaintPhase::kMask)
     return;
 
-  LayoutRect paint_rect = LayoutRect(paint_offset, layout_fieldset_.Size());
+  PhysicalRect paint_rect(paint_offset, layout_fieldset_.Size());
   LayoutBox* legend = layout_fieldset_.FindInFlowLegend();
-  if (!legend)
+  if (!legend || paint_info.DescendantPaintingBlocked())
     return BoxPainter(layout_fieldset_).PaintMask(paint_info, paint_offset);
 
   if (DrawingRecorder::UseCachedDrawingIfPossible(
@@ -110,8 +118,8 @@ void FieldsetPainter::PaintMask(const PaintInfo& paint_info,
       CreateFieldsetPaintInfo(layout_fieldset_, *legend);
   paint_rect.Contract(fieldset_paint_info.border_outsets);
 
-  DrawingRecorder recorder(paint_info.context, layout_fieldset_,
-                           paint_info.phase);
+  BoxDrawingRecorder recorder(paint_info.context, layout_fieldset_,
+                              paint_info.phase, paint_offset);
   BoxPainter(layout_fieldset_).PaintMaskImages(paint_info, paint_rect);
 }
 

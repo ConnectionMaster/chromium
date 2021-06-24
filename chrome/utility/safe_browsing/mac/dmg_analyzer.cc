@@ -10,16 +10,17 @@
 #include <memory>
 #include <vector>
 
+#include "base/cxx17_backports.h"
 #include "base/macros.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "chrome/common/safe_browsing/archive_analyzer_results.h"
 #include "chrome/common/safe_browsing/binary_feature_extractor.h"
 #include "chrome/common/safe_browsing/mach_o_image_reader_mac.h"
 #include "chrome/utility/safe_browsing/mac/dmg_iterator.h"
 #include "chrome/utility/safe_browsing/mac/read_stream.h"
-#include "components/safe_browsing/proto/csd.pb.h"
+#include "components/safe_browsing/core/proto/csd.pb.h"
 #include "crypto/secure_hash.h"
 #include "crypto/sha2.h"
 
@@ -27,6 +28,9 @@ namespace safe_browsing {
 namespace dmg {
 
 namespace {
+
+// The maximum duration of DMG analysis, in milliseconds.
+const double kDmgAnalysisTimeoutMs = 10000;
 
 // MachOFeatureExtractor examines files to determine if they are Mach-O, and,
 // if so, it uses the BinaryFeatureExtractor to obtain information about the
@@ -110,7 +114,8 @@ bool MachOFeatureExtractor::HashAndCopyStream(
       return false;
 
     buffer_.resize(buffer_offset + bytes_read);
-    sha256->Update(&buffer_[buffer_offset], bytes_read);
+    if (bytes_read)
+      sha256->Update(&buffer_[buffer_offset], bytes_read);
   } while (bytes_read > 0);
 
   sha256->Finish(digest, crypto::kSHA256Length);
@@ -132,6 +137,7 @@ void AnalyzeDMGFile(base::File dmg_file, ArchiveAnalyzerResults* results) {
 }
 
 void AnalyzeDMGFile(DMGIterator* iterator, ArchiveAnalyzerResults* results) {
+  base::Time start_time = base::Time::Now();
   results->success = false;
 
   if (!iterator->Open())
@@ -141,10 +147,16 @@ void AnalyzeDMGFile(DMGIterator* iterator, ArchiveAnalyzerResults* results) {
 
   results->signature_blob = iterator->GetCodeSignature();
 
+  bool timeout = false;
   while (iterator->Next()) {
     std::unique_ptr<ReadStream> stream = iterator->GetReadStream();
     if (!stream)
       continue;
+    if (base::Time::Now() - start_time >=
+        base::TimeDelta::FromMilliseconds(kDmgAnalysisTimeoutMs)) {
+      timeout = true;
+      break;
+    }
 
     std::string path = base::UTF16ToUTF8(iterator->GetPath());
 
@@ -179,6 +191,7 @@ void AnalyzeDMGFile(DMGIterator* iterator, ArchiveAnalyzerResults* results) {
       if (feature_extractor.ExtractFeatures(stream.get(), binary)) {
         binary->set_download_type(
             ClientDownloadRequest_DownloadType_MAC_EXECUTABLE);
+        binary->set_is_executable(true);
         results->has_executable = true;
       } else {
         results->archived_binary.RemoveLast();
@@ -186,7 +199,8 @@ void AnalyzeDMGFile(DMGIterator* iterator, ArchiveAnalyzerResults* results) {
     }
   }
 
-  results->success = true;
+  if (!timeout)
+    results->success = true;
 }
 
 }  // namespace dmg

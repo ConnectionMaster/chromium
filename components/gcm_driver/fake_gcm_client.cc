@@ -9,8 +9,8 @@
 #include <algorithm>
 
 #include "base/bind.h"
+#include "base/check.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/sequenced_task_runner.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
@@ -65,8 +65,7 @@ FakeGCMClient::FakeGCMClient(
       start_mode_(DELAYED_START),
       start_mode_overridding_(RESPECT_START_MODE),
       ui_thread_(ui_thread),
-      io_thread_(io_thread),
-      weak_ptr_factory_(this) {}
+      io_thread_(io_thread) {}
 
 FakeGCMClient::~FakeGCMClient() {
 }
@@ -74,9 +73,11 @@ FakeGCMClient::~FakeGCMClient() {
 void FakeGCMClient::Initialize(
     const ChromeBuildInfo& chrome_build_info,
     const base::FilePath& store_path,
+    bool remove_account_mappings_with_email_key,
     const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner,
-    base::RepeatingCallback<
-        void(network::mojom::ProxyResolvingSocketFactoryRequest)>
+    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
+    base::RepeatingCallback<void(
+        mojo::PendingReceiver<network::mojom::ProxyResolvingSocketFactory>)>
         get_socket_factory_callback,
     const scoped_refptr<network::SharedURLLoaderFactory>& url_loader_factory,
     network::NetworkConnectionTracker* network_connection_tracker,
@@ -199,8 +200,7 @@ void FakeGCMClient::UpdateAccountMapping(
     const AccountMapping& account_mapping) {
 }
 
-void FakeGCMClient::RemoveAccountMapping(const std::string& account_id) {
-}
+void FakeGCMClient::RemoveAccountMapping(const CoreAccountId& account_id) {}
 
 void FakeGCMClient::SetLastTokenFetchTime(const base::Time& time) {
 }

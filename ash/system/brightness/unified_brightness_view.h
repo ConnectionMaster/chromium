@@ -24,6 +24,10 @@ class UnifiedBrightnessView : public UnifiedSliderView,
   // UnifiedSystemTrayModel::Observer:
   void OnDisplayBrightnessChanged(bool by_user) override;
 
+  // views::View:
+  const char* GetClassName() const override;
+  void OnThemeChanged() override;
+
  private:
   UnifiedSystemTrayModel* const model_;
 

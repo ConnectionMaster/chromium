@@ -15,6 +15,8 @@
 #include "components/offline_pages/core/offline_page_types.h"
 #include "url/gurl.h"
 
+class SimpleFactoryKey;
+
 namespace base {
 class Time;
 }
@@ -59,7 +61,7 @@ class OfflinePageUtils {
   static const base::FilePath::CharType kMHTMLExtension[];
 
   // Callback to inform the duplicate checking result.
-  using DuplicateCheckCallback = base::Callback<void(DuplicateCheckResult)>;
+  using DuplicateCheckCallback = base::OnceCallback<void(DuplicateCheckResult)>;
 
   // Returns via callback all offline pages related to |url|. The provided URL
   // is matched both against the original and the actual URL fields (they
@@ -68,13 +70,13 @@ class OfflinePageUtils {
   // the search. The returned list is sorted by descending creation date so that
   // the most recent offline page will be the first element of the list.
   static void SelectPagesForURL(
-      content::BrowserContext* browser_context,
+      SimpleFactoryKey* key,
       const GURL& url,
       int tab_id,
       base::OnceCallback<void(const std::vector<OfflinePageItem>&)> callback);
 
   static void SelectPagesWithCriteria(
-      content::BrowserContext* browser_context,
+      SimpleFactoryKey* key,
       const PageCriteria& criteria,
       base::OnceCallback<void(const std::vector<OfflinePageItem>&)> callback);
 
@@ -115,7 +117,7 @@ class OfflinePageUtils {
   // for more details.
   static void CheckDuplicateDownloads(content::BrowserContext* browser_context,
                                       const GURL& url,
-                                      const DuplicateCheckCallback& callback);
+                                      DuplicateCheckCallback callback);
 
   // Shows appropriate UI to indicate to the user that the |url| is either
   // already downloaded or is already scheduled to be downloaded soon (as
@@ -123,7 +125,7 @@ class OfflinePageUtils {
   // continue with creating a duplicate - which is indicated by invoking the
   // |confirm_continuation|, or cancels the whole operation which does not
   // invoke continuation then.
-  static void ShowDuplicatePrompt(const base::Closure& confirm_continuation,
+  static void ShowDuplicatePrompt(base::OnceClosure confirm_continuation,
                                   const GURL& url,
                                   bool exists_duplicate_request,
                                   content::WebContents* web_contents);

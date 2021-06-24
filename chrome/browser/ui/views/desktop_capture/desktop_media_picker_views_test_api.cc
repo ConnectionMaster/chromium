@@ -13,6 +13,7 @@
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/tabbed_pane/tabbed_pane.h"
 #include "ui/views/controls/table/table_view.h"
+#include "ui/views/controls/table/table_view_observer.h"
 
 namespace {
 
@@ -25,12 +26,16 @@ bool IsDesktopMediaTabList(views::View* view) {
 DesktopMediaPickerViewsTestApi::DesktopMediaPickerViewsTestApi() = default;
 DesktopMediaPickerViewsTestApi::~DesktopMediaPickerViewsTestApi() = default;
 
-void DesktopMediaPickerViewsTestApi::FocusSourceAtIndex(size_t index) {
+void DesktopMediaPickerViewsTestApi::FocusSourceAtIndex(size_t index,
+                                                        bool select) {
   views::View* source_view = GetSourceAtIndex(index);
-  if (source_view)
+  if (source_view) {
     source_view->RequestFocus();
-  else
-    GetTableView()->Select(index);
+  } else {
+    GetTableView()->RequestFocus();
+    if (select)
+      GetTableView()->Select(index);
+  }
 }
 
 void DesktopMediaPickerViewsTestApi::FocusAudioCheckbox() {
@@ -53,8 +58,22 @@ void DesktopMediaPickerViewsTestApi::PressMouseOnSourceAtIndex(
     // within a larger view would be breakage-prone; just ask the TableView to
     // to select.
     GetTableView()->Select(index);
-    if (double_click)
-      picker_->dialog_->GetSelectedController()->AcceptSource();
+    if (double_click) {
+      GetTableView()->observer()->OnDoubleClick();
+    }
+  }
+}
+
+void DesktopMediaPickerViewsTestApi::PressKeyOnSourceAtIndex(
+    size_t index,
+    const ui::KeyEvent& event) {
+  views::View* source_view = GetSourceAtIndex(index);
+  if (source_view) {
+    source_view->OnKeyPressed(event);
+  } else {
+    // TableView rows don't receive key events directly; just send the key event
+    // to the TableView itself.
+    GetTableView()->OnKeyPressed(event);
   }
 }
 
@@ -68,28 +87,31 @@ void DesktopMediaPickerViewsTestApi::DoubleTapSourceAtIndex(size_t index) {
 }
 
 void DesktopMediaPickerViewsTestApi::SelectTabForSourceType(
-    content::DesktopMediaID::Type source_type) {
+    DesktopMediaList::Type source_type) {
   const auto& source_types = picker_->dialog_->source_types_;
   const auto i =
       std::find(source_types.cbegin(), source_types.cend(), source_type);
   DCHECK(i != source_types.cend());
-  picker_->dialog_->pane_->SelectTabAt(std::distance(source_types.cbegin(), i));
+  if (picker_->dialog_->tabbed_pane_) {
+    picker_->dialog_->tabbed_pane_->SelectTabAt(
+        std::distance(source_types.cbegin(), i));
+  }
 }
 
-base::Optional<int> DesktopMediaPickerViewsTestApi::GetSelectedSourceId()
+absl::optional<int> DesktopMediaPickerViewsTestApi::GetSelectedSourceId()
     const {
   DesktopMediaListController* controller =
       picker_->dialog_->GetSelectedController();
-  base::Optional<content::DesktopMediaID> source = controller->GetSelection();
-  return source.has_value() ? base::Optional<int>(source.value().id)
-                            : base::nullopt;
+  absl::optional<content::DesktopMediaID> source = controller->GetSelection();
+  return source.has_value() ? absl::optional<int>(source.value().id)
+                            : absl::nullopt;
 }
 
 bool DesktopMediaPickerViewsTestApi::HasSourceAtIndex(size_t index) const {
   const views::TableView* table = GetTableView();
   if (table)
-    return base::checked_cast<size_t>(table->RowCount()) > index;
-  return bool{GetSourceAtIndex(index)};
+    return base::checked_cast<size_t>(table->GetRowCount()) > index;
+  return !!GetSourceAtIndex(index);
 }
 
 views::View* DesktopMediaPickerViewsTestApi::GetSelectedListView() {

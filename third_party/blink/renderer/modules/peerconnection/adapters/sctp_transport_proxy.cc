@@ -8,10 +8,11 @@
 #include <utility>
 
 #include "base/location.h"
+#include "base/memory/ptr_util.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/modules/peerconnection/adapters/web_rtc_cross_thread_copier.h"
-#include "third_party/blink/renderer/platform/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 namespace blink {
 
@@ -26,9 +27,10 @@ std::unique_ptr<SctpTransportProxy> SctpTransportProxy::Create(
   std::unique_ptr<SctpTransportProxy> proxy =
       base::WrapUnique(new SctpTransportProxy(frame, proxy_thread, host_thread,
                                               sctp_transport, delegate));
-  PostCrossThreadTask(*host_thread, FROM_HERE,
-                      CrossThreadBind(&SctpTransportProxy::StartOnHostThread,
-                                      CrossThreadUnretained(proxy.get())));
+  PostCrossThreadTask(
+      *host_thread, FROM_HERE,
+      CrossThreadBindOnce(&SctpTransportProxy::StartOnHostThread,
+                          CrossThreadUnretained(proxy.get())));
   return proxy;
 }
 
@@ -46,9 +48,10 @@ SctpTransportProxy::SctpTransportProxy(
 void SctpTransportProxy::StartOnHostThread() {
   DCHECK(host_thread_->BelongsToCurrentThread());
   sctp_transport_->RegisterObserver(this);
-  PostCrossThreadTask(*proxy_thread_, FROM_HERE,
-                      CrossThreadBind(&Delegate::OnStartCompleted, delegate_,
-                                      sctp_transport_->Information()));
+  PostCrossThreadTask(
+      *proxy_thread_, FROM_HERE,
+      CrossThreadBindOnce(&Delegate::OnStartCompleted, delegate_,
+                          sctp_transport_->Information()));
 }
 
 void SctpTransportProxy::OnStateChange(webrtc::SctpTransportInformation info) {
@@ -62,7 +65,7 @@ void SctpTransportProxy::OnStateChange(webrtc::SctpTransportInformation info) {
   }
   PostCrossThreadTask(
       *proxy_thread_, FROM_HERE,
-      CrossThreadBind(&Delegate::OnStateChange, delegate_, info));
+      CrossThreadBindOnce(&Delegate::OnStateChange, delegate_, info));
   if (info.state() == webrtc::SctpTransportState::kClosed) {
     // Don't hold on to |delegate| any more.
     delegate_ = nullptr;

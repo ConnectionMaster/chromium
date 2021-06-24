@@ -5,13 +5,13 @@
 #include "chrome/browser/android/webapps/webapp_registry.h"
 
 #include "base/android/jni_android.h"
+#include "chrome/android/chrome_jni_headers/WebappRegistry_jni.h"
 #include "chrome/browser/android/browsing_data/url_filter_bridge.h"
-#include "jni/WebappRegistry_jni.h"
 
 using base::android::JavaParamRef;
 
 void WebappRegistry::UnregisterWebappsForUrls(
-    const base::Callback<bool(const GURL&)>& url_filter) {
+    const base::RepeatingCallback<bool(const GURL&)>& url_filter) {
   // |filter_bridge| is destroyed from its Java counterpart.
   UrlFilterBridge* filter_bridge = new UrlFilterBridge(url_filter);
 
@@ -20,7 +20,7 @@ void WebappRegistry::UnregisterWebappsForUrls(
 }
 
 void WebappRegistry::ClearWebappHistoryForUrls(
-    const base::Callback<bool(const GURL&)>& url_filter) {
+    const base::RepeatingCallback<bool(const GURL&)>& url_filter) {
   // |filter_bridge| is destroyed from its Java counterpart.
   UrlFilterBridge* filter_bridge = new UrlFilterBridge(url_filter);
 

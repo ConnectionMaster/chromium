@@ -7,12 +7,11 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/check.h"
 #include "base/location.h"
-#include "base/logging.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/sequenced_task_runner_handle.h"
-#include "components/data_use_measurement/core/data_use_user_data.h"
 #include "components/sync/protocol/sync.pb.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_status_code.h"
@@ -29,7 +28,7 @@ const char kEventEndpoint[] = "event";
 // plenty of time. Since sync is off when this request is started, we don't
 // want anything sync-related hanging around for very long from a human
 // perspective either. This seems like a good compromise.
-const int kRequestTimeoutSeconds = 10;
+constexpr base::TimeDelta kRequestTimeout = base::TimeDelta::FromSeconds(10);
 
 }  // namespace
 
@@ -39,11 +38,11 @@ SyncStoppedReporter::SyncStoppedReporter(
     const GURL& sync_service_url,
     const std::string& user_agent,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const ResultCallback& callback)
+    ResultCallback callback)
     : sync_event_url_(GetSyncEventURL(sync_service_url)),
       user_agent_(user_agent),
       url_loader_factory_(std::move(url_loader_factory)),
-      callback_(callback) {
+      callback_(std::move(callback)) {
   DCHECK(!sync_service_url.is_empty());
   DCHECK(!user_agent_.empty());
   DCHECK(url_loader_factory_);
@@ -92,17 +91,14 @@ void SyncStoppedReporter::ReportSyncStopped(const std::string& access_token,
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = sync_event_url_;
   resource_request->load_flags =
-      net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE |
-      net::LOAD_DO_NOT_SAVE_COOKIES | net::LOAD_DO_NOT_SEND_COOKIES;
+      net::LOAD_BYPASS_CACHE | net::LOAD_DISABLE_CACHE;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   resource_request->method = "POST";
   resource_request->headers.SetHeader(
       net::HttpRequestHeaders::kAuthorization,
       base::StringPrintf("Bearer %s", access_token.c_str()));
   resource_request->headers.SetHeader(net::HttpRequestHeaders::kUserAgent,
                                       user_agent_);
-  // TODO(https://crbug.com/808498): Re-add data use measurement once
-  // SimpleURLLoader supports it.
-  // ID=data_use_measurement::DataUseUserData::SYNC
   simple_url_loader_ = network::SimpleURLLoader::Create(
       std::move(resource_request), traffic_annotation);
   simple_url_loader_->AttachStringForUpload(msg, "application/octet-stream");
@@ -110,8 +106,8 @@ void SyncStoppedReporter::ReportSyncStopped(const std::string& access_token,
       url_loader_factory_.get(),
       base::BindOnce(&SyncStoppedReporter::OnSimpleLoaderComplete,
                      base::Unretained(this)));
-  timer_.Start(FROM_HERE, base::TimeDelta::FromSeconds(kRequestTimeoutSeconds),
-               this, &SyncStoppedReporter::OnTimeout);
+  timer_.Start(FROM_HERE, kRequestTimeout, this,
+               &SyncStoppedReporter::OnTimeout);
 }
 
 void SyncStoppedReporter::OnSimpleLoaderComplete(
@@ -121,7 +117,7 @@ void SyncStoppedReporter::OnSimpleLoaderComplete(
   timer_.Stop();
   if (!callback_.is_null()) {
     base::SequencedTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(callback_, result));
+        FROM_HERE, base::BindOnce(std::move(callback_), result));
   }
 }
 
@@ -129,7 +125,7 @@ void SyncStoppedReporter::OnTimeout() {
   simple_url_loader_.reset();
   if (!callback_.is_null()) {
     base::SequencedTaskRunnerHandle::Get()->PostTask(
-        FROM_HERE, base::BindOnce(callback_, RESULT_TIMEOUT));
+        FROM_HERE, base::BindOnce(std::move(callback_), RESULT_TIMEOUT));
   }
 }
 

@@ -7,66 +7,86 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <iterator>
 #include <list>
 #include <memory>
 #include <set>
 #include <string>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
+#include "base/containers/flat_map.h"
 #include "base/debug/alias.h"
+#include "base/feature_list.h"
 #include "base/location.h"
 #include "base/macros.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/numerics/ranges.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chrome_notification_types.h"
+#include "chrome/browser/buildflags.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_keep_alive_types.h"
+#include "chrome/browser/profiles/scoped_profile_keep_alive.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/sessions/session_restore_delegate.h"
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
+#include "chrome/browser/sessions/session_service_log.h"
+#include "chrome/browser/sessions/session_service_lookup.h"
 #include "chrome/browser/sessions/session_service_utils.h"
 #include "chrome/browser/sessions/tab_loader.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_list_observer.h"
 #include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_tabrestore.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
+#include "chrome/browser/ui/tabs/tab_group.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_provider_factory.h"
 #include "chrome/common/extensions/extension_metrics.h"
 #include "chrome/common/url_constants.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/sessions/core/session_types.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/dom_storage_context.h"
 #include "content/public/browser/navigation_controller.h"
-#include "content/public/browser/notification_registrar.h"
-#include "content/public/browser/notification_service.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/session_storage_namespace.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/page_state.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension_set.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chrome/browser/chromeos/boot_times_recorder.h"
+#endif
+
+#if BUILDFLAG(ENABLE_APP_SESSION_SERVICE)
+#include "chrome/browser/sessions/app_session_service.h"
+#include "chrome/browser/sessions/app_session_service_factory.h"
 #endif
 
 using content::NavigationController;
@@ -95,13 +115,15 @@ std::set<SessionRestoreImpl*>* active_session_restorers = nullptr;
 // SessionRestoreImpl is responsible for fetching the set of tabs to create
 // from SessionService. SessionRestoreImpl deletes itself when done.
 
-class SessionRestoreImpl : public content::NotificationObserver {
+class SessionRestoreImpl : public BrowserListObserver {
  public:
   SessionRestoreImpl(Profile* profile,
                      Browser* browser,
                      bool synchronous,
                      bool clobber_existing_tab,
                      bool always_create_tabbed_browser,
+                     bool restore_apps,
+                     bool log_event,
                      const std::vector<GURL>& urls_to_open,
                      SessionRestore::CallbackList* callbacks)
       : profile_(profile),
@@ -109,6 +131,8 @@ class SessionRestoreImpl : public content::NotificationObserver {
         synchronous_(synchronous),
         clobber_existing_tab_(clobber_existing_tab),
         always_create_tabbed_browser_(always_create_tabbed_browser),
+        log_event_(log_event),
+        restore_apps_(restore_apps),
         urls_to_open_(urls_to_open),
         active_window_id_(SessionID::InvalidValue()),
         restore_started_(base::TimeTicks::Now()),
@@ -118,7 +142,7 @@ class SessionRestoreImpl : public content::NotificationObserver {
 
     // Only one SessionRestoreImpl should be operating on the profile at the
     // same time.
-    std::set<SessionRestoreImpl*>::const_iterator it;
+    std::set<SessionRestoreImpl*>::iterator it;
     for (it = active_session_restorers->begin();
          it != active_session_restorers->end(); ++it) {
       if ((*it)->profile_ == profile)
@@ -128,26 +152,50 @@ class SessionRestoreImpl : public content::NotificationObserver {
 
     active_session_restorers->insert(this);
 
-    keep_alive_.reset(new ScopedKeepAlive(KeepAliveOrigin::SESSION_RESTORE,
-                                          KeepAliveRestartOption::DISABLED));
+    keep_alive_ = std::make_unique<ScopedKeepAlive>(
+        KeepAliveOrigin::SESSION_RESTORE, KeepAliveRestartOption::DISABLED);
+    profile_keep_alive_ = std::make_unique<ScopedProfileKeepAlive>(
+        profile, ProfileKeepAliveOrigin::kBrowserWindow);
   }
 
   bool synchronous() const { return synchronous_; }
 
   Browser* Restore() {
-    SessionService* session_service =
-        SessionServiceFactory::GetForProfile(profile_);
-    DCHECK(session_service);
-    session_service->GetLastSession(
-        base::Bind(&SessionRestoreImpl::OnGotSession, base::Unretained(this)),
-        &cancelable_task_tracker_);
+    SessionServiceBase* service =
+        SessionServiceFactory::GetForProfileForSessionRestore(profile_);
+    CHECK(service);
+    service->GetLastSession(base::BindOnce(&SessionRestoreImpl::OnGotSession,
+                                           weak_factory_.GetWeakPtr(),
+                                           /* for_apps */ false));
+
+#if BUILDFLAG(ENABLE_APP_SESSION_SERVICE)
+    if (restore_apps_) {
+      SessionServiceBase* app_service =
+          AppSessionServiceFactory::GetForProfileForSessionRestore(profile_);
+      CHECK(app_service);
+      app_service->GetLastSession(base::BindOnce(
+          &SessionRestoreImpl::OnGotSession, weak_factory_.GetWeakPtr(),
+          /* for_apps */ true));
+
+      // Ensure the registry is ready so that when we reopen apps they work
+      // properly. If we don't wait, it's possible that apps are restored in
+      // an incoherent state.
+      web_app::WebAppProvider* provider =
+          web_app::WebAppProviderFactory::GetForProfile(profile_);
+      DCHECK(provider);
+
+      provider->on_registry_ready().Post(
+          FROM_HERE, base::BindOnce(&SessionRestoreImpl::WebAppRegistryReady,
+                                    weak_factory_.GetWeakPtr()));
+    }
+#endif
 
     if (synchronous_) {
       {
         base::RunLoop loop(base::RunLoop::Type::kNestableTasksAllowed);
         quit_closure_for_sync_restore_ = loop.QuitClosure();
         loop.Run();
-        quit_closure_for_sync_restore_ = base::Closure();
+        quit_closure_for_sync_restore_ = base::OnceClosure();
       }
       Browser* browser =
           ProcessSessionWindowsAndNotify(&windows_, active_window_id_);
@@ -155,10 +203,8 @@ class SessionRestoreImpl : public content::NotificationObserver {
       return browser;
     }
 
-    if (browser_) {
-      registrar_.Add(this, chrome::NOTIFICATION_BROWSER_CLOSED,
-                     content::Source<Browser>(browser_));
-    }
+    if (browser_)
+      BrowserList::AddObserver(this);
 
     return browser_;
   }
@@ -173,16 +219,19 @@ class SessionRestoreImpl : public content::NotificationObserver {
     for (auto i = begin; i != end; ++i) {
       Browser* browser = CreateRestoredBrowser(
           BrowserTypeForWindowType((*i)->type), (*i)->bounds, (*i)->workspace,
-          (*i)->show_state, (*i)->app_name);
+          (*i)->visible_on_all_workspaces, (*i)->show_state, (*i)->app_name,
+          (*i)->user_title, (*i)->window_id.id());
       browsers.push_back(browser);
+
+      // A foreign session window will not contain tab groups, however an
+      // instance is still required for RestoreTabsToBrowser.
+      base::flat_map<tab_groups::TabGroupId, tab_groups::TabGroupId>
+          new_group_ids;
 
       // Restore and show the browser.
       const int initial_tab_count = 0;
-      int selected_tab_index =
-          std::max(0, std::min((*i)->selected_tab_index,
-                               static_cast<int>((*i)->tabs.size()) - 1));
-      RestoreTabsToBrowser(*(*i), browser, initial_tab_count,
-                           selected_tab_index, &created_contents);
+      RestoreTabsToBrowser(*(*i), browser, initial_tab_count, &created_contents,
+                           &new_group_ids);
       NotifySessionServiceOfRestoredTabs(browser, initial_tab_count);
     }
 
@@ -209,9 +258,9 @@ class SessionRestoreImpl : public content::NotificationObserver {
 
     bool use_new_window = disposition == WindowOpenDisposition::NEW_WINDOW;
 
-    Browser* browser = use_new_window
-                           ? new Browser(Browser::CreateParams(profile_, true))
-                           : browser_;
+    Browser* browser =
+        use_new_window ? Browser::Create(Browser::CreateParams(profile_, true))
+                       : browser_;
 
     RecordAppLaunchForTab(browser, tab, selected_index);
 
@@ -219,16 +268,16 @@ class SessionRestoreImpl : public content::NotificationObserver {
     if (disposition == WindowOpenDisposition::CURRENT_TAB) {
       DCHECK(!use_new_window);
       web_contents = chrome::ReplaceRestoredTab(
-          browser, tab.navigations, selected_index, true, tab.extension_app_id,
+          browser, tab.navigations, selected_index, tab.extension_app_id,
           nullptr, tab.user_agent_override, true /* from_session_restore */);
     } else {
       int tab_index =
           use_new_window ? 0 : browser->tab_strip_model()->active_index() + 1;
       web_contents = chrome::AddRestoredTab(
           browser, tab.navigations, tab_index, selected_index,
-          tab.extension_app_id,
+          tab.extension_app_id, absl::nullopt,
           disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB,  // selected
-          tab.pinned, true, base::TimeTicks(), nullptr, tab.user_agent_override,
+          tab.pinned, base::TimeTicks(), nullptr, tab.user_agent_override,
           true /* from_session_restore */);
       // Start loading the tab immediately.
       web_contents->GetController().LoadIfNecessary();
@@ -252,6 +301,7 @@ class SessionRestoreImpl : public content::NotificationObserver {
   }
 
   ~SessionRestoreImpl() override {
+    BrowserList::RemoveObserver(this);
     active_session_restorers->erase(this);
     if (active_session_restorers->empty()) {
       delete active_session_restorers;
@@ -259,18 +309,10 @@ class SessionRestoreImpl : public content::NotificationObserver {
     }
   }
 
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override {
-    switch (type) {
-      case chrome::NOTIFICATION_BROWSER_CLOSED:
-        delete this;
-        return;
-
-      default:
-        NOTREACHED();
-        break;
-    }
+  // BrowserListObserver:
+  void OnBrowserRemoved(Browser* browser) override {
+    if (browser == browser_)
+      delete this;
   }
 
   Profile* profile() { return profile_; }
@@ -290,7 +332,7 @@ class SessionRestoreImpl : public content::NotificationObserver {
                                std::vector<RestoredTab>* contents_created) {
     Browser* browser = nullptr;
     if (!created_tabbed_browser && always_create_tabbed_browser_) {
-      browser = new Browser(Browser::CreateParams(profile_, false));
+      browser = Browser::Create(Browser::CreateParams(profile_, false));
       if (urls_to_open_.empty()) {
         // No tab browsers were created and no URLs were supplied on the command
         // line. Open the new tab page.
@@ -318,41 +360,122 @@ class SessionRestoreImpl : public content::NotificationObserver {
       // if the browser is deleted. Don't listen to anything. This avoid a
       // possible double delete too (if browser is closed before DeleteSoon() is
       // processed).
-      registrar_.RemoveAll();
+      BrowserList::RemoveObserver(this);
     }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     chromeos::BootTimesRecorder::Get()->AddLoginTimeMarker("SessionRestore-End",
                                                            false);
 #endif
     return browser;
   }
 
+  // We typically want to restore windows in order of creation.
+  void SortWindowsByWindowId() {
+    std::sort(windows_.begin(), windows_.end(),
+              [](const std::unique_ptr<sessions::SessionWindow>& lhs,
+                 const std::unique_ptr<sessions::SessionWindow>& rhs) {
+                return lhs->window_id < rhs->window_id;
+              });
+  }
+
   void OnGotSession(
+      bool for_apps,
       std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
-      SessionID active_window_id) {
-#if defined(OS_CHROMEOS)
+      SessionID active_window_id,
+      bool read_error) {
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     chromeos::BootTimesRecorder::Get()->AddLoginTimeMarker(
         "SessionRestore-GotSession", false);
 #endif
-    if (synchronous_) {
-      // See comment above windows_ as to why we don't process immediately.
-      windows_.swap(windows);
+
+    // This function could be called twice from both SessionService and
+    // AppSessionService. If one of them returns error, then |read_error_| is
+    // true. So check whether |read_error_| has been set as true to prevent the
+    // result is overwritten.
+    if (!read_error_)
+      read_error_ = read_error;
+
+    // Copy windows into windows_ so that we can combine both app and browser
+    // windows together before doing a one-pass restore.
+    std::copy(std::make_move_iterator(windows.begin()),
+              std::make_move_iterator(windows.end()),
+              std::back_inserter(windows_));
+    windows.clear();
+
+    // Since we could now be possibly waiting for two |GetSession|s, we need
+    // to track if we're completely finished or not. While we're at it,
+    // store the windows for later merging and restoring.
+    if (for_apps) {
+      got_app_windows_ = true;
+    } else {
+      got_browser_windows_ = true;
+    }
+
+    // Don't let app restores set the active_window_id, or else it will
+    // always bring the app to the forefront.
+    if (!for_apps)
       active_window_id_ = active_window_id;
+
+    ProcessSessionWindowsIfReady();
+  }
+
+  void WebAppRegistryReady() {
+    DCHECK_EQ(web_app_registry_ready_, false);
+    DCHECK(restore_apps_);
+    web_app_registry_ready_ = true;
+
+    ProcessSessionWindowsIfReady();
+  }
+
+  // This is called by callback handlers and may trigger session restore if
+  // all the required conditions have been met. It also handles the differences
+  // between async/sync restores.
+  void ProcessSessionWindowsIfReady() {
+    bool got_all_sessions = IsReadyToProcessSessionWindows();
+
+    // For async restores, we need to early exit here if we aren't ready to
+    // start restoring windows.
+    if (!got_all_sessions)
+      return;
+
+    SortWindowsByWindowId();
+
+    if (synchronous_) {
       CHECK(!quit_closure_for_sync_restore_.is_null());
-      quit_closure_for_sync_restore_.Run();
+      // now we know we have all the windows we need merge them into windows_
+      // for processing.
+      std::move(quit_closure_for_sync_restore_).Run();
       return;
     }
 
-    ProcessSessionWindowsAndNotify(&windows, active_window_id);
+    ProcessSessionWindowsAndNotify(&windows_, active_window_id_);
+  }
+
+  // This helper, based on the restore_apps_ state tells us if we're ready to
+  // begin restoring windows. There's two ways we are ready to process:
+  // 1. we aren't restoring apps, and have browser_windows.
+  // 2. we are restoring apps, we have both browser and app windows and
+  //   WebAppRegistryReady() has been called.
+  bool IsReadyToProcessSessionWindows() const {
+    if (!restore_apps_)
+      return got_browser_windows_;
+    return (got_app_windows_ && got_browser_windows_ &&
+            web_app_registry_ready_);
   }
 
   Browser* ProcessSessionWindowsAndNotify(
       std::vector<std::unique_ptr<sessions::SessionWindow>>* windows,
       SessionID active_window_id) {
+    int window_count = 0;
+    int tab_count = 0;
     std::vector<RestoredTab> contents;
-    Browser* result =
-        ProcessSessionWindows(windows, active_window_id, &contents);
+    Browser* result = ProcessSessionWindows(
+        windows, active_window_id, &contents, &window_count, &tab_count);
+    if (log_event_) {
+      LogSessionServiceRestoreEvent(profile_, window_count, tab_count,
+                                    read_error_);
+    }
     on_session_restored_callbacks_->Notify(static_cast<int>(contents.size()));
     return result;
   }
@@ -360,27 +483,29 @@ class SessionRestoreImpl : public content::NotificationObserver {
   Browser* ProcessSessionWindows(
       std::vector<std::unique_ptr<sessions::SessionWindow>>* windows,
       SessionID active_window_id,
-      std::vector<RestoredTab>* created_contents) {
+      std::vector<RestoredTab>* created_contents,
+      int* window_count,
+      int* tab_count) {
     DVLOG(1) << "ProcessSessionWindows " << windows->size();
 
     if (windows->empty()) {
       // Restore was unsuccessful. The DOM storage system can also delete its
       // data, since no session restore will happen at a later point in time.
-      content::BrowserContext::GetDefaultStoragePartition(profile_)
+      profile_->GetDefaultStoragePartition()
           ->GetDOMStorageContext()
           ->StartScavengingUnusedSessionStorage();
       return FinishedTabCreation(false, false, created_contents);
     }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     chromeos::BootTimesRecorder::Get()->AddLoginTimeMarker(
         "SessionRestore-CreatingTabs-Start", false);
 #endif
 
-    // After the for loop this contains the last TABBED_BROWSER. Is null if no
-    // tabbed browsers exist.
-    Browser* last_browser = nullptr;
-    bool has_tabbed_browser = false;
+    // After the for loop this contains the last TYPE_NORMAL browser, or nullptr
+    // if no TYPE_NORMAL browser exists.
+    Browser* last_normal_browser = nullptr;
+    bool has_normal_browser = false;
 
     // After the for loop, this contains the browser to activate, if one of the
     // windows has the same id as specified in active_window_id.
@@ -398,90 +523,139 @@ class SessionRestoreImpl : public content::NotificationObserver {
     }
 
     for (auto i = windows->begin(); i != windows->end(); ++i) {
+      ++(*window_count);
+      // 1. Choose between restoring tabs in an existing browser or in a newly
+      //    created browser.
       Browser* browser = nullptr;
-      if (!has_tabbed_browser &&
-          (*i)->type == sessions::SessionWindow::TYPE_TABBED)
-        has_tabbed_browser = true;
       if (i == windows->begin() &&
-          (*i)->type == sessions::SessionWindow::TYPE_TABBED && browser_ &&
-          browser_->is_type_tabbed() &&
+          (*i)->type == sessions::SessionWindow::TYPE_NORMAL && browser_ &&
+          browser_->is_type_normal() &&
           !browser_->profile()->IsOffTheRecord()) {
         // The first set of tabs is added to the existing browser.
         browser = browser_;
       } else {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
         chromeos::BootTimesRecorder::Get()->AddLoginTimeMarker(
             "SessionRestore-CreateRestoredBrowser-Start", false);
 #endif
-        // Show the first window if none are visible.
+        // Change the initial show state of the created browser to
+        // SHOW_STATE_NORMAL if there are no visible browsers.
         ui::WindowShowState show_state = (*i)->show_state;
         if (!has_visible_browser) {
           show_state = ui::SHOW_STATE_NORMAL;
           has_visible_browser = true;
         }
-        browser = CreateRestoredBrowser(BrowserTypeForWindowType((*i)->type),
-                                        (*i)->bounds, (*i)->workspace,
-                                        show_state, (*i)->app_name);
-#if defined(OS_CHROMEOS)
+        browser = CreateRestoredBrowser(
+            BrowserTypeForWindowType((*i)->type), (*i)->bounds, (*i)->workspace,
+            (*i)->visible_on_all_workspaces, show_state, (*i)->app_name,
+            (*i)->user_title, (*i)->window_id.id());
+#if BUILDFLAG(IS_CHROMEOS_ASH)
         chromeos::BootTimesRecorder::Get()->AddLoginTimeMarker(
             "SessionRestore-CreateRestoredBrowser-End", false);
 #endif
       }
-      if ((*i)->type == sessions::SessionWindow::TYPE_TABBED)
-        last_browser = browser;
+
+      // 2. Track TYPE_NORMAL browsers.
+      if ((*i)->type == sessions::SessionWindow::TYPE_NORMAL) {
+        has_normal_browser = true;
+        last_normal_browser = browser;
+      }
+
+      // 3. Determine whether the currently active tab should be closed.
       WebContents* active_tab =
           browser->tab_strip_model()->GetActiveWebContents();
       int initial_tab_count = browser->tab_strip_model()->count();
       bool close_active_tab =
           clobber_existing_tab_ && i == windows->begin() &&
-          (*i)->type == sessions::SessionWindow::TYPE_TABBED && active_tab &&
+          (*i)->type == sessions::SessionWindow::TYPE_NORMAL && active_tab &&
           browser == browser_ && !(*i)->tabs.empty();
       if (close_active_tab)
         --initial_tab_count;
-      int selected_tab_index =
-          initial_tab_count > 0
-              ? browser->tab_strip_model()->active_index()
-              : std::max(0, std::min((*i)->selected_tab_index,
-                                     static_cast<int>((*i)->tabs.size()) - 1));
       if ((*i)->window_id == active_window_id)
         browser_to_activate = browser;
 
-      RestoreTabsToBrowser(*(*i), browser, initial_tab_count,
-                           selected_tab_index, created_contents);
+      // 5. Restore tabs in |browser|. This will also call Show() on |browser|
+      //    if its initial show state is not mimimized.
+      // For the cases that users have more than one desk, a window is restored
+      // to its parent desk, which can be non-active desk, and left invisible
+      // but unminimized.
+      base::flat_map<tab_groups::TabGroupId, tab_groups::TabGroupId>
+          new_group_ids;
+      RestoreTabsToBrowser(*(*i), browser, initial_tab_count, created_contents,
+                           &new_group_ids);
+      (*tab_count) += (static_cast<int>(browser->tab_strip_model()->count()) -
+                       initial_tab_count);
+
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
+#if defined(OS_MAC)
+      // On the mac, app visibility is asynchronously available, so we can't
+      // rely on a particular value here.
+      const bool is_visibility_async =
+          browser->type() == Browser::Type::TYPE_APP;
+#else
+      const bool is_visibility_async = false;
+#endif  // defined(OS_MAC)
+
+      DCHECK(is_visibility_async || browser->window()->IsVisible() ||
+             browser->window()->IsMinimized());
+
+#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
+
+      // 6. Tabs will be grouped appropriately in RestoreTabsToBrowser. Now
+      //    restore the groups' visual data.
+      TabGroupModel* group_model = browser->tab_strip_model()->group_model();
+      for (auto& session_tab_group : (*i)->tab_groups) {
+        TabGroup* model_tab_group =
+            group_model->GetTabGroup(new_group_ids.at(session_tab_group->id));
+        DCHECK(model_tab_group);
+        model_tab_group->SetVisualData(session_tab_group->visual_data);
+      }
+
+      // 7. Notify SessionService of restored tabs, so they can be saved to the
+      //    current session.
+      // TODO(fdoray): This seems redundant with the call to
+      // SessionService::TabRestored() at the end of chrome::AddRestoredTab().
+      // Consider removing it.
       NotifySessionServiceOfRestoredTabs(browser, initial_tab_count);
-      // This needs to be done after restore because closing the last tab will
-      // close the whole window.
+
+      // 8. Close the tab that was active in the window prior to session
+      //    restore, if needed.
       if (close_active_tab)
         chrome::CloseWebContents(browser, active_tab, true);
+
+      // Sanity check: A restored browser should have an active tab.
+      // TODO(https://crbug.com/1032348): Change to DCHECK once we understand
+      // why some browsers don't have an active tab on startup.
+      CHECK(browser->tab_strip_model()->GetActiveWebContents());
     }
 
-    if (browser_to_activate && browser_to_activate->is_type_tabbed())
-      last_browser = browser_to_activate;
+    if (browser_to_activate && browser_to_activate->is_type_normal())
+      last_normal_browser = browser_to_activate;
 
-    if (last_browser && !urls_to_open_.empty())
-      AppendURLsToBrowser(last_browser, urls_to_open_);
-#if defined(OS_CHROMEOS)
+    if (last_normal_browser && !urls_to_open_.empty())
+      AppendURLsToBrowser(last_normal_browser, urls_to_open_);
+#if BUILDFLAG(IS_CHROMEOS_ASH)
     chromeos::BootTimesRecorder::Get()->AddLoginTimeMarker(
         "SessionRestore-CreatingTabs-End", false);
 #endif
     if (browser_to_activate)
       browser_to_activate->window()->Activate();
 
-    // If last_browser is NULL and urls_to_open_ is non-empty,
+    // If last_normal_browser is NULL and urls_to_open_ is non-empty,
     // FinishedTabCreation will create a new TabbedBrowser and add the urls to
     // it.
     Browser* finished_browser =
-        FinishedTabCreation(true, has_tabbed_browser, created_contents);
+        FinishedTabCreation(true, has_normal_browser, created_contents);
     if (finished_browser)
-      last_browser = finished_browser;
+      last_normal_browser = finished_browser;
 
     // sessionStorages needed for the session restore have now been recreated
     // by RestoreTab. Now it's safe for the DOM storage system to start
     // deleting leftover data.
-    content::BrowserContext::GetDefaultStoragePartition(profile_)
+    profile_->GetDefaultStoragePartition()
         ->GetDOMStorageContext()
         ->StartScavengingUnusedSessionStorage();
-    return last_browser;
+    return last_normal_browser;
   }
 
   // Record an app launch event (if appropriate) for a tab which is about to
@@ -505,15 +679,19 @@ class SessionRestoreImpl : public content::NotificationObserver {
 
   // Adds the tabs from |window| to |browser|. Normal tabs go after the existing
   // tabs but pinned tabs will be pushed in front.
-  // If there are no existing tabs, the tab at |selected_tab_index| will be
-  // selected. Otherwise, the tab selection will remain untouched.
-  void RestoreTabsToBrowser(const sessions::SessionWindow& window,
-                            Browser* browser,
-                            int initial_tab_count,
-                            int selected_tab_index,
-                            std::vector<RestoredTab>* created_contents) {
+  // If there are no existing tabs, the tab at |window.selected_tab_index| will
+  // be selected. Otherwise, the tab selection will remain untouched.
+  void RestoreTabsToBrowser(
+      const sessions::SessionWindow& window,
+      Browser* browser,
+      int initial_tab_count,
+      std::vector<RestoredTab>* created_contents,
+      base::flat_map<tab_groups::TabGroupId, tab_groups::TabGroupId>*
+          new_group_ids) {
     DVLOG(1) << "RestoreTabsToBrowser " << window.tabs.size();
-    DCHECK(!window.tabs.empty());
+    // TODO(https://crbug.com/1032348): Change to DCHECK once we understand
+    // why some browsers don't have an active tab on startup.
+    CHECK(!window.tabs.empty());
     base::TimeTicks now = base::TimeTicks::Now();
     base::TimeTicks latest_last_active_time = base::TimeTicks::UnixEpoch();
     // The last active time of a WebContents is initially set to the
@@ -531,6 +709,14 @@ class SessionRestoreImpl : public content::NotificationObserver {
         latest_last_active_time = tab.last_active_time;
     }
 
+    // TODO(crbug.com/930991): Check that tab groups are contiguous in |window|
+    // to ensure tabs will not be reordered when restoring. This is not possible
+    // yet due the ordering of TabStripModelObserver notifications in an edge
+    // case.
+
+    const int selected_tab_index = base::ClampToRange(
+        window.selected_tab_index, 0, static_cast<int>(window.tabs.size() - 1));
+
     for (int i = 0; i < static_cast<int>(window.tabs.size()); ++i) {
       const sessions::SessionTab& tab = *(window.tabs[i]);
 
@@ -547,8 +733,8 @@ class SessionRestoreImpl : public content::NotificationObserver {
       // the existing ones. E.g. this happens in Win8 Metro where we merge
       // windows or when launching a hosted app from the app launcher.
       int tab_index = i + initial_tab_count;
-      RestoreTab(tab, browser, created_contents, tab_index, is_selected_tab,
-                 last_active_time);
+      RestoreTab(tab, browser, created_contents, new_group_ids, tab_index,
+                 is_selected_tab, last_active_time);
     }
   }
 
@@ -560,6 +746,8 @@ class SessionRestoreImpl : public content::NotificationObserver {
   void RestoreTab(const sessions::SessionTab& tab,
                   Browser* browser,
                   std::vector<RestoredTab>* created_contents,
+                  base::flat_map<tab_groups::TabGroupId,
+                                 tab_groups::TabGroupId>* new_group_ids,
                   const int tab_index,
                   bool is_selected_tab,
                   base::TimeTicks last_active_time) {
@@ -578,23 +766,34 @@ class SessionRestoreImpl : public content::NotificationObserver {
     scoped_refptr<content::SessionStorageNamespace> session_storage_namespace;
     if (!tab.session_storage_persistent_id.empty()) {
       session_storage_namespace =
-          content::BrowserContext::GetDefaultStoragePartition(profile_)
+          profile_->GetDefaultStoragePartition()
               ->GetDOMStorageContext()
               ->RecreateSessionStorage(tab.session_storage_persistent_id);
     }
 
+    // Relabel group IDs to prevent duplicating groups. See crbug.com/1202102.
+    absl::optional<tab_groups::TabGroupId> new_group;
+    if (tab.group) {
+      auto it = new_group_ids->find(*tab.group);
+      if (it == new_group_ids->end()) {
+        it = new_group_ids
+                 ->emplace(*tab.group, tab_groups::TabGroupId::GenerateNew())
+                 .first;
+      }
+      new_group = it->second;
+    }
+
+    // Apply the stored group.
     WebContents* web_contents = chrome::AddRestoredTab(
         browser, tab.navigations, tab_index, selected_index,
-        tab.extension_app_id, is_selected_tab, tab.pinned, true,
+        tab.extension_app_id, new_group, is_selected_tab, tab.pinned,
         last_active_time, session_storage_namespace.get(),
         tab.user_agent_override, true /* from_session_restore */);
-
-    // RestoreTab can return nullptr if |tab| doesn't have valid data.
-    if (!web_contents)
-      return;
+    DCHECK(web_contents);
 
     RestoredTab restored_tab(web_contents, is_selected_tab,
-                             tab.extension_app_id.empty(), tab.pinned);
+                             tab.extension_app_id.empty(), tab.pinned,
+                             new_group);
     created_contents->push_back(restored_tab);
 
     // If this isn't the selected tab, there's nothing else to do.
@@ -608,20 +807,35 @@ class SessionRestoreImpl : public content::NotificationObserver {
   Browser* CreateRestoredBrowser(Browser::Type type,
                                  gfx::Rect bounds,
                                  const std::string& workspace,
+                                 bool visible_on_all_workspaces,
                                  ui::WindowShowState show_state,
-                                 const std::string& app_name) {
+                                 const std::string& app_name,
+                                 const std::string& user_title,
+                                 int32_t restore_id) {
     Browser::CreateParams params(type, profile_, false);
-    if (!app_name.empty()) {
-      const bool trusted_source = true;  // We only store trusted app windows.
-      params = Browser::CreateParams::CreateForApp(app_name, trusted_source,
-                                                   bounds, profile_, false);
-    } else {
-      params.initial_bounds = bounds;
+    params.initial_bounds = bounds;
+    params.user_title = user_title;
+
+    // We only store trusted app windows, so we also create them as trusted.
+    if (type == Browser::Type::TYPE_APP) {
+      params = Browser::CreateParams::CreateForApp(
+          app_name, /*trusted_source=*/true, bounds, profile_,
+          /*user_gesture=*/false);
+    } else if (type == Browser::Type::TYPE_APP_POPUP) {
+      params = Browser::CreateParams::CreateForAppPopup(
+          app_name, /*trusted_source=*/true, bounds, profile_,
+          /*user_gesture=*/false);
     }
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+    params.restore_id = restore_id;
+#endif
+
     params.initial_show_state = show_state;
     params.initial_workspace = workspace;
-    params.is_session_restore = true;
-    return new Browser(params);
+    params.initial_visible_on_all_workspaces_state = visible_on_all_workspaces;
+    params.creation_source = Browser::CreationSource::kSessionRestore;
+    return Browser::Create(params);
   }
 
   void ShowBrowser(Browser* browser, int selected_tab_index) {
@@ -655,14 +869,14 @@ class SessionRestoreImpl : public content::NotificationObserver {
   // Invokes TabRestored on the SessionService for all tabs in browser after
   // initial_count.
   void NotifySessionServiceOfRestoredTabs(Browser* browser, int initial_count) {
-    SessionService* session_service =
-        SessionServiceFactory::GetForProfile(profile_);
-    if (!session_service)
+    SessionServiceBase* service =
+        GetAppropriateSessionServiceForProfile(browser);
+    if (!service)
       return;
     TabStripModel* tab_strip = browser->tab_strip_model();
     for (int i = initial_count; i < tab_strip->count(); ++i) {
-      session_service->TabRestored(tab_strip->GetWebContentsAt(i),
-                                   tab_strip->IsTabPinned(i));
+      service->TabRestored(tab_strip->GetWebContentsAt(i),
+                           tab_strip->IsTabPinned(i));
     }
   }
 
@@ -677,7 +891,7 @@ class SessionRestoreImpl : public content::NotificationObserver {
 
   // The quit-closure to terminate the nested message-loop started for
   // synchronous session-restore.
-  base::Closure quit_closure_for_sync_restore_;
+  base::OnceClosure quit_closure_for_sync_restore_;
 
   // See description of CLOBBER_CURRENT_TAB.
   const bool clobber_existing_tab_;
@@ -687,11 +901,25 @@ class SessionRestoreImpl : public content::NotificationObserver {
   // at least one window is created.
   const bool always_create_tabbed_browser_;
 
+  // If true, LogSessionServiceRestoreEvent() is called after restore.
+  const bool log_event_;
+
+  // If true, restores apps.
+  const bool restore_apps_;
+
+  // App restores depend on web_app::WebAppProvider on_registry_ready(). This
+  // bool will track that and hold up restores until that's ready too if apps
+  // are being restored.
+  bool web_app_registry_ready_ = false;
+
+  // During app restores, we make two GetLastSession calls to
+  // [App]SessionService, we need to wait till they both return before
+  // processing the windows together in one pass.
+  bool got_app_windows_ = false;
+  bool got_browser_windows_ = false;
+
   // Set of URLs to open in addition to those restored from the session.
   std::vector<GURL> urls_to_open_;
-
-  // Used to get the session.
-  base::CancelableTaskTracker cancelable_task_tracker_;
 
   // Responsible for loading the tabs.
   scoped_refptr<TabLoader> tab_loader_;
@@ -703,18 +931,25 @@ class SessionRestoreImpl : public content::NotificationObserver {
   std::vector<std::unique_ptr<sessions::SessionWindow>> windows_;
   SessionID active_window_id_;
 
-  content::NotificationRegistrar registrar_;
-
   // When asynchronous it's possible for there to be no windows. To make sure
   // Chrome doesn't prematurely exit we register a KeepAlive for the lifetime
   // of this object.
   std::unique_ptr<ScopedKeepAlive> keep_alive_;
+
+  // Same as |keep_alive_|, but also prevent |profile_| from getting deleted
+  // (when DestroyProfileOnBrowserClose is enabled).
+  std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive_;
 
   // The time we started the restore.
   base::TimeTicks restore_started_;
 
   // List of callbacks for session restore notification.
   SessionRestore::CallbackList* on_session_restored_callbacks_;
+
+  // Set to true if reading the last commands encountered an error.
+  bool read_error_ = false;
+
+  base::WeakPtrFactory<SessionRestoreImpl> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SessionRestoreImpl);
 };
@@ -723,36 +958,52 @@ class SessionRestoreImpl : public content::NotificationObserver {
 
 // static
 Browser* SessionRestore::RestoreSession(
-    Profile* profile, Browser* browser,
+    Profile* profile,
+    Browser* browser,
     SessionRestore::BehaviorBitmask behavior,
     const std::vector<GURL>& urls_to_open) {
-#if defined(OS_CHROMEOS)
-  chromeos::BootTimesRecorder::Get()->AddLoginTimeMarker(
-      "SessionRestore-Start", false);
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  chromeos::BootTimesRecorder::Get()->AddLoginTimeMarker("SessionRestore-Start",
+                                                         false);
 #endif
   DCHECK(profile);
-  // Always restore from the original profile (incognito profiles have no
-  // session service).
-  profile = profile->GetOriginalProfile();
-  if (!SessionServiceFactory::GetForProfile(profile)) {
-    NOTREACHED();
-    return nullptr;
-  }
+  DCHECK(SessionServiceFactory::GetForProfile(profile));
   profile->set_restored_last_session(true);
   // SessionRestoreImpl takes care of deleting itself when done.
-  SessionRestoreImpl* restorer = new SessionRestoreImpl(
-      profile, browser, (behavior & SYNCHRONOUS) != 0,
-      (behavior & CLOBBER_CURRENT_TAB) != 0,
-      (behavior & ALWAYS_CREATE_TABBED_BROWSER) != 0, urls_to_open,
-      SessionRestore::on_session_restored_callbacks());
+  SessionRestoreImpl* restorer =
+      new SessionRestoreImpl(profile, browser, (behavior & SYNCHRONOUS) != 0,
+                             (behavior & CLOBBER_CURRENT_TAB) != 0,
+                             (behavior & ALWAYS_CREATE_TABBED_BROWSER) != 0,
+                             (behavior & RESTORE_APPS) != 0,
+                             /* log_event */ true, urls_to_open,
+                             SessionRestore::on_session_restored_callbacks());
   return restorer->Restore();
 }
 
 // static
 void SessionRestore::RestoreSessionAfterCrash(Browser* browser) {
+  auto* profile = browser->profile();
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Desks restore a window to the right desk, so we should not reuse any
+  // browser window. Otherwise, the conflict of the parent desk arises because
+  // tabs created in this |browser| should remain in the current active desk,
+  // but the first restored window should be restored to its saved parent desk
+  // before a crash. This also avoids users' confusion of the current window
+  // disappearing from the current desk after pressing a restore button.
+  browser = nullptr;
+#endif
+
   SessionRestore::BehaviorBitmask behavior =
-      HasSingleNewTabPage(browser) ? SessionRestore::CLOBBER_CURRENT_TAB : 0;
-  SessionRestore::RestoreSession(browser->profile(), browser, behavior,
+      browser && HasSingleNewTabPage(browser)
+          ? SessionRestore::CLOBBER_CURRENT_TAB
+          : 0;
+
+#if BUILDFLAG(ENABLE_APP_SESSION_SERVICE)
+  // Apps should always be restored on crash restore.
+  behavior |= SessionRestore::RESTORE_APPS;
+#endif
+  SessionRestore::RestoreSession(profile, browser, behavior,
                                  std::vector<GURL>());
 }
 
@@ -774,7 +1025,8 @@ std::vector<Browser*> SessionRestore::RestoreForeignSessionWindows(
     std::vector<const sessions::SessionWindow*>::const_iterator end) {
   std::vector<GURL> gurls;
   SessionRestoreImpl restorer(profile, static_cast<Browser*>(nullptr), true,
-                              false, true, gurls,
+                              false, true, /* restore_apps */ false,
+                              /* log_event */ false, gurls,
                               on_session_restored_callbacks());
   return restorer.RestoreForeignSession(begin, end);
 }
@@ -787,7 +1039,9 @@ WebContents* SessionRestore::RestoreForeignSessionTab(
   Browser* browser = chrome::FindBrowserWithWebContents(source_web_contents);
   Profile* profile = browser->profile();
   std::vector<GURL> gurls;
-  SessionRestoreImpl restorer(profile, browser, true, false, false, gurls,
+  SessionRestoreImpl restorer(profile, browser, true, false, false,
+                              /* restore_apps */ false,
+                              /* log_event */ false, gurls,
                               on_session_restored_callbacks());
   return restorer.RestoreForeignTab(tab, disposition);
 }
@@ -817,9 +1071,9 @@ bool SessionRestore::IsRestoringSynchronously() {
 }
 
 // static
-SessionRestore::CallbackSubscription
-    SessionRestore::RegisterOnSessionRestoredCallback(
-        const base::Callback<void(int)>& callback) {
+base::CallbackListSubscription
+SessionRestore::RegisterOnSessionRestoredCallback(
+    const base::RepeatingCallback<void(int)>& callback) {
   return on_session_restored_callbacks()->Add(callback);
 }
 
@@ -860,7 +1114,7 @@ void SessionRestore::OnWillRestoreTab(content::WebContents* web_contents) {
 }
 
 // static
-base::CallbackList<void(int)>*
+base::RepeatingCallbackList<void(int)>*
     SessionRestore::on_session_restored_callbacks_ = nullptr;
 
 // static

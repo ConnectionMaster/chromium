@@ -6,7 +6,6 @@
 #define CONTENT_BROWSER_ANDROID_WEB_CONTENTS_OBSERVER_PROXY_H_
 
 #include <jni.h>
-#include <memory>
 
 #include "base/android/jni_weak_ref.h"
 #include "base/macros.h"
@@ -14,12 +13,12 @@
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/common/frame_navigate_params.h"
 #include "url/gurl.h"
 
 namespace content {
 
 class WebContents;
+class RenderFrameHost;
 
 // Extends WebContentsObserver for providing a public Java API for some of the
 // the calls it receives.
@@ -31,15 +30,19 @@ class WebContentsObserverProxy : public WebContentsObserver {
   void Destroy(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
 
  private:
+  void RenderFrameCreated(RenderFrameHost* render_frame_host) override;
+  void RenderFrameDeleted(RenderFrameHost* render_frame_host) override;
   void RenderViewReady() override;
   void RenderProcessGone(base::TerminationStatus termination_status) override;
   void DidStartLoading() override;
   void DidStopLoading() override;
+  void LoadProgressChanged(double progress) override;
   void DidFailLoad(RenderFrameHost* render_frame_host,
                    const GURL& validated_url,
-                   int error_code,
-                   const base::string16& error_description) override;
-  void DocumentAvailableInMainFrame() override;
+                   int error_code) override;
+  void DidChangeVisibleSecurityState() override;
+  void DocumentAvailableInMainFrame(
+      RenderFrameHost* render_frame_host) override;
   void DidFirstVisuallyNonEmptyPaint() override;
   void OnVisibilityChanged(content::Visibility visibility) override;
   void TitleWasSet(NavigationEntry* entry) override;
@@ -50,20 +53,21 @@ class WebContentsObserverProxy : public WebContentsObserver {
 
   void DidFinishLoad(RenderFrameHost* render_frame_host,
                      const GURL& validated_url) override;
-  void DocumentLoadedInFrame(RenderFrameHost* render_frame_host) override;
+  void DOMContentLoaded(RenderFrameHost* render_frame_host) override;
   void NavigationEntryCommitted(
       const LoadCommittedDetails& load_details) override;
   void NavigationEntriesDeleted() override;
   void NavigationEntryChanged(
       const EntryChangedDetails& change_details) override;
   void WebContentsDestroyed() override;
-  void DidAttachInterstitialPage() override;
-  void DidDetachInterstitialPage() override;
-  void DidChangeThemeColor(base::Optional<SkColor> color) override;
+  void DidChangeThemeColor() override;
   void MediaEffectivelyFullscreenChanged(bool is_fullscreen) override;
-  void SetToBaseURLForDataURLIfNeeded(std::string* url);
+  void DidToggleFullscreenModeForTab(bool entered_fullscreen,
+                                     bool will_cause_resize) override;
+  bool SetToBaseURLForDataURLIfNeeded(GURL* url);
   void ViewportFitChanged(blink::mojom::ViewportFit value) override;
-  void DidReloadLoFiImages() override;
+  void OnWebContentsFocused(RenderWidgetHost*) override;
+  void OnWebContentsLostFocus(RenderWidgetHost*) override;
 
   base::android::ScopedJavaGlobalRef<jobject> java_observer_;
   GURL base_url_of_last_started_data_url_;

@@ -7,38 +7,37 @@
 
 #include <memory>
 
-#include "ash/app_list/app_list_export.h"
+#include "ash/ash_export.h"
 #include "ash/assistant/model/assistant_interaction_model_observer.h"
 #include "ash/assistant/model/assistant_ui_model_observer.h"
+#include "ash/public/cpp/assistant/controller/assistant_controller.h"
+#include "ash/public/cpp/assistant/controller/assistant_controller_observer.h"
 #include "base/macros.h"
+#include "base/scoped_observation.h"
 #include "ui/views/view.h"
 #include "ui/views/view_observer.h"
 
 namespace ash {
+
 class AssistantFooterView;
 class AssistantProgressIndicator;
 class AssistantQueryView;
 class AssistantViewDelegate;
+class AssistantZeroStateView;
 class UiElementContainerView;
-}  // namespace ash
 
-namespace ui {
-class CallbackLayerAnimationObserver;
-}  // namespace ui
-
-namespace app_list {
-
-// AssistantMainStage is the child of AssistantMainView responsible for
+// AppListAssistantMainStage is the child of AssistantMainView responsible for
 // displaying the Assistant interaction to the user. This includes visual
 // affordances for the query, response, as well as suggestions.
-class APP_LIST_EXPORT AssistantMainStage
+class ASH_EXPORT AppListAssistantMainStage
     : public views::View,
       public views::ViewObserver,
-      public ash::AssistantInteractionModelObserver,
-      public ash::AssistantUiModelObserver {
+      public AssistantControllerObserver,
+      public AssistantInteractionModelObserver,
+      public AssistantUiModelObserver {
  public:
-  explicit AssistantMainStage(ash::AssistantViewDelegate* delegate);
-  ~AssistantMainStage() override;
+  explicit AppListAssistantMainStage(AssistantViewDelegate* delegate);
+  ~AppListAssistantMainStage() override;
 
   // views::View:
   const char* GetClassName() const override;
@@ -47,45 +46,51 @@ class APP_LIST_EXPORT AssistantMainStage
   // views::ViewObserver:
   void OnViewPreferredSizeChanged(views::View* view) override;
 
+  // AssistantControllerObserver:
+  void OnAssistantControllerDestroying() override;
+
   // AssistantInteractionModelObserver:
-  void OnCommittedQueryChanged(const ash::AssistantQuery& query) override;
-  void OnPendingQueryChanged(const ash::AssistantQuery& query) override;
-  void OnPendingQueryCleared() override;
+  void OnCommittedQueryChanged(const AssistantQuery& query) override;
+  void OnPendingQueryChanged(const AssistantQuery& query) override;
+  void OnPendingQueryCleared(bool due_to_commit) override;
   void OnResponseChanged(
-      const std::shared_ptr<ash::AssistantResponse>& response) override;
+      const scoped_refptr<AssistantResponse>& response) override;
 
   // AssistantUiModelObserver:
   void OnUiVisibilityChanged(
-      ash::AssistantVisibility new_visibility,
-      ash::AssistantVisibility old_visibility,
-      base::Optional<ash::AssistantEntryPoint> entry_point,
-      base::Optional<ash::AssistantExitPoint> exit_point) override;
+      AssistantVisibility new_visibility,
+      AssistantVisibility old_visibility,
+      absl::optional<AssistantEntryPoint> entry_point,
+      absl::optional<AssistantExitPoint> exit_point) override;
 
  private:
   void InitLayout();
+  std::unique_ptr<views::View> CreateContentLayoutContainer();
+  std::unique_ptr<views::View> CreateMainContentLayoutContainer();
+  std::unique_ptr<views::View> CreateDividerLayoutContainer();
+  std::unique_ptr<views::View> CreateFooterLayoutContainer();
 
-  void UpdateFooter();
+  void AnimateInZeroState();
+  void AnimateInFooter();
 
-  void OnFooterAnimationStarted(
-      const ui::CallbackLayerAnimationObserver& observer);
-  bool OnFooterAnimationEnded(
-      const ui::CallbackLayerAnimationObserver& observer);
+  void MaybeHideZeroState();
 
-  ash::AssistantViewDelegate* const delegate_;  // Owned by Shell.
+  AssistantViewDelegate* const delegate_;  // Owned by Shell.
 
   // Owned by view hierarchy.
-  ash::AssistantProgressIndicator* progress_indicator_;
+  AssistantProgressIndicator* progress_indicator_;
   views::View* horizontal_separator_;
-  ash::AssistantQueryView* query_view_;
-  ash::UiElementContainerView* ui_element_container_;
-  ash::AssistantFooterView* footer_;
+  AssistantQueryView* query_view_;
+  UiElementContainerView* ui_element_container_;
+  AssistantZeroStateView* zero_state_view_;
+  AssistantFooterView* footer_;
 
-  std::unique_ptr<ui::CallbackLayerAnimationObserver>
-      footer_animation_observer_;
+  base::ScopedObservation<AssistantController, AssistantControllerObserver>
+      assistant_controller_observation_{this};
 
-  DISALLOW_COPY_AND_ASSIGN(AssistantMainStage);
+  DISALLOW_COPY_AND_ASSIGN(AppListAssistantMainStage);
 };
 
-}  // namespace app_list
+}  // namespace ash
 
 #endif  // ASH_APP_LIST_VIEWS_ASSISTANT_ASSISTANT_MAIN_STAGE_H_

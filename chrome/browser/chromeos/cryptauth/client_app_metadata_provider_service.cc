@@ -4,27 +4,31 @@
 
 #include "chrome/browser/chromeos/cryptauth/client_app_metadata_provider_service.h"
 
-#include <map>
 #include <string>
 
+#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/ash_pref_names.h"
 #include "base/callback.h"
 #include "base/feature_list.h"
 #include "base/linux_util.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
+#include "base/strings/string_util.h"
+#include "base/time/time.h"
 #include "base/version.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/chromeos/cryptauth/cryptauth_device_id_provider_impl.h"
+#include "chrome/common/pref_names.h"
 #include "chromeos/components/multidevice/logging/logging.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/network/network_state_handler.h"
 #include "chromeos/network/network_type_pattern.h"
 #include "chromeos/services/device_sync/proto/cryptauth_better_together_feature_metadata.pb.h"
 #include "chromeos/services/device_sync/public/cpp/gcm_constants.h"
 #include "components/gcm_driver/instance_id/instance_id_driver.h"
 #include "components/gcm_driver/instance_id/instance_id_profile_service.h"
+#include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/version_info/version_info.h"
 #include "device/bluetooth/bluetooth_adapter.h"
@@ -35,6 +39,7 @@ namespace chromeos {
 namespace {
 
 const char kInstanceIdScope[] = "GCM";
+const char kDefaultModelName[] = "Chromebook";
 
 const cryptauthv2::FeatureMetadata& GenerateFeatureMetadata() {
   static const base::NoDestructor<cryptauthv2::FeatureMetadata>
@@ -58,6 +63,28 @@ const cryptauthv2::FeatureMetadata& GenerateFeatureMetadata() {
           inner_metadata.add_supported_features(
               cryptauthv2::
                   BetterTogetherFeatureMetadata_FeatureName_MAGIC_TETHER_CLIENT);
+        }
+
+        // Phone Hub is only supported if the associated flag is enabled.
+        if (features::IsPhoneHubEnabled()) {
+          inner_metadata.add_supported_features(
+              cryptauthv2::
+                  BetterTogetherFeatureMetadata_FeatureName_PHONE_HUB_CLIENT);
+        }
+
+        // Wifi Sync Android is only supported if the associated flag is
+        // enabled.
+        if (features::IsWifiSyncAndroidEnabled()) {
+          inner_metadata.add_supported_features(
+              cryptauthv2::
+                  BetterTogetherFeatureMetadata_FeatureName_WIFI_SYNC_CLIENT);
+        }
+
+        // Eche is only supported if the associated flag is enabled.
+        if (features::IsEcheSWAEnabled()) {
+          inner_metadata.add_supported_features(
+              cryptauthv2::
+                  BetterTogetherFeatureMetadata_FeatureName_ECHE_CLIENT);
         }
 
         // Note: |inner_metadata|'s enabled_features field is deprecated and
@@ -88,7 +115,19 @@ cryptauthv2::ApplicationSpecificMetadata GenerateApplicationSpecificMetadata(
   return metadata;
 }
 
+void LogInstanceIdTokenFetchRetries(int count) {
+  base::UmaHistogramExactLinear(
+      "CryptAuth.ClientAppMetadataInstanceIdTokenFetch.Retries", count, 2);
+}
+
 }  // namespace
+
+// static
+void ClientAppMetadataProviderService::RegisterProfilePrefs(
+    PrefRegistrySimple* registry) {
+  registry->RegisterStringPref(prefs::kCryptAuthInstanceId, std::string());
+  registry->RegisterStringPref(prefs::kCryptAuthInstanceIdToken, std::string());
+}
 
 // static
 int64_t ClientAppMetadataProviderService::ConvertVersionCodeToInt64(
@@ -123,9 +162,7 @@ ClientAppMetadataProviderService::ClientAppMetadataProviderService(
     instance_id::InstanceIDProfileService* instance_id_profile_service)
     : pref_service_(pref_service),
       network_state_handler_(network_state_handler),
-      instance_id_(instance_id_profile_service->driver()->GetInstanceID(
-          device_sync::kCryptAuthGcmAppId)),
-      weak_ptr_factory_(this) {}
+      instance_id_profile_service_(instance_id_profile_service) {}
 
 ClientAppMetadataProviderService::~ClientAppMetadataProviderService() {
   // If there are any pending callbacks, invoke them before this object is
@@ -151,10 +188,10 @@ void ClientAppMetadataProviderService::GetClientAppMetadata(
     return;
   }
 
-  // If |instance_id_| is null, Shutdown() has been called and there should be
-  // no further attempt to calculate the ClientAppMetadata, since this could
-  // result in touching deleted memory.
-  if (!instance_id_) {
+  // If |instance_id_profile_service_| is null, Shutdown() has been called and
+  // there should be no further attempt to calculate the ClientAppMetadata,
+  // since this could result in touching deleted memory.
+  if (!instance_id_profile_service_) {
     InvokePendingCallbacks();
     return;
   }
@@ -168,14 +205,15 @@ void ClientAppMetadataProviderService::GetClientAppMetadata(
   if (was_already_in_progress)
     return;
 
-  device::BluetoothAdapterFactory::GetAdapter(
-      base::Bind(&ClientAppMetadataProviderService::OnBluetoothAdapterFetched,
-                 weak_ptr_factory_.GetWeakPtr()));
+  device::BluetoothAdapterFactory::Get()->GetAdapter(base::BindOnce(
+      &ClientAppMetadataProviderService::OnBluetoothAdapterFetched,
+      weak_ptr_factory_.GetWeakPtr()));
 }
 
 void ClientAppMetadataProviderService::Shutdown() {
-  // Null out |instance_id_| to signify that it should no longer be used.
-  instance_id_ = nullptr;
+  // Null out |instance_id_profile_service_| to signify that it should no longer
+  // be used.
+  instance_id_profile_service_ = nullptr;
 
   // If the ClientAppMetadata is currently being computed and this class is
   // waiting for an asynchronous operation to return, stop the computation now
@@ -189,14 +227,14 @@ void ClientAppMetadataProviderService::Shutdown() {
 void ClientAppMetadataProviderService::OnBluetoothAdapterFetched(
     scoped_refptr<device::BluetoothAdapter> bluetooth_adapter) {
   base::SysInfo::GetHardwareInfo(
-      base::Bind(&ClientAppMetadataProviderService::OnHardwareInfoFetched,
-                 weak_ptr_factory_.GetWeakPtr(), bluetooth_adapter));
+      base::BindOnce(&ClientAppMetadataProviderService::OnHardwareInfoFetched,
+                     weak_ptr_factory_.GetWeakPtr(), bluetooth_adapter));
 }
 
 void ClientAppMetadataProviderService::OnHardwareInfoFetched(
     scoped_refptr<device::BluetoothAdapter> bluetooth_adapter,
     base::SysInfo::HardwareInfo hardware_info) {
-  instance_id_->GetID(base::Bind(
+  GetInstanceId()->GetID(base::BindOnce(
       &ClientAppMetadataProviderService::OnInstanceIdFetched,
       weak_ptr_factory_.GetWeakPtr(), bluetooth_adapter, hardware_info));
 }
@@ -206,14 +244,23 @@ void ClientAppMetadataProviderService::OnInstanceIdFetched(
     const base::SysInfo::HardwareInfo& hardware_info,
     const std::string& instance_id) {
   DCHECK(!instance_id.empty());
-  instance_id_->GetToken(
+  std::string previous_instance_id =
+      pref_service_->GetString(prefs::kCryptAuthInstanceId);
+  if (!previous_instance_id.empty()) {
+    base::UmaHistogramBoolean("CryptAuth.InstanceId.DidInstanceIdChange",
+                              previous_instance_id != instance_id);
+  }
+  pref_service_->SetString(prefs::kCryptAuthInstanceId, instance_id);
+
+  GetInstanceId()->GetToken(
       device_sync::
-          kCryptAuthGcmInstanceIdAuthorizedEntity /* authorized_entity */,
-      kInstanceIdScope /* scope */,
-      std::map<std::string, std::string>() /* options */, false /* is_lazy */,
-      base::Bind(&ClientAppMetadataProviderService::OnInstanceIdTokenFetched,
-                 weak_ptr_factory_.GetWeakPtr(), bluetooth_adapter,
-                 hardware_info, instance_id));
+          kCryptAuthV2EnrollmentAuthorizedEntity /* authorized_entity */,
+      kInstanceIdScope /* scope */, base::TimeDelta() /* time_to_live */,
+      {} /* flags */,
+      base::BindOnce(
+          &ClientAppMetadataProviderService::OnInstanceIdTokenFetched,
+          weak_ptr_factory_.GetWeakPtr(), bluetooth_adapter, hardware_info,
+          instance_id));
 }
 
 void ClientAppMetadataProviderService::OnInstanceIdTokenFetched(
@@ -222,12 +269,24 @@ void ClientAppMetadataProviderService::OnInstanceIdTokenFetched(
     const std::string& instance_id,
     const std::string& token,
     instance_id::InstanceID::Result result) {
+  // If the |token| doesn't begin with the |instance_id|, we have to re-create
+  // the entire InstanceID and remove the old one from storage.
+  if (token.find(':') != std::string::npos &&
+      !base::StartsWith(token, instance_id,
+                        base::CompareCase::INSENSITIVE_ASCII)) {
+    GetInstanceId()->DeleteID(base::BindOnce(
+        &ClientAppMetadataProviderService::OnInstanceIdDeleted,
+        weak_ptr_factory_.GetWeakPtr(), bluetooth_adapter, hardware_info));
+    return;
+  }
+  LogInstanceIdTokenFetchRetries(instance_id_recreated_ ? 1 : 0);
+
   std::string gcm_registration_id = *pending_gcm_registration_id_;
   pending_gcm_registration_id_.reset();
+  instance_id_recreated_ = false;
 
   UMA_HISTOGRAM_ENUMERATION(
-      "CryptAuth.ClientAppMetadataInstanceIdTokenFetch.Result", result,
-      instance_id::InstanceID::Result::LAST_RESULT + 1);
+      "CryptAuth.ClientAppMetadataInstanceIdTokenFetch.Result", result);
 
   // If fetching the token failed, invoke the pending callbacks with a null
   // ClientAppMetadata.
@@ -240,6 +299,13 @@ void ClientAppMetadataProviderService::OnInstanceIdTokenFetched(
   }
 
   DCHECK(!token.empty());
+  std::string previous_instance_id_token =
+      pref_service_->GetString(prefs::kCryptAuthInstanceIdToken);
+  if (!previous_instance_id_token.empty()) {
+    base::UmaHistogramBoolean("CryptAuth.InstanceId.DidInstanceIdTokenChange",
+                              previous_instance_id_token != token);
+  }
+  pref_service_->SetString(prefs::kCryptAuthInstanceIdToken, token);
 
   cryptauthv2::ClientAppMetadata metadata;
 
@@ -260,7 +326,13 @@ void ClientAppMetadataProviderService::OnInstanceIdTokenFetched(
   // device_display_diagonal_mils is unused because it only applies to
   // phones/tablets.
   metadata.set_device_display_diagonal_mils(0);
-  metadata.set_device_model(hardware_info.model);
+
+  base::UmaHistogramBoolean("CryptAuth.ClientAppMetadata.IsModelEmpty",
+                            hardware_info.model.empty());
+  metadata.set_device_model(hardware_info.model.empty() ? kDefaultModelName
+                                                        : hardware_info.model);
+  base::UmaHistogramBoolean("CryptAuth.ClientAppMetadata.IsManufacturerEmpty",
+                            hardware_info.manufacturer.empty());
   metadata.set_device_manufacturer(hardware_info.manufacturer);
   metadata.set_device_type(cryptauthv2::ClientAppMetadata_DeviceType_CHROME);
 
@@ -306,6 +378,35 @@ void ClientAppMetadataProviderService::OnInstanceIdTokenFetched(
 
   client_app_metadata_ = metadata;
   InvokePendingCallbacks();
+}
+
+void ClientAppMetadataProviderService::OnInstanceIdDeleted(
+    scoped_refptr<device::BluetoothAdapter> bluetooth_adapter,
+    const base::SysInfo::HardwareInfo& hardware_info,
+    instance_id::InstanceID::Result result) {
+  instance_id_profile_service_->driver()->RemoveInstanceID(
+      device_sync::kCryptAuthGcmAppId);
+
+  if (instance_id_recreated_) {
+    LogInstanceIdTokenFetchRetries(2);
+    PA_LOG(WARNING) << "ClientAppMetadataProviderService::"
+                    << "OnInstanceIdDeleted(): Instance Id deleted twice in a "
+                    << "row, aborting; result: " << result << ".";
+    pending_gcm_registration_id_.reset();
+    instance_id_recreated_ = false;
+    InvokePendingCallbacks();
+    return;
+  }
+
+  instance_id_recreated_ = true;
+  OnHardwareInfoFetched(bluetooth_adapter, hardware_info);
+}
+
+instance_id::InstanceID* ClientAppMetadataProviderService::GetInstanceId() {
+  DCHECK(instance_id_profile_service_);
+  DCHECK(instance_id_profile_service_->driver());
+  return instance_id_profile_service_->driver()->GetInstanceID(
+      device_sync::kCryptAuthGcmAppId);
 }
 
 int64_t ClientAppMetadataProviderService::SoftwareVersionCodeAsInt64() {

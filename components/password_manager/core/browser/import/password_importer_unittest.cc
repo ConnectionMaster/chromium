@@ -5,12 +5,13 @@
 #include "components/password_manager/core/browser/import/password_importer.h"
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_task_environment.h"
-#include "components/autofill/core/common/password_form.h"
+#include "base/test/task_environment.h"
+#include "components/password_manager/core/browser/import/csv_password_sequence.h"
+#include "components/password_manager/core/browser/password_form.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace password_manager {
@@ -18,38 +19,40 @@ namespace password_manager {
 namespace {
 const char kTestOriginURL[] = "http://accounts.google.com/a/LoginAuth";
 const char kTestSignonRealm[] = "http://accounts.google.com/";
-const char kTestUsername[] = "test@gmail.com";
-const char kTestPassword[] = "test1";
+const char16_t kTestUsername[] = u"test@gmail.com";
+const char16_t kTestPassword[] = u"test1";
 const char kTestFileName[] = "test_only.csv";
 }  // namespace
 
 class PasswordImporterTest : public testing::Test {
  public:
-  PasswordImporterTest()
-      : callback_called_(false), result_(PasswordImporter::NUM_IMPORT_RESULTS) {
-    CHECK(temp_directory_.CreateUniqueTempDir());
-  }
+  PasswordImporterTest() { CHECK(temp_directory_.CreateUniqueTempDir()); }
 
  protected:
   void StartImportAndWaitForCompletion(const base::FilePath& input_file) {
-    PasswordImporter::Import(input_file,
-                             base::Bind(&PasswordImporterTest::OnImportFinished,
-                                        base::Unretained(this)));
+    PasswordImporter::Import(
+        input_file, base::BindOnce(&PasswordImporterTest::OnImportFinished,
+                                   base::Unretained(this)));
 
-    scoped_task_environment_.RunUntilIdle();
+    task_environment_.RunUntilIdle();
 
     ASSERT_TRUE(callback_called_);
   }
 
   void OnImportFinished(PasswordImporter::Result result,
-                        const std::vector<autofill::PasswordForm>& passwords) {
+                        CSVPasswordSequence seq) {
     callback_called_ = true;
     result_ = result;
-    imported_passwords_ = passwords;
+    imported_passwords_.clear();
+    if (result != password_manager::PasswordImporter::SUCCESS)
+      return;
+    for (const auto& pwd : seq) {
+      imported_passwords_.push_back(pwd.ParseValid());
+    }
   }
 
   const PasswordImporter::Result& result() { return result_; }
-  const std::vector<autofill::PasswordForm>& imported_passwords() {
+  const std::vector<PasswordForm>& imported_passwords() {
     return imported_passwords_;
   }
 
@@ -57,11 +60,11 @@ class PasswordImporterTest : public testing::Test {
   base::ScopedTempDir temp_directory_;
 
  private:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::TaskEnvironment task_environment_;
 
-  bool callback_called_;
-  PasswordImporter::Result result_;
-  std::vector<autofill::PasswordForm> imported_passwords_;
+  bool callback_called_ = false;
+  PasswordImporter::Result result_ = PasswordImporter::NUM_IMPORT_RESULTS;
+  std::vector<PasswordForm> imported_passwords_;
 
   DISALLOW_COPY_AND_ASSIGN(PasswordImporterTest);
 };
@@ -79,12 +82,10 @@ TEST_F(PasswordImporterTest, CSVImport) {
 
   EXPECT_EQ(PasswordImporter::SUCCESS, result());
   ASSERT_EQ(1u, imported_passwords().size());
-  EXPECT_EQ(GURL(kTestOriginURL), imported_passwords()[0].origin);
+  EXPECT_EQ(GURL(kTestOriginURL), imported_passwords()[0].url);
   EXPECT_EQ(kTestSignonRealm, imported_passwords()[0].signon_realm);
-  EXPECT_EQ(base::ASCIIToUTF16(kTestUsername),
-            imported_passwords()[0].username_value);
-  EXPECT_EQ(base::ASCIIToUTF16(kTestPassword),
-            imported_passwords()[0].password_value);
+  EXPECT_EQ(kTestUsername, imported_passwords()[0].username_value);
+  EXPECT_EQ(kTestPassword, imported_passwords()[0].password_value);
 }
 
 TEST_F(PasswordImporterTest, ImportIOErrorDueToUnreadableFile) {

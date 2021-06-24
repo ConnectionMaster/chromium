@@ -10,11 +10,9 @@
 #include "base/fuchsia/scoped_service_binding.h"
 #include "base/macros.h"
 
-namespace base {
-namespace fuchsia {
-class ServiceDirectory;
-}  // namespace fuchsia
-}  // namespace base
+namespace sys {
+class OutgoingDirectory;
+}  // namespace sys
 
 namespace cr_fuchsia {
 
@@ -23,7 +21,7 @@ namespace cr_fuchsia {
 // client drops the channel.
 class LifecycleImpl : public ::fuchsia::modular::Lifecycle {
  public:
-  LifecycleImpl(base::fuchsia::ServiceDirectory* service_directory,
+  LifecycleImpl(sys::OutgoingDirectory* outgoing_directory,
                 base::OnceClosure on_terminate);
   ~LifecycleImpl() override;
 
@@ -31,8 +29,7 @@ class LifecycleImpl : public ::fuchsia::modular::Lifecycle {
   void Terminate() override;
 
  private:
-  const base::fuchsia::ScopedServiceBinding<::fuchsia::modular::Lifecycle>
-      binding_;
+  const base::ScopedServiceBinding<::fuchsia::modular::Lifecycle> binding_;
 
   base::OnceClosure on_terminate_;
 

@@ -6,12 +6,15 @@
 #define ASH_SHELF_SHELF_APPLICATION_MENU_MODEL_H_
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "ash/ash_export.h"
-#include "ash/public/interfaces/shelf.mojom.h"
+#include "ash/public/cpp/shelf_item_delegate.h"
+#include "base/containers/flat_set.h"
 #include "base/macros.h"
 #include "ui/base/models/simple_menu_model.h"
+#include "ui/gfx/image/image_skia.h"
 
 namespace ash {
 
@@ -30,15 +33,16 @@ class ASH_EXPORT ShelfApplicationMenuModel
     : public ui::SimpleMenuModel,
       public ui::SimpleMenuModel::Delegate {
  public:
-  // Makes a menu with a |title|, separators, and |items| for |delegate|.
+  using Items = ShelfItemDelegate::AppMenuItems;
+
+  // Makes a menu with a |title|, |items|, and a separator for |delegate|.
   // |delegate| may be null in unit tests that do not execute commands.
-  ShelfApplicationMenuModel(const base::string16& title,
-                            std::vector<mojom::MenuItemPtr> items,
+  ShelfApplicationMenuModel(const std::u16string& title,
+                            Items items,
                             ShelfItemDelegate* delegate);
   ~ShelfApplicationMenuModel() override;
 
   // ui::SimpleMenuModel::Delegate:
-  bool IsCommandIdChecked(int command_id) const override;
   bool IsCommandIdEnabled(int command_id) const override;
   void ExecuteCommand(int command_id, int event_flags) override;
 
@@ -49,11 +53,11 @@ class ASH_EXPORT ShelfApplicationMenuModel
   void RecordMenuItemSelectedMetrics(int command_id,
                                      int num_menu_items_enabled);
 
-  // The list of menu items as returned from the shelf item's controller.
-  std::vector<mojom::MenuItemPtr> items_;
-
   // The shelf item delegate that created the menu and executes its commands.
   ShelfItemDelegate* delegate_;
+
+  // A set containing the enabled command IDs.
+  base::flat_set<int> enabled_commands_;
 
   DISALLOW_COPY_AND_ASSIGN(ShelfApplicationMenuModel);
 };

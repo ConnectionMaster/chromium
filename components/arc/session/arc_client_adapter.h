@@ -9,20 +9,18 @@
 #include <string>
 
 #include "base/callback_forward.h"
+#include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
-#include "base/optional.h"
-#include "chromeos/dbus/login_manager/arc.pb.h"
-#include "chromeos/dbus/session_manager/session_manager_client.h"
+#include "chromeos/dbus/dbus_method_call_status.h"
+#include "components/arc/session/arc_start_params.h"
+#include "components/arc/session/arc_upgrade_params.h"
+
+namespace cryptohome {
+class Identification;
+}  // namespace cryptohome
 
 namespace arc {
-
-// TODO(yusukes): Move the enum and proto in system_api/ from login_manager's
-// namespace to arc and remove all the type aliases.
-using ArcContainerStopReason = login_manager::ArcContainerStopReason;
-using StartArcMiniContainerRequest =
-    login_manager::StartArcMiniContainerRequest;
-using UpgradeArcContainerRequest = login_manager::UpgradeArcContainerRequest;
 
 // An adapter to talk to a Chrome OS daemon to manage lifetime of ARC instance.
 class ArcClientAdapter {
@@ -30,8 +28,23 @@ class ArcClientAdapter {
   class Observer {
    public:
     virtual ~Observer() = default;
-    virtual void ArcInstanceStopped(ArcContainerStopReason stop_reason,
-                                    const std::string& instance_id) = 0;
+    virtual void ArcInstanceStopped(bool is_system_shutdown) = 0;
+  };
+
+  // DemoModeDelegate contains functions used to load the demo session apps for
+  // ARC. The adapter cannot do this directly because ash::DemoSession classes
+  // are in //chrome.
+  class DemoModeDelegate {
+   public:
+    virtual ~DemoModeDelegate() = default;
+
+    // Ensures that the demo session offline resources are loaded, if demo mode
+    // is enabled. This must be called before GetDemoAppsPath().
+    virtual void EnsureOfflineResourcesLoaded(base::OnceClosure callback) = 0;
+
+    // Gets the path of the image containing demo session Android apps. Returns
+    // an empty path if demo mode is not enabled.
+    virtual base::FilePath GetDemoAppsPath() = 0;
   };
 
   // Creates a default instance of ArcClientAdapter.
@@ -39,27 +52,34 @@ class ArcClientAdapter {
   virtual ~ArcClientAdapter();
 
   // StartMiniArc starts ARC with only a handful of ARC processes for Chrome OS
-  // login screen.  In case of success, callback will be called with
-  // |instance_id| set to a string.  The ID is passed to ArcInstanceStopped()
-  // to identify which instance is stopped. In case of error, |instance_id| will
-  // be nullopt.
-  using StartMiniArcCallback =
-      base::OnceCallback<void(base::Optional<std::string> instance_id)>;
-  virtual void StartMiniArc(const StartArcMiniContainerRequest& request,
-                            StartMiniArcCallback callback) = 0;
+  // login screen.
+  virtual void StartMiniArc(StartParams params,
+                            chromeos::VoidDBusMethodCallback callback) = 0;
 
-  // UpgradeArc upgrades a mini ARC instance to a full ARC instance. In case of
-  // success, success_callback is called. In case of error, |error_callback|
-  // will be called with a |low_free_disk_space| signaling whether the failure
-  // was due to low free disk space.
-  using UpgradeErrorCallback =
-      base::OnceCallback<void(bool low_free_disk_space)>;
-  virtual void UpgradeArc(const UpgradeArcContainerRequest& request,
-                          base::OnceClosure success_callback,
-                          UpgradeErrorCallback error_callback) = 0;
+  // UpgradeArc upgrades a mini ARC instance to a full ARC instance.
+  virtual void UpgradeArc(UpgradeParams params,
+                          chromeos::VoidDBusMethodCallback callback) = 0;
 
-  // Asynchronously stops the ARC instance.
-  virtual void StopArcInstance() = 0;
+  // Asynchronously stops the ARC instance. |on_shutdown| is true if the method
+  // is called due to the browser being shut down. Also backs up the ARC
+  // bug report if |should_backup_log| is set to true.
+  virtual void StopArcInstance(bool on_shutdown, bool should_backup_log) = 0;
+
+  // Sets a hash string of the profile user IDs and an ARC serial number for the
+  // user.
+  virtual void SetUserInfo(const cryptohome::Identification& cryptohome_id,
+                           const std::string& hash,
+                           const std::string& serial_number) = 0;
+
+  // Provides the DemoModeDelegate which will be used to load the demo session
+  // apps path.
+  virtual void SetDemoModeDelegate(DemoModeDelegate* delegate) = 0;
+
+  // Trims VM's memory by moving it to zram. |callback| is called when the
+  // operation is done.
+  using TrimVmMemoryCallback =
+      base::OnceCallback<void(bool success, const std::string& failure_reason)>;
+  virtual void TrimVmMemory(TrimVmMemoryCallback callback) = 0;
 
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);

@@ -7,17 +7,21 @@
 #include <utility>
 
 #include "base/bind.h"
+#include "base/containers/flat_set.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/task/lazy_task_runner.h"
+#include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/task/post_task.h"
 #include "base/task_runner_util.h"
 #include "build/build_config.h"
-#include "components/autofill/core/common/password_form.h"
 #include "components/password_manager/core/browser/export/password_csv_writer.h"
+#include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_list_sorter.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/ui/credential_provider_interface.h"
+
+namespace password_manager {
 
 namespace {
 
@@ -26,43 +30,58 @@ namespace {
 // destination and one of them was cancelled and will delete the file. We use
 // TaskPriority::USER_VISIBLE, because a busy UI is displayed while the
 // passwords are being exported.
-base::LazySingleThreadTaskRunner g_task_runner =
-    LAZY_SINGLE_THREAD_TASK_RUNNER_INITIALIZER(
+base::LazyThreadPoolSingleThreadTaskRunner g_task_runner =
+    LAZY_THREAD_POOL_SINGLE_THREAD_TASK_RUNNER_INITIALIZER(
         base::TaskTraits(base::MayBlock(), base::TaskPriority::USER_VISIBLE),
         base::SingleThreadTaskRunnerThreadMode::SHARED);
 
 // A wrapper for |write_function|, which can be bound and keep a copy of its
 // data on the closure.
-bool Write(
-    password_manager::PasswordManagerExporter::WriteCallback write_function,
-    password_manager::PasswordManagerExporter::SetPosixFilePermissionsCallback
+bool DoWriteOnTaskRunner(
+    PasswordManagerExporter::WriteCallback write_function,
+    PasswordManagerExporter::SetPosixFilePermissionsCallback
         set_permissions_function,
     const base::FilePath& destination,
     const std::string& serialised) {
-  if (write_function.Run(destination, serialised.c_str(), serialised.size()) !=
-      static_cast<int>(serialised.size())) {
+  if (!write_function.Run(destination, serialised))
     return false;
-  }
+
   // Set file permissions. This is a no-op outside of Posix.
   set_permissions_function.Run(destination, 0600 /* -rw------- */);
   return true;
 }
 
+bool DefaultWriteFunction(const base::FilePath& file, base::StringPiece data) {
+  return base::WriteFile(file, data);
+}
+
+bool DefaultDeleteFunction(const base::FilePath& file) {
+  return base::DeleteFile(file);
+}
+
+std::vector<std::unique_ptr<PasswordForm>> DeduplicatePasswordsAcrossStores(
+    std::vector<std::unique_ptr<PasswordForm>> passwords) {
+  auto get_sort_key = [](const auto& password) {
+    return CreateSortKey(*password, IgnoreStore(true));
+  };
+  auto cmp = [&](const auto& lhs, const auto& rhs) {
+    return get_sort_key(lhs) < get_sort_key(rhs);
+  };
+  base::flat_set<std::unique_ptr<PasswordForm>, decltype(cmp)> unique_passwords(
+      std::move(passwords), cmp);
+  return std::move(unique_passwords).extract();
+}
+
 }  // namespace
 
-namespace password_manager {
-
-using metrics_util::ExportPasswordsResult;
-
 PasswordManagerExporter::PasswordManagerExporter(
-    password_manager::CredentialProviderInterface*
-        credential_provider_interface,
+    CredentialProviderInterface* credential_provider_interface,
     ProgressCallback on_progress)
     : credential_provider_interface_(credential_provider_interface),
       on_progress_(std::move(on_progress)),
       last_progress_status_(ExportProgressStatus::NOT_STARTED),
-      write_function_(base::BindRepeating(&base::WriteFile)),
-      delete_function_(base::BindRepeating(&base::DeleteFile)),
+      write_function_(base::BindRepeating(&DefaultWriteFunction)),
+      delete_function_(base::BindRepeating(&DefaultDeleteFunction)),
 #if defined(OS_POSIX)
       set_permissions_function_(
           base::BindRepeating(base::SetPosixFilePermissions)),
@@ -70,26 +89,30 @@ PasswordManagerExporter::PasswordManagerExporter(
       set_permissions_function_(
           base::BindRepeating([](const base::FilePath&, int) { return true; })),
 #endif
-      task_runner_(g_task_runner.Get()),
-      weak_factory_(this) {
+      task_runner_(g_task_runner.Get()) {
 }
 
-PasswordManagerExporter::~PasswordManagerExporter() {}
+PasswordManagerExporter::~PasswordManagerExporter() = default;
 
 void PasswordManagerExporter::PreparePasswordsForExport() {
   DCHECK_EQ(GetProgressStatus(), ExportProgressStatus::NOT_STARTED);
-  export_preparation_started_ = base::Time::Now();
 
-  std::vector<std::unique_ptr<autofill::PasswordForm>> password_list =
+  std::vector<std::unique_ptr<PasswordForm>> password_list =
       credential_provider_interface_->GetAllPasswords();
-  size_t password_list_size = password_list.size();
 
+  // Deduplicate passwords that are present in multiple stores, so the output
+  // file doesn't contain repeated data.
+  std::vector<std::unique_ptr<PasswordForm>> deduplicated_password_list =
+      DeduplicatePasswordsAcrossStores(std::move(password_list));
+
+  size_t deduplicated_password_list_size = deduplicated_password_list.size();
   base::PostTaskAndReplyWithResult(
       task_runner_.get(), FROM_HERE,
-      base::BindOnce(&password_manager::PasswordCSVWriter::SerializePasswords,
-                     std::move(password_list)),
+      base::BindOnce(&PasswordCSVWriter::SerializePasswords,
+                     std::move(deduplicated_password_list)),
       base::BindOnce(&PasswordManagerExporter::SetSerialisedPasswordList,
-                     weak_factory_.GetWeakPtr(), password_list_size));
+                     weak_factory_.GetWeakPtr(),
+                     deduplicated_password_list_size));
 }
 
 void PasswordManagerExporter::SetDestination(
@@ -109,10 +132,6 @@ void PasswordManagerExporter::SetSerialisedPasswordList(
     const std::string& serialised) {
   serialised_password_list_ = serialised;
   password_count_ = count;
-
-  UMA_HISTOGRAM_MEDIUM_TIMES("PasswordManager.TimeReadingExportedPasswords",
-                             base::Time::Now() - export_preparation_started_);
-
   if (IsReadyForExport())
     Export();
 }
@@ -128,17 +147,9 @@ void PasswordManagerExporter::Cancel() {
   // If we are currently writing to the disk, we will have to cleanup the file
   // once writing stops.
   Cleanup();
-
-  // TODO(crbug.com/789561) If the passwords have already been written to the
-  // disk, then we've already recorded ExportPasswordsResult::SUCCESS. Ideally,
-  // we should make different results mutually exclusive.
-  UMA_HISTOGRAM_ENUMERATION("PasswordManager.ExportPasswordsToCSVResult",
-                            ExportPasswordsResult::USER_ABORTED,
-                            ExportPasswordsResult::COUNT);
 }
 
-password_manager::ExportProgressStatus
-PasswordManagerExporter::GetProgressStatus() {
+ExportProgressStatus PasswordManagerExporter::GetProgressStatus() {
   return last_progress_status_;
 }
 
@@ -170,37 +181,26 @@ void PasswordManagerExporter::Export() {
 
   base::PostTaskAndReplyWithResult(
       task_runner_.get(), FROM_HERE,
-      base::BindOnce(::Write, write_function_, set_permissions_function_,
-                     destination_, std::move(serialised_password_list_)),
+      base::BindOnce(DoWriteOnTaskRunner, write_function_,
+                     set_permissions_function_, destination_,
+                     std::move(serialised_password_list_)),
       base::BindOnce(&PasswordManagerExporter::OnPasswordsExported,
                      weak_factory_.GetWeakPtr()));
 }
 
-void PasswordManagerExporter::OnPasswordsExported(
-    bool success) {
+void PasswordManagerExporter::OnPasswordsExported(bool success) {
   if (success) {
     OnProgress(ExportProgressStatus::SUCCEEDED, std::string());
-
-    UMA_HISTOGRAM_ENUMERATION("PasswordManager.ExportPasswordsToCSVResult",
-                              ExportPasswordsResult::SUCCESS,
-                              ExportPasswordsResult::COUNT);
-    UMA_HISTOGRAM_COUNTS_1M("PasswordManager.ExportedPasswordsPerUserInCSV",
-                            password_count_);
   } else {
     OnProgress(ExportProgressStatus::FAILED_WRITE_FAILED,
                destination_.DirName().BaseName().AsUTF8Unsafe());
     // Don't leave partial password files, if we tell the user we couldn't write
     Cleanup();
-
-    UMA_HISTOGRAM_ENUMERATION("PasswordManager.ExportPasswordsToCSVResult",
-                              ExportPasswordsResult::WRITE_FAILED,
-                              ExportPasswordsResult::COUNT);
   }
 }
 
-void PasswordManagerExporter::OnProgress(
-    password_manager::ExportProgressStatus status,
-    const std::string& folder) {
+void PasswordManagerExporter::OnProgress(ExportProgressStatus status,
+                                         const std::string& folder) {
   last_progress_status_ = status;
   on_progress_.Run(status, folder);
 }
@@ -213,9 +213,9 @@ void PasswordManagerExporter::Cleanup() {
   // TODO(crbug.com/811779) When Chrome is overwriting an existing file, cancel
   // should restore the file rather than delete it.
   if (!destination_.empty()) {
-    task_runner_->PostTask(FROM_HERE,
-                           base::BindOnce(base::IgnoreResult(delete_function_),
-                                          destination_, false));
+    task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(base::IgnoreResult(delete_function_), destination_));
   }
 }
 

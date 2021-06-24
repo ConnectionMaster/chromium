@@ -8,7 +8,7 @@
 #include <memory>
 
 #include "ash/ash_export.h"
-#include "ash/session/session_observer.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "base/callback.h"
 
 class AccountId;
@@ -33,7 +33,7 @@ class ASH_EXPORT TouchDevicesController : public SessionObserver {
   TouchDevicesController();
   ~TouchDevicesController() override;
 
-  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry, bool for_test);
 
   // Toggles the status of touchpad between enabled and disabled.
   void ToggleTouchpad();

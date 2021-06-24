@@ -7,6 +7,7 @@
 
 #include "base/macros.h"
 #include "components/ui_devtools/ui_element.h"
+#include "components/ui_devtools/views/ui_element_with_metadata.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_widget_types.h"
 #include "ui/views/widget/widget.h"
@@ -19,11 +20,13 @@ class UIElementDelegate;
 
 class WidgetElement : public views::WidgetRemovalsObserver,
                       public views::WidgetObserver,
-                      public UIElement {
+                      public UIElementWithMetaData {
  public:
   WidgetElement(views::Widget* widget,
                 UIElementDelegate* ui_element_delegate,
                 UIElement* parent);
+  WidgetElement(const WidgetElement&) = delete;
+  WidgetElement& operator=(const WidgetElement&) = delete;
   ~WidgetElement() override;
   views::Widget* widget() const { return widget_; }
 
@@ -36,22 +39,24 @@ class WidgetElement : public views::WidgetRemovalsObserver,
   void OnWidgetDestroyed(views::Widget* widget) override;
 
   // UIElement:
-  std::vector<std::pair<std::string, std::string>> GetCustomProperties()
-      const override;
   void GetBounds(gfx::Rect* bounds) const override;
   void SetBounds(const gfx::Rect& bounds) override;
   void GetVisible(bool* visible) const override;
   void SetVisible(bool visible) override;
-  std::unique_ptr<protocol::Array<std::string>> GetAttributes() const override;
+  std::vector<std::string> GetAttributes() const override;
   std::pair<gfx::NativeWindow, gfx::Rect> GetNodeWindowAndScreenBounds()
       const override;
+  bool DispatchKeyEvent(protocol::DOM::KeyEvent* event) override;
 
   static views::Widget* From(const UIElement* element);
 
+ protected:
+  ui::Layer* GetLayer() const override;
+  ui::metadata::ClassMetaData* GetClassMetaData() const override;
+  void* GetClassInstance() const override;
+
  private:
   views::Widget* widget_;
-
-  DISALLOW_COPY_AND_ASSIGN(WidgetElement);
 };
 
 }  // namespace ui_devtools

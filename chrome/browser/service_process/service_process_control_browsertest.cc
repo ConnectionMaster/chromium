@@ -6,10 +6,10 @@
 
 #include "base/barrier_closure.h"
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
+#include "base/files/file_util.h"
 #include "base/location.h"
-#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/process/kill.h"
 #include "base/process/process.h"
@@ -26,11 +26,12 @@
 #include "chrome/common/cloud_print.mojom.h"
 #include "chrome/common/service_process_util.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "components/variations/variations_switches.h"
 #include "components/version_info/version_info.h"
 #include "content/public/common/content_paths.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 #if defined(OS_WIN)
@@ -43,25 +44,31 @@
 class ServiceProcessControlBrowserTest
     : public InProcessBrowserTest {
  public:
-  ServiceProcessControlBrowserTest() {
-    // Disable the field trial config, since the MojoChannelMac feature state
-    // will not be carried into the service process being launched in this test.
-    // TODO(https://crbug.com/944985): Remove this after the feature is
-    // launched.
-    base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        variations::switches::kDisableFieldTrialTestingConfig);
-  }
+  ServiceProcessControlBrowserTest() {}
   ~ServiceProcessControlBrowserTest() override {}
-
-  void HistogramsCallback(base::RepeatingClosure on_done) {
-    MockHistogramsCallback();
-    on_done.Run();
-  }
-
-  MOCK_METHOD0(MockHistogramsCallback, void());
 
  protected:
   void LaunchServiceProcessControl(base::RepeatingClosure on_launched) {
+#if defined(OS_MAC)
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    // browser_tests and the child processes run as standalone executables,
+    // rather than bundled apps. For this test, set up the CHILD_PROCESS_EXE to
+    // point to a bundle so that the service process has an Info.plist.
+    base::FilePath exe_path;
+    ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &exe_path));
+    exe_path = exe_path.Append(chrome::kBrowserProcessExecutablePath)
+                   .DirName()
+                   .DirName()
+                   .Append("Frameworks")
+                   .Append(chrome::kFrameworkName)
+                   .Append("Versions")
+                   .Append(chrome::kChromeVersion)
+                   .Append("Helpers")
+                   .Append(chrome::kHelperProcessExecutablePath);
+    base::ScopedPathOverride path_override(content::CHILD_PROCESS_EXE,
+                                           exe_path);
+#endif
+
     // Launch the process asynchronously.
     ServiceProcessControl::GetInstance()->Launch(
         base::BindOnce(
@@ -84,40 +91,26 @@ class ServiceProcessControlBrowserTest
   }
 
   void SetUp() override {
-#if defined(OS_MACOSX)
-    // browser_tests and the child processes run as standalone executables,
-    // rather than bundled apps. For this test, set up the CHILD_PROCESS_EXE to
-    // point to a bundle so that the service process has an Info.plist.
-    base::FilePath exe_path;
-    ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &exe_path));
-    exe_path = exe_path.DirName()
-                   .DirName()
-                   .Append("Contents")
-                   .Append("Versions")
-                   .Append(chrome::kChromeVersion)
-                   .Append(chrome::kHelperProcessExecutablePath);
-    child_process_exe_override_ = std::make_unique<base::ScopedPathOverride>(
-        content::CHILD_PROCESS_EXE, exe_path);
-#endif
-
     InProcessBrowserTest::SetUp();
 
+#if defined(OS_MAC) || defined(OS_LINUX) || defined(OS_CHROMEOS)
     // This should not be needed because TearDown() ends with a closed
     // service_process_, but HistogramsTimeout and Histograms fail without this
-    // on Mac.
+    // on Mac, and on Linux asan builds (https://crbug.com/1059446).
+    // Note that closing the process handle means that the exit-code check in
+    // TearDown will be skipped.
     service_process_.Close();
+#endif
   }
 
   void TearDown() override {
     if (ServiceProcessControl::GetInstance()->IsConnected())
       EXPECT_TRUE(ServiceProcessControl::GetInstance()->Shutdown());
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     // ForceServiceProcessShutdown removes the process from launched on Mac.
     ForceServiceProcessShutdown("", 0);
-
-    child_process_exe_override_.reset();
-#endif  // OS_MACOSX
+#endif  // OS_MAC
 
     if (service_process_.IsValid()) {
       int exit_code;
@@ -133,7 +126,8 @@ class ServiceProcessControlBrowserTest
   void ProcessControlLaunched(base::OnceClosure on_done) {
     base::ScopedAllowBlockingForTesting allow_blocking;
     base::ProcessId service_pid;
-    EXPECT_TRUE(GetServiceProcessData(NULL, &service_pid));
+    EXPECT_TRUE(
+        ServiceProcessState::GetServiceProcessData(nullptr, &service_pid));
     EXPECT_NE(static_cast<base::ProcessId>(0), service_pid);
 #if defined(OS_WIN)
     service_process_ =
@@ -152,9 +146,6 @@ class ServiceProcessControlBrowserTest
   }
 
  private:
-#if defined(OS_MACOSX)
-  std::unique_ptr<base::ScopedPathOverride> child_process_exe_override_;
-#endif
   base::Process service_process_;
 };
 
@@ -165,7 +156,7 @@ class RealServiceProcessControlBrowserTest
     ServiceProcessControlBrowserTest::SetUpCommandLine(command_line);
     base::FilePath exe;
     base::PathService::Get(base::DIR_EXE, &exe);
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     exe = exe.DirName().DirName().DirName();
 #endif
     exe = exe.Append(chrome::kHelperProcessExecutablePath);
@@ -182,9 +173,9 @@ IN_PROC_BROWSER_TEST_F(RealServiceProcessControlBrowserTest,
 
   // Make sure we are connected to the service process.
   ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
-  cloud_print::mojom::CloudPrintPtr cloud_print_proxy;
+  mojo::Remote<cloud_print::mojom::CloudPrint> cloud_print_proxy;
   ServiceProcessControl::GetInstance()->remote_interfaces().GetInterface(
-      &cloud_print_proxy);
+      cloud_print_proxy.BindNewPipeAndPassReceiver());
   base::RunLoop run_loop;
   cloud_print_proxy->GetCloudPrintProxyInfo(
       base::BindOnce([](base::OnceClosure done, bool, const std::string&,
@@ -201,9 +192,9 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, LaunchAndIPC) {
 
   // Make sure we are connected to the service process.
   ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
-  cloud_print::mojom::CloudPrintPtr cloud_print_proxy;
+  mojo::Remote<cloud_print::mojom::CloudPrint> cloud_print_proxy;
   ServiceProcessControl::GetInstance()->remote_interfaces().GetInterface(
-      &cloud_print_proxy);
+      cloud_print_proxy.BindNewPipeAndPassReceiver());
   base::RunLoop run_loop;
   cloud_print_proxy->GetCloudPrintProxyInfo(
       base::BindOnce([](base::OnceClosure done, bool, const std::string&,
@@ -215,20 +206,29 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, LaunchAndIPC) {
   EXPECT_TRUE(ServiceProcessControl::GetInstance()->Shutdown());
 }
 
-IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, LaunchAndReconnect) {
+// Flaky on macOS, linux and windows: https://crbug.com/978948
+#if defined(OS_MAC) || defined(OS_WIN) || defined(OS_LINUX) || \
+    defined(OS_CHROMEOS)
+#define MAYBE_LaunchAndReconnect DISABLED_LaunchAndReconnect
+#else
+#define MAYBE_LaunchAndReconnect LaunchAndReconnect
+#endif
+IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest,
+                       MAYBE_LaunchAndReconnect) {
   LaunchServiceProcessControlAndWait();
 
   // Make sure we are connected to the service process.
   ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
   // Send an IPC that will keep the service process alive after we disconnect.
-  cloud_print::mojom::CloudPrintPtr cloud_print_proxy;
+  mojo::Remote<cloud_print::mojom::CloudPrint> cloud_print_proxy;
   ServiceProcessControl::GetInstance()->remote_interfaces().GetInterface(
-      &cloud_print_proxy);
+      cloud_print_proxy.BindNewPipeAndPassReceiver());
   cloud_print_proxy->EnableCloudPrintProxyWithRobot(
       "", "", "", base::Value(base::Value::Type::DICTIONARY));
 
+  cloud_print_proxy.reset();
   ServiceProcessControl::GetInstance()->remote_interfaces().GetInterface(
-      &cloud_print_proxy);
+      cloud_print_proxy.BindNewPipeAndPassReceiver());
   {
     base::RunLoop run_loop;
     cloud_print_proxy->GetCloudPrintProxyInfo(
@@ -247,8 +247,9 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, LaunchAndReconnect) {
     run_loop.Run();
   }
 
+  cloud_print_proxy.reset();
   ServiceProcessControl::GetInstance()->remote_interfaces().GetInterface(
-      &cloud_print_proxy);
+      cloud_print_proxy.BindNewPipeAndPassReceiver());
   {
     base::RunLoop run_loop;
     cloud_print_proxy->GetCloudPrintProxyInfo(
@@ -265,7 +266,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, LaunchAndReconnect) {
 // This tests the case when a service process is launched when the browser
 // starts but we try to launch it again while setting up Cloud Print.
 // Flaky on Mac. http://crbug.com/517420
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_LaunchTwice DISABLED_LaunchTwice
 #else
 #define MAYBE_LaunchTwice LaunchTwice
@@ -276,9 +277,9 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, MAYBE_LaunchTwice) {
 
   // Make sure we are connected to the service process.
   ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
-  cloud_print::mojom::CloudPrintPtr cloud_print_proxy;
+  mojo::Remote<cloud_print::mojom::CloudPrint> cloud_print_proxy;
   ServiceProcessControl::GetInstance()->remote_interfaces().GetInterface(
-      &cloud_print_proxy);
+      cloud_print_proxy.BindNewPipeAndPassReceiver());
   {
     base::RunLoop run_loop;
     cloud_print_proxy->GetCloudPrintProxyInfo(
@@ -291,8 +292,9 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, MAYBE_LaunchTwice) {
   // Launch the service process again.
   LaunchServiceProcessControlAndWait();
   ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
+  cloud_print_proxy.reset();
   ServiceProcessControl::GetInstance()->remote_interfaces().GetInterface(
-      &cloud_print_proxy);
+      cloud_print_proxy.BindNewPipeAndPassReceiver());
   {
     base::RunLoop run_loop;
     cloud_print_proxy->GetCloudPrintProxyInfo(
@@ -304,7 +306,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, MAYBE_LaunchTwice) {
 }
 
 // Flaky on Mac. http://crbug.com/517420
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_MultipleLaunchTasks DISABLED_MultipleLaunchTasks
 #else
 #define MAYBE_MultipleLaunchTasks MultipleLaunchTasks
@@ -334,7 +336,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest,
 }
 
 // Flaky on Mac. http://crbug.com/517420
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_SameLaunchTask DISABLED_SameLaunchTask
 #else
 #define MAYBE_SameLaunchTask SameLaunchTask
@@ -356,7 +358,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, MAYBE_SameLaunchTask) {
 // Tests whether disconnecting from the service IPC causes the service process
 // to die.
 // Flaky on Mac. http://crbug.com/517420
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_DieOnDisconnect DISABLED_DieOnDisconnect
 #else
 #define MAYBE_DieOnDisconnect DieOnDisconnect
@@ -371,7 +373,7 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest,
 }
 
 // Flaky on Mac. http://crbug.com/517420
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_ForceShutdown DISABLED_ForceShutdown
 #else
 #define MAYBE_ForceShutdown ForceShutdown
@@ -383,13 +385,14 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, MAYBE_ForceShutdown) {
   ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
   base::ProcessId service_pid;
   base::ScopedAllowBlockingForTesting allow_blocking;
-  EXPECT_TRUE(GetServiceProcessData(NULL, &service_pid));
+  EXPECT_TRUE(
+      ServiceProcessState::GetServiceProcessData(nullptr, &service_pid));
   EXPECT_NE(static_cast<base::ProcessId>(0), service_pid);
   ForceServiceProcessShutdown(version_info::GetVersionNumber(), service_pid);
 }
 
 // Flaky on Mac. http://crbug.com/517420
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #define MAYBE_CheckPid DISABLED_CheckPid
 #else
 #define MAYBE_CheckPid CheckPid
@@ -397,61 +400,15 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, MAYBE_ForceShutdown) {
 IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, MAYBE_CheckPid) {
   base::ProcessId service_pid;
   base::ScopedAllowBlockingForTesting allow_blocking;
-  EXPECT_FALSE(GetServiceProcessData(NULL, &service_pid));
+  EXPECT_FALSE(
+      ServiceProcessState::GetServiceProcessData(nullptr, &service_pid));
   // Launch the service process.
   LaunchServiceProcessControlAndWait();
-  EXPECT_TRUE(GetServiceProcessData(NULL, &service_pid));
+  EXPECT_TRUE(
+      ServiceProcessState::GetServiceProcessData(nullptr, &service_pid));
   EXPECT_NE(static_cast<base::ProcessId>(0), service_pid);
   // Disconnect from service process.
   Disconnect();
-}
-
-IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, HistogramsNoService) {
-  ASSERT_FALSE(ServiceProcessControl::GetInstance()->IsConnected());
-  EXPECT_CALL(*this, MockHistogramsCallback()).Times(0);
-  EXPECT_FALSE(ServiceProcessControl::GetInstance()->GetHistograms(
-      base::BindRepeating(&ServiceProcessControlBrowserTest::HistogramsCallback,
-                          base::Unretained(this), base::DoNothing()),
-      base::TimeDelta()));
-}
-
-// Histograms disabled on OSX http://crbug.com/406227
-#if defined(OS_MACOSX)
-#define MAYBE_HistogramsTimeout DISABLED_HistogramsTimeout
-#define MAYBE_Histograms DISABLED_Histograms
-#else
-#define MAYBE_HistogramsTimeout HistogramsTimeout
-#define MAYBE_Histograms Histograms
-#endif
-IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest,
-                       MAYBE_HistogramsTimeout) {
-  LaunchServiceProcessControlAndWait();
-  ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
-  // Callback should not be called during GetHistograms call.
-  EXPECT_CALL(*this, MockHistogramsCallback()).Times(0);
-  base::RunLoop run_loop;
-  EXPECT_TRUE(ServiceProcessControl::GetInstance()->GetHistograms(
-      base::BindRepeating(&ServiceProcessControlBrowserTest::HistogramsCallback,
-                          base::Unretained(this), run_loop.QuitClosure()),
-      base::TimeDelta::FromMilliseconds(100)));
-  EXPECT_CALL(*this, MockHistogramsCallback()).Times(1);
-  EXPECT_TRUE(ServiceProcessControl::GetInstance()->Shutdown());
-  run_loop.Run();
-}
-
-IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, MAYBE_Histograms) {
-  LaunchServiceProcessControlAndWait();
-  ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
-  // Callback should not be called during GetHistograms call.
-  EXPECT_CALL(*this, MockHistogramsCallback()).Times(0);
-  // Wait for real callback by providing large timeout value.
-  base::RunLoop run_loop;
-  EXPECT_TRUE(ServiceProcessControl::GetInstance()->GetHistograms(
-      base::BindRepeating(&ServiceProcessControlBrowserTest::HistogramsCallback,
-                          base::Unretained(this), run_loop.QuitClosure()),
-      base::TimeDelta::FromHours(1)));
-  EXPECT_CALL(*this, MockHistogramsCallback()).Times(1);
-  run_loop.Run();
 }
 
 #if defined(OS_WIN)
@@ -462,9 +419,9 @@ IN_PROC_BROWSER_TEST_F(ServiceProcessControlBrowserTest, StopViaWmQuit) {
 
   // Make sure we are connected to the service process.
   ASSERT_TRUE(ServiceProcessControl::GetInstance()->IsConnected());
-  cloud_print::mojom::CloudPrintPtr cloud_print_proxy;
+  mojo::Remote<cloud_print::mojom::CloudPrint> cloud_print_proxy;
   ServiceProcessControl::GetInstance()->remote_interfaces().GetInterface(
-      &cloud_print_proxy);
+      cloud_print_proxy.BindNewPipeAndPassReceiver());
   base::RunLoop run_loop;
   cloud_print_proxy->GetCloudPrintProxyInfo(
       base::BindOnce([](base::OnceClosure done, bool, const std::string&,

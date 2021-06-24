@@ -10,6 +10,7 @@
 #include <string>
 
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/i18n/unicodestring.h"
@@ -18,11 +19,11 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/singleton.h"
 #include "base/observer_list.h"
-#include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/task_runner.h"
 #include "chromeos/settings/timezone_settings_helper.h"
 
@@ -157,6 +158,7 @@ static const char* kTimeZones[] = {
     "Asia/Yerevan",
     "Asia/Kabul",
     "Asia/Karachi",
+    "Asia/Aqtobe",
     "Asia/Ashgabat",
     "Asia/Oral",
     "Asia/Yekaterinburg",
@@ -254,7 +256,7 @@ void SetTimezoneIDFromString(const std::string& id) {
   }
 
   // Delete old symlink2 if it exists.
-  base::DeleteFile(timezone_symlink2, false);
+  base::DeleteFile(timezone_symlink2);
 
   // Create new symlink2.
   if (symlink(timezone_file.value().c_str(),
@@ -279,8 +281,8 @@ class TimezoneSettingsBaseImpl : public chromeos::system::TimezoneSettings {
 
   // TimezoneSettings implementation:
   const icu::TimeZone& GetTimezone() override;
-  base::string16 GetCurrentTimezoneID() override;
-  void SetTimezoneFromID(const base::string16& timezone_id) override;
+  std::u16string GetCurrentTimezoneID() override;
+  void SetTimezoneFromID(const std::u16string& timezone_id) override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
   const std::vector<std::unique_ptr<icu::TimeZone>>& GetTimezoneList()
@@ -345,12 +347,12 @@ const icu::TimeZone& TimezoneSettingsBaseImpl::GetTimezone() {
   return *timezone_.get();
 }
 
-base::string16 TimezoneSettingsBaseImpl::GetCurrentTimezoneID() {
+std::u16string TimezoneSettingsBaseImpl::GetCurrentTimezoneID() {
   return chromeos::system::TimezoneSettings::GetTimezoneID(GetTimezone());
 }
 
 void TimezoneSettingsBaseImpl::SetTimezoneFromID(
-    const base::string16& timezone_id) {
+    const std::u16string& timezone_id) {
   std::unique_ptr<icu::TimeZone> timezone(icu::TimeZone::createTimeZone(
       icu::UnicodeString(timezone_id.c_str(), timezone_id.size())));
   SetTimezone(*timezone);
@@ -393,10 +395,10 @@ void TimezoneSettingsImpl::SetTimezone(const icu::TimeZone& timezone) {
   VLOG(1) << "Setting timezone to " << id;
   // It's safe to change the timezone config files in the background as the
   // following operations don't depend on the completion of the config change.
-  base::PostTaskWithTraits(FROM_HERE,
-                           {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
-                            base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
-                           base::BindOnce(&SetTimezoneIDFromString, id));
+  base::ThreadPool::PostTask(FROM_HERE,
+                             {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+                              base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+                             base::BindOnce(&SetTimezoneIDFromString, id));
   icu::TimeZone::setDefault(*known_timezone);
   for (auto& observer : observers_)
     observer.TimezoneChanged(*known_timezone);
@@ -481,7 +483,7 @@ TimezoneSettings* TimezoneSettings::GetInstance() {
 }
 
 // static
-base::string16 TimezoneSettings::GetTimezoneID(const icu::TimeZone& timezone) {
+std::u16string TimezoneSettings::GetTimezoneID(const icu::TimeZone& timezone) {
   icu::UnicodeString id;
   return base::i18n::UnicodeStringToString16(timezone.getID(id));
 }

@@ -6,11 +6,10 @@
 
 #include "base/base64.h"
 #include "base/bind.h"
+#include "base/cxx17_backports.h"
 #include "base/location.h"
 #include "base/macros.h"
 #include "base/no_destructor.h"
-#include "base/stl_util.h"
-#include "base/task/post_task.h"
 #include "base/time/time.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -51,7 +50,7 @@ DesktopStreamsRegistryImpl::~DesktopStreamsRegistryImpl() {}
 std::string DesktopStreamsRegistryImpl::RegisterStream(
     int render_process_id,
     int render_frame_id,
-    const GURL& origin,
+    const url::Origin& origin,
     const DesktopMediaID& source,
     const std::string& extension_name,
     const DesktopStreamRegistryType type) {
@@ -67,8 +66,8 @@ std::string DesktopStreamsRegistryImpl::RegisterStream(
   stream.extension_name = extension_name;
   stream.type = type;
 
-  base::PostDelayedTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
+  GetUIThreadTaskRunner({})->PostDelayedTask(
+      FROM_HERE,
       base::BindOnce(&DesktopStreamsRegistryImpl::CleanupStream,
                      base::Unretained(this), id),
       base::TimeDelta::FromSeconds(kApprovedStreamTimeToLiveSeconds));
@@ -80,7 +79,7 @@ DesktopMediaID DesktopStreamsRegistryImpl::RequestMediaForStreamId(
     const std::string& id,
     int render_process_id,
     int render_frame_id,
-    const GURL& origin,
+    const url::Origin& origin,
     std::string* extension_name,
     const DesktopStreamRegistryType type) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);

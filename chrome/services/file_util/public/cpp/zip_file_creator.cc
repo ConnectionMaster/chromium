@@ -7,14 +7,12 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/callback_helpers.h"
+#include "base/files/file_util.h"
 #include "base/task/post_task.h"
-#include "chrome/services/file_util/public/mojom/constants.mojom.h"
+#include "base/task/thread_pool.h"
 #include "components/services/filesystem/directory_impl.h"
 #include "components/services/filesystem/lock_table.h"
 #include "content/public/browser/browser_thread.h"
-#include "mojo/public/cpp/bindings/strong_binding.h"
-#include "services/service_manager/public/cpp/connector.h"
 
 namespace {
 
@@ -23,81 +21,111 @@ base::File OpenFileHandleAsync(const base::FilePath& zip_path) {
   return base::File(zip_path, base::File::FLAG_CREATE | base::File::FLAG_WRITE);
 }
 
-void BindDirectoryInBackground(
-    const base::FilePath& src_dir,
-    mojo::InterfaceRequest<filesystem::mojom::Directory> request) {
-  auto directory_impl = std::make_unique<filesystem::DirectoryImpl>(
-      src_dir, /*temp_dir=*/nullptr, /*lock_table=*/nullptr);
-  mojo::MakeStrongBinding(std::move(directory_impl), std::move(request));
-}
-
 }  // namespace
 
-ZipFileCreator::ZipFileCreator(
-    const ResultCallback& callback,
-    const base::FilePath& src_dir,
-    const std::vector<base::FilePath>& src_relative_paths,
-    const base::FilePath& dest_file)
-    : callback_(callback),
-      src_dir_(src_dir),
-      src_relative_paths_(src_relative_paths),
-      dest_file_(dest_file) {
-  DCHECK(!callback_.is_null());
+ZipFileCreator::ZipFileCreator(ResultCallback result_callback,
+                               base::FilePath src_dir,
+                               std::vector<base::FilePath> src_relative_paths,
+                               base::FilePath dest_file)
+    : result_callback_(std::move(result_callback)),
+      src_dir_(std::move(src_dir)),
+      src_relative_paths_(std::move(src_relative_paths)),
+      dest_file_(std::move(dest_file)) {
+  DCHECK(result_callback_);
 }
 
-void ZipFileCreator::Start(service_manager::Connector* connector) {
+ZipFileCreator::~ZipFileCreator() {
+  DCHECK(!result_callback_);
+  DCHECK(!remote_zip_file_creator_);
+}
+
+void ZipFileCreator::Start(
+    mojo::PendingRemote<chrome::mojom::FileUtilService> service) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  // Note this class owns itself (it self-deletes when finished in ReportDone),
-  // so it is safe to use base::Unretained(this).
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock()},
-      base::Bind(&OpenFileHandleAsync, dest_file_),
-      base::Bind(&ZipFileCreator::CreateZipFile, base::Unretained(this),
-                 base::Unretained(connector)));
+      base::BindOnce(&OpenFileHandleAsync, dest_file_),
+      base::BindOnce(&ZipFileCreator::CreateZipFile, this, std::move(service)));
 }
 
-ZipFileCreator::~ZipFileCreator() = default;
-
-void ZipFileCreator::CreateZipFile(service_manager::Connector* connector,
-                                   base::File file) {
+void ZipFileCreator::Stop() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!zip_file_creator_ptr_);
+  ReportDone(false);
+}
+
+void ZipFileCreator::CreateZipFile(
+    mojo::PendingRemote<chrome::mojom::FileUtilService> service,
+    base::File file) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  DCHECK(!remote_zip_file_creator_);
 
   if (!file.IsValid()) {
-    LOG(ERROR) << "Failed to create dest zip file " << dest_file_.value();
+    LOG(ERROR) << "Cannot create ZIP file '" << dest_file_ << "'";
     ReportDone(false);
     return;
   }
 
-  if (!directory_task_runner_) {
-    directory_task_runner_ = base::CreateSequencedTaskRunnerWithTraits(
-        {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
-         base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
-  }
+  mojo::PendingRemote<filesystem::mojom::Directory> directory;
+  BindDirectory(directory.InitWithNewPipeAndPassReceiver());
 
-  filesystem::mojom::DirectoryPtr directory_ptr;
-  mojo::InterfaceRequest<filesystem::mojom::Directory> request =
-      mojo::MakeRequest(&directory_ptr);
-  directory_task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(&BindDirectoryInBackground, src_dir_,
-                                base::Passed(&request)));
+  service_.Bind(std::move(service));
+  service_->BindZipFileCreator(
+      remote_zip_file_creator_.BindNewPipeAndPassReceiver());
 
-  connector->BindInterface(chrome::mojom::kFileUtilServiceName,
-                           mojo::MakeRequest(&zip_file_creator_ptr_));
-  // See comment in Start() on why using base::Unretained(this) is safe.
-  zip_file_creator_ptr_.set_connection_error_handler(
-      base::Bind(&ZipFileCreator::ReportDone, base::Unretained(this), false));
-  zip_file_creator_ptr_->CreateZipFile(
-      std::move(directory_ptr), src_dir_, src_relative_paths_, std::move(file),
-      base::Bind(&ZipFileCreator::ReportDone, base::Unretained(this)));
+  remote_zip_file_creator_.set_disconnect_handler(
+      base::BindOnce(&ZipFileCreator::ReportDone, this, false));
+
+  remote_zip_file_creator_->CreateZipFile(
+      std::move(directory), src_relative_paths_, std::move(file),
+      listener_.BindNewPipeAndPassRemote(),
+      base::BindOnce(&ZipFileCreator::ReportDone, this));
+}
+
+void ZipFileCreator::BindDirectory(
+    mojo::PendingReceiver<filesystem::mojom::Directory> receiver) const {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  using RunnerPtr = scoped_refptr<base::SequencedTaskRunner>;
+  const RunnerPtr runner = base::ThreadPool::CreateSequencedTaskRunner(
+      {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
+       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
+
+  runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](base::FilePath src_dir,
+             mojo::PendingReceiver<filesystem::mojom::Directory> receiver,
+             RunnerPtr runner) {
+            mojo::MakeSelfOwnedReceiver(
+                std::make_unique<filesystem::DirectoryImpl>(
+                    std::move(src_dir), /*temp_dir=*/nullptr,
+                    /*lock_table=*/nullptr),
+                std::move(receiver), std::move(runner));
+          },
+          src_dir_, std::move(receiver), runner));
 }
 
 void ZipFileCreator::ReportDone(bool success) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  zip_file_creator_ptr_.reset();
-  base::ResetAndReturn(&callback_).Run(success);
+  listener_.reset();
+  remote_zip_file_creator_.reset();
 
-  delete this;
+  // In case of error, remove the partially created ZIP file.
+  if (!success)
+    base::ThreadPool::PostTask(
+        FROM_HERE, {base::MayBlock()},
+        base::BindOnce(base::GetDeleteFileCallback(), dest_file_));
+
+  if (result_callback_)
+    std::move(result_callback_).Run(success);
+}
+
+void ZipFileCreator::OnProgress(const uint64_t bytes,
+                                const uint32_t files,
+                                const uint32_t directories) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  // TODO(fdegros) Do something with progress information
+  VLOG(0) << "ZIP progress: " << bytes << " bytes, " << files << " files, "
+          << directories << " directories";
 }

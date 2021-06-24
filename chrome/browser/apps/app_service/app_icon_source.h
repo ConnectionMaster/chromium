@@ -5,7 +5,8 @@
 #ifndef CHROME_BROWSER_APPS_APP_SERVICE_APP_ICON_SOURCE_H_
 #define CHROME_BROWSER_APPS_APP_SERVICE_APP_ICON_SOURCE_H_
 
-#include "base/macros.h"
+#include <string>
+
 #include "content/public/browser/url_data_source.h"
 
 class Profile;
@@ -32,22 +33,24 @@ namespace apps {
 class AppIconSource : public content::URLDataSource {
  public:
   explicit AppIconSource(Profile* profile);
+  AppIconSource(const AppIconSource&) = delete;
+  AppIconSource& operator=(const AppIconSource&) = delete;
   ~AppIconSource() override;
 
+  static GURL GetIconURL(const std::string& app_id, int icon_size);
+
   // content::URLDataSource implementation.
-  std::string GetSource() const override;
+  std::string GetSource() override;
   void StartDataRequest(
-      const std::string& path,
-      const content::ResourceRequestInfo::WebContentsGetter& wc_getter,
-      const content::URLDataSource::GotDataCallback& callback) override;
-  std::string GetMimeType(const std::string&) const override;
-  bool AllowCaching() const override;
-  bool ShouldReplaceExistingSource() const override;
+      const GURL& url,
+      const content::WebContents::Getter& wc_getter,
+      content::URLDataSource::GotDataCallback callback) override;
+  std::string GetMimeType(const std::string&) override;
+  bool AllowCaching() override;
+  bool ShouldReplaceExistingSource() override;
 
  private:
-  Profile* profile_;
-
-  DISALLOW_COPY_AND_ASSIGN(AppIconSource);
+  Profile* const profile_;
 };
 
 }  // namespace apps

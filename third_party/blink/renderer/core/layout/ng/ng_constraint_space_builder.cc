@@ -10,33 +10,35 @@ namespace blink {
 
 namespace {
 
-NGPercentageStorage GetPercentageStorage(LayoutUnit percentage_size,
-                                         LayoutUnit available_size) {
+NGConstraintSpace::NGPercentageStorage GetPercentageStorage(
+    LayoutUnit percentage_size,
+    LayoutUnit available_size) {
   if (percentage_size == available_size)
-    return kSameAsAvailable;
+    return NGConstraintSpace::kSameAsAvailable;
 
-  if (percentage_size == NGSizeIndefinite)
-    return kIndefinite;
+  if (percentage_size == kIndefiniteSize)
+    return NGConstraintSpace::kIndefinite;
 
   if (percentage_size == LayoutUnit())
-    return kZero;
+    return NGConstraintSpace::kZero;
 
-  return kRareDataPercentage;
+  return NGConstraintSpace::kRareDataPercentage;
 }
 
 }  // namespace
 
-NGConstraintSpaceBuilder& NGConstraintSpaceBuilder::SetPercentageResolutionSize(
-    NGLogicalSize percentage_resolution_size) {
+void NGConstraintSpaceBuilder::SetPercentageResolutionSize(
+    LogicalSize percentage_resolution_size) {
 #if DCHECK_IS_ON()
   DCHECK(is_available_size_set_);
+  is_percentage_resolution_size_set_ = true;
 #endif
   if (LIKELY(is_in_parallel_flow_)) {
     space_.bitfields_.percentage_inline_storage =
         GetPercentageStorage(percentage_resolution_size.inline_size,
                              space_.available_size_.inline_size);
     if (UNLIKELY(space_.bitfields_.percentage_inline_storage ==
-                 kRareDataPercentage)) {
+                 NGConstraintSpace::kRareDataPercentage)) {
       space_.EnsureRareData()->percentage_resolution_size.inline_size =
           percentage_resolution_size.inline_size;
     }
@@ -44,17 +46,20 @@ NGConstraintSpaceBuilder& NGConstraintSpaceBuilder::SetPercentageResolutionSize(
     space_.bitfields_.percentage_block_storage =
         GetPercentageStorage(percentage_resolution_size.block_size,
                              space_.available_size_.block_size);
-    if (space_.bitfields_.percentage_block_storage == kRareDataPercentage) {
+    if (space_.bitfields_.percentage_block_storage ==
+        NGConstraintSpace::kRareDataPercentage) {
       space_.EnsureRareData()->percentage_resolution_size.block_size =
           percentage_resolution_size.block_size;
     }
   } else {
-    AdjustInlineSizeIfNeeded(&percentage_resolution_size.block_size);
+    if (adjust_inline_size_if_needed_)
+      AdjustInlineSizeIfNeeded(&percentage_resolution_size.block_size);
 
     space_.bitfields_.percentage_inline_storage =
         GetPercentageStorage(percentage_resolution_size.block_size,
                              space_.available_size_.inline_size);
-    if (space_.bitfields_.percentage_inline_storage == kRareDataPercentage) {
+    if (space_.bitfields_.percentage_inline_storage ==
+        NGConstraintSpace::kRareDataPercentage) {
       space_.EnsureRareData()->percentage_resolution_size.inline_size =
           percentage_resolution_size.block_size;
     }
@@ -62,20 +67,19 @@ NGConstraintSpaceBuilder& NGConstraintSpaceBuilder::SetPercentageResolutionSize(
     space_.bitfields_.percentage_block_storage =
         GetPercentageStorage(percentage_resolution_size.inline_size,
                              space_.available_size_.block_size);
-    if (space_.bitfields_.percentage_block_storage == kRareDataPercentage) {
+    if (space_.bitfields_.percentage_block_storage ==
+        NGConstraintSpace::kRareDataPercentage) {
       space_.EnsureRareData()->percentage_resolution_size.block_size =
           percentage_resolution_size.inline_size;
     }
   }
-
-  return *this;
 }
 
-NGConstraintSpaceBuilder&
-NGConstraintSpaceBuilder::SetReplacedPercentageResolutionSize(
-    NGLogicalSize replaced_percentage_resolution_size) {
+void NGConstraintSpaceBuilder::SetReplacedPercentageResolutionSize(
+    LogicalSize replaced_percentage_resolution_size) {
 #if DCHECK_IS_ON()
   DCHECK(is_available_size_set_);
+  DCHECK(is_percentage_resolution_size_set_);
 #endif
   if (LIKELY(is_in_parallel_flow_)) {
     // We don't store the replaced percentage resolution inline size, so we need
@@ -87,29 +91,28 @@ NGConstraintSpaceBuilder::SetReplacedPercentageResolutionSize(
         GetPercentageStorage(replaced_percentage_resolution_size.block_size,
                              space_.available_size_.block_size);
     if (space_.bitfields_.replaced_percentage_block_storage ==
-        kRareDataPercentage) {
+        NGConstraintSpace::kRareDataPercentage) {
       space_.EnsureRareData()->replaced_percentage_resolution_block_size =
           replaced_percentage_resolution_size.block_size;
     }
   } else {
-    AdjustInlineSizeIfNeeded(&replaced_percentage_resolution_size.block_size);
-
-    // We don't store the replaced percentage resolution inline size, so we need
-    // it to be the same as the regular percentage resolution inline size.
-    DCHECK_EQ(replaced_percentage_resolution_size.block_size,
-              space_.PercentageResolutionInlineSize());
+    // There should be no need to handle quirky percentage block-size resolution
+    // if this is an orthogonal writing mode root. The quirky percentage
+    // block-size resolution size that may have been calculated on an ancestor
+    // will be used to resolve inline-sizes of the child, and will therefore now
+    // be lost (since we don't store the quirky replaced percentage resolution
+    // *inline* size, only the *block* size). Just copy whatever was set as a
+    // regular percentage resolution block-size.
+    LayoutUnit block_size = space_.PercentageResolutionBlockSize();
 
     space_.bitfields_.replaced_percentage_block_storage =
-        GetPercentageStorage(replaced_percentage_resolution_size.inline_size,
-                             space_.available_size_.block_size);
+        GetPercentageStorage(block_size, space_.available_size_.block_size);
     if (space_.bitfields_.replaced_percentage_block_storage ==
-        kRareDataPercentage) {
+        NGConstraintSpace::kRareDataPercentage) {
       space_.EnsureRareData()->replaced_percentage_resolution_block_size =
-          replaced_percentage_resolution_size.inline_size;
+          block_size;
     }
   }
-
-  return *this;
 }
 
 }  // namespace blink

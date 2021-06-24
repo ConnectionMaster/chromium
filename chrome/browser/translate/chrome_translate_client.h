@@ -12,8 +12,10 @@
 #include "base/macros.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/translate/translate_bubble_model.h"
+#include "components/autofill_assistant/browser/public/runtime_observer.h"
 #include "components/language/core/browser/url_language_histogram.h"
 #include "components/translate/content/browser/content_translate_driver.h"
+#include "components/translate/content/browser/per_frame_content_translate_driver.h"
 #include "components/translate/core/browser/translate_client.h"
 #include "components/translate/core/browser/translate_step.h"
 #include "components/translate/core/common/translate_errors.h"
@@ -40,20 +42,23 @@ enum class ShowTranslateBubbleResult;
 
 class ChromeTranslateClient
     : public translate::TranslateClient,
-      public translate::ContentTranslateDriver::Observer,
+      public translate::TranslateDriver::LanguageDetectionObserver,
       public content::WebContentsObserver,
-      public content::WebContentsUserData<ChromeTranslateClient> {
+      public content::WebContentsUserData<ChromeTranslateClient>,
+      public autofill_assistant::RuntimeObserver {
  public:
   ~ChromeTranslateClient() override;
 
   // Gets the LanguageState associated with the page.
-  translate::LanguageState& GetLanguageState();
+  const translate::LanguageState& GetLanguageState();
 
   // Returns the ContentTranslateDriver instance associated with this
   // WebContents.
-  translate::ContentTranslateDriver& translate_driver() {
-    return translate_driver_;
-  }
+  translate::ContentTranslateDriver* translate_driver();
+
+  // Returns the PerFrameContentTranslateDriver instance, if any, associated
+  // with this WebContents.
+  translate::PerFrameContentTranslateDriver* per_frame_translate_driver();
 
   // Helper method to return a new TranslatePrefs instance.
   static std::unique_ptr<translate::TranslatePrefs> CreateTranslatePrefs(
@@ -77,16 +82,11 @@ class ChromeTranslateClient
   // Gets the associated TranslateManager.
   translate::TranslateManager* GetTranslateManager();
 
-  // Gets the associated WebContents. Returns NULL if the WebContents is being
-  // destroyed.
-  content::WebContents* GetWebContents();
-
   // TranslateClient implementation.
   translate::TranslateDriver* GetTranslateDriver() override;
   PrefService* GetPrefs() override;
   std::unique_ptr<translate::TranslatePrefs> GetTranslatePrefs() override;
   translate::TranslateAcceptLanguages* GetTranslateAcceptLanguages() override;
-  void RecordTranslateEvent(const metrics::TranslateEventProto&) override;
 #if defined(OS_ANDROID)
   std::unique_ptr<infobars::InfoBar> CreateInfoBar(
       std::unique_ptr<translate::TranslateInfoBarDelegate> delegate)
@@ -99,8 +99,6 @@ class ChromeTranslateClient
 #endif
   void SetPredefinedTargetLanguage(const std::string& translate_language_code);
 
-  void RecordLanguageDetectionEvent(
-      const translate::LanguageDetectionDetails& details) const override;
   bool ShowTranslateUI(translate::TranslateStep step,
                        const std::string& source_language,
                        const std::string& target_language,
@@ -108,13 +106,14 @@ class ChromeTranslateClient
                        bool triggered_from_menu) override;
   bool IsTranslatableURL(const GURL& url) override;
   void ShowReportLanguageDetectionErrorUI(const GURL& report_url) override;
+  bool IsAutofillAssistantRunning() const override;
 
-  // ContentTranslateDriver::Observer implementation.
+  // TranslateDriver::LanguageDetectionObserver implementation.
   void OnLanguageDetermined(
       const translate::LanguageDetectionDetails& details) override;
-  void OnPageTranslated(const std::string& original_lang,
-                        const std::string& translated_lang,
-                        translate::TranslateErrors::Type error_type) override;
+
+  // autofill_assistant::RuntimeObserver implementation.
+  void OnStateChanged(autofill_assistant::UIState state) override;
 
  private:
   explicit ChromeTranslateClient(content::WebContents* web_contents);
@@ -131,14 +130,19 @@ class ChromeTranslateClient
   // content::WebContentsObserver implementation.
   void WebContentsDestroyed() override;
 
+#if !defined(OS_ANDROID)
   // Shows the translate bubble.
   ShowTranslateBubbleResult ShowBubble(
       translate::TranslateStep step,
       const std::string& source_language,
       const std::string& target_language,
-      translate::TranslateErrors::Type error_type);
+      translate::TranslateErrors::Type error_type,
+      bool is_user_gesture);
+#endif
 
-  translate::ContentTranslateDriver translate_driver_;
+  std::unique_ptr<translate::ContentTranslateDriver> translate_driver_;
+  std::unique_ptr<translate::PerFrameContentTranslateDriver>
+      per_frame_translate_driver_;
   std::unique_ptr<translate::TranslateManager> translate_manager_;
 
 #if defined(OS_ANDROID)

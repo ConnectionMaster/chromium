@@ -9,11 +9,10 @@
 #include <set>
 #include <vector>
 
-#include "base/optional.h"
 #include "media/capture/video/chromeos/camera_device_delegate.h"
-#include "media/capture/video/chromeos/mojo/camera3.mojom.h"
+#include "media/capture/video/chromeos/mojom/camera3.mojom.h"
 #include "media/capture/video_capture_types.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
@@ -22,8 +21,9 @@ class CameraDeviceContext;
 // BufferInfo is used to store information about the buffer that is needed when
 // building buffers.
 struct BufferInfo {
-  uint64_t id;
-  const gfx::GpuMemoryBuffer* gpu_memory_buffer;
+  uint64_t ipc_id;
+  gfx::Size dimension;
+  gfx::GpuMemoryBufferHandle gpu_memory_buffer_handle;
   uint32_t drm_format;
   cros::mojom::HalPixelFormat hal_pixel_format;
 };
@@ -33,7 +33,7 @@ struct BufferInfo {
 class CAPTURE_EXPORT RequestBuilder {
  public:
   using RequestBufferCallback = base::RepeatingCallback<
-      base::Optional<BufferInfo>(StreamType, base::Optional<uint64_t>)>;
+      absl::optional<BufferInfo>(StreamType, absl::optional<uint64_t>)>;
 
   RequestBuilder(CameraDeviceContext* device_context,
                  // Callback to request buffer from StreamBufferManager. Having
@@ -47,7 +47,7 @@ class CAPTURE_EXPORT RequestBuilder {
   cros::mojom::Camera3CaptureRequestPtr BuildRequest(
       std::set<StreamType> stream_types,
       cros::mojom::CameraMetadataPtr settings,
-      base::Optional<uint64_t> input_buffer_id);
+      absl::optional<uint64_t> input_buffer_id);
 
  private:
   cros::mojom::CameraBufferHandlePtr CreateCameraBufferHandle(

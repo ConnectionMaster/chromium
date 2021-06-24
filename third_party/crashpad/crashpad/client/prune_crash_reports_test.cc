@@ -15,6 +15,7 @@
 #include "client/prune_crash_reports.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #include <algorithm>
@@ -52,7 +53,7 @@ class MockDatabase : public CrashReportDatabase {
   MOCK_METHOD1(DeleteReport, OperationStatus(const UUID&));
   MOCK_METHOD1(RequestUpload, OperationStatus(const UUID&));
 
-  // gmock doesn't support mocking methods with non-copyable types such as
+  // Google Mock doesn't support mocking methods with non-copyable types such as
   // unique_ptr.
   OperationStatus FinishedWritingCrashReport(std::unique_ptr<NewReport> report,
                                              UUID* uuid) override {
@@ -204,11 +205,12 @@ TEST(PruneCrashReports, PruneOrder) {
   using ::testing::Return;
   using ::testing::SetArgPointee;
 
+  const size_t kNumReports = 10;
   std::vector<CrashReportDatabase::Report> reports;
-  for (int i = 0; i < 10; ++i) {
+  for (size_t i = 0; i < kNumReports; ++i) {
     CrashReportDatabase::Report temp;
-    temp.uuid.data_1 = i;
-    temp.creation_time = NDaysAgo(i * 10);
+    temp.uuid.data_1 = static_cast<uint32_t>(i);
+    temp.creation_time = NDaysAgo(static_cast<int>(i) * 10);
     reports.push_back(temp);
   }
   std::mt19937 urng(std::random_device{}());
@@ -231,7 +233,7 @@ TEST(PruneCrashReports, PruneOrder) {
   }
 
   StaticCondition delete_all(true);
-  PruneCrashReportDatabase(&db, &delete_all);
+  EXPECT_EQ(PruneCrashReportDatabase(&db, &delete_all), kNumReports);
 }
 
 }  // namespace

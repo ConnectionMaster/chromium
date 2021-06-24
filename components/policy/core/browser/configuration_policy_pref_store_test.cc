@@ -7,7 +7,7 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/run_loop.h"
 #include "components/policy/core/browser/configuration_policy_handler_parameters.h"
 #include "components/policy/core/browser/configuration_policy_pref_store.h"
@@ -22,12 +22,15 @@ using testing::_;
 namespace policy {
 
 ConfigurationPolicyPrefStoreTest::ConfigurationPolicyPrefStoreTest()
-    : handler_list_(base::Bind(&ConfigurationPolicyPrefStoreTest::
-                                   PopulatePolicyHandlerParameters,
-                               base::Unretained(this)),
-                    GetChromePolicyDetailsCallback()) {
+    : handler_list_(base::BindRepeating(&ConfigurationPolicyPrefStoreTest::
+                                            PopulatePolicyHandlerParameters,
+                                        base::Unretained(this)),
+                    GetChromePolicyDetailsCallback(),
+                    /* allow_all_future_policies*/ true) {
   EXPECT_CALL(provider_, IsInitializationComplete(_))
       .WillRepeatedly(Return(false));
+  ON_CALL(provider_, IsFirstPolicyLoadComplete(_)).WillByDefault(Return(false));
+
   provider_.Init();
   providers_.push_back(&provider_);
   policy_service_ = std::make_unique<PolicyServiceImpl>(providers_);

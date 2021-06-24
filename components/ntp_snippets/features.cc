@@ -4,9 +4,9 @@
 
 #include "components/ntp_snippets/features.h"
 
+#include "base/cxx17_backports.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/stl_util.h"
 #include "base/time/clock.h"
 #include "build/build_config.h"
 #include "components/ntp_snippets/category_rankers/click_based_category_ranker.h"
@@ -34,18 +34,12 @@ const base::Feature kRemoteSuggestionsBackendFeature{
 
 // Keep sorted, and keep nullptr at the end.
 const base::Feature* const kAllFeatures[] = {
-    &kArticleSuggestionsFeature,
-    &kBreakingNewsPushFeature,
-    &kContentSuggestionsDebugLog,
-    &kKeepPrefetchedContentSuggestions,
-    &kNotificationsFeature,
-    &kRemoteSuggestionsBackendFeature};
+    &kArticleSuggestionsFeature, &kKeepPrefetchedContentSuggestions,
+    &kNotificationsFeature, &kRemoteSuggestionsBackendFeature,
+    &kOptionalImagesEnabledFeature};
 
 const base::Feature kArticleSuggestionsFeature{
     "NTPArticleSuggestions", base::FEATURE_ENABLED_BY_DEFAULT};
-
-const base::Feature kBreakingNewsPushFeature{"BreakingNewsPush",
-                                             base::FEATURE_DISABLED_BY_DEFAULT};
 
 const base::Feature kRemoteSuggestionsEmulateM58FetchingSchedule{
     "RemoteSuggestionsEmulateM58FetchingSchedule",
@@ -75,10 +69,10 @@ const char kNotificationsDailyLimit[] = "daily_limit";
 const char kNotificationsIgnoredLimitParam[] = "ignored_limit";
 
 const base::Feature kKeepPrefetchedContentSuggestions{
-    "KeepPrefetchedContentSuggestions", base::FEATURE_DISABLED_BY_DEFAULT};
+    "KeepPrefetchedContentSuggestions", base::FEATURE_ENABLED_BY_DEFAULT};
 
-const base::Feature kContentSuggestionsDebugLog{
-    "ContentSuggestionsDebugLog", base::FEATURE_DISABLED_BY_DEFAULT};
+const base::Feature kOptionalImagesEnabledFeature{
+    "NTPRemoteSuggestionsOptionalImages", base::FEATURE_ENABLED_BY_DEFAULT};
 
 std::vector<const base::Feature*> GetAllFeatures() {
   // Skip the last feature as it's a nullptr.
@@ -93,7 +87,7 @@ const char kDefaultReferrerUrl[] =
 // Provides ability to customize the referrer URL.
 // When specifying a referrer through a field trial, it must contain a path.
 // In case of default value above the path is empty, but it is specified.
-base::FeatureParam<std::string> kArticleSuggestionsReferrerURLParam{
+const base::FeatureParam<std::string> kArticleSuggestionsReferrerURLParam{
     &kArticleSuggestionsFeature, "referrer_url", kDefaultReferrerUrl};
 
 std::string GetContentSuggestionsReferrerURL() {

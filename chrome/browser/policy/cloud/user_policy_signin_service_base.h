@@ -16,9 +16,9 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_service.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/notification_observer.h"
 #include "content/public/browser/notification_registrar.h"
-#include "services/identity/public/cpp/identity_manager.h"
 
 class AccountId;
 class PrefService;
@@ -49,18 +49,18 @@ class UserPolicySigninServiceBase : public KeyedService,
                                     public CloudPolicyClient::Observer,
                                     public CloudPolicyService::Observer,
                                     public content::NotificationObserver,
-                                    public identity::IdentityManager::Observer {
+                                    public signin::IdentityManager::Observer {
  public:
   // The callback invoked once policy registration is complete. Passed
   // |dm_token| and |client_id| parameters are empty if policy registration
   // failed.
-  typedef base::Callback<void(const std::string& dm_token,
-                              const std::string& client_id)>
+  typedef base::OnceCallback<void(const std::string& dm_token,
+                                  const std::string& client_id)>
       PolicyRegistrationCallback;
 
   // The callback invoked once policy fetch is complete. Passed boolean
   // parameter is set to true if the policy fetch succeeded.
-  typedef base::Callback<void(bool)> PolicyFetchCallback;
+  typedef base::OnceCallback<void(bool)> PolicyFetchCallback;
 
   // Creates a UserPolicySigninServiceBase associated with the passed |profile|.
   UserPolicySigninServiceBase(
@@ -68,7 +68,7 @@ class UserPolicySigninServiceBase : public KeyedService,
       PrefService* local_state,
       DeviceManagementService* device_management_service,
       UserCloudPolicyManager* policy_manager,
-      identity::IdentityManager* identity_manager,
+      signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory);
   ~UserPolicySigninServiceBase() override;
 
@@ -82,11 +82,11 @@ class UserPolicySigninServiceBase : public KeyedService,
       const std::string& dm_token,
       const std::string& client_id,
       scoped_refptr<network::SharedURLLoaderFactory> profile_url_loader_factory,
-      const PolicyFetchCallback& callback);
+      PolicyFetchCallback callback);
 
-  // identity::IdentityManager::Observer implementation:
-  void OnPrimaryAccountCleared(
-      const CoreAccountInfo& previous_primary_account_info) override;
+  // signin::IdentityManager::Observer implementation:
+  void OnPrimaryAccountChanged(
+      const signin::PrimaryAccountChangeEvent& event_details) override;
 
   // content::NotificationObserver implementation:
   void Observe(int type,
@@ -147,18 +147,24 @@ class UserPolicySigninServiceBase : public KeyedService,
   // out) and deletes any cached policy.
   virtual void ShutdownUserCloudPolicyManager();
 
+  bool CanApplyPoliciesForSignedInUser(bool check_for_refresh_token);
+
+  Profile* profile() { return profile_; }
   // Convenience helpers to get the associated UserCloudPolicyManager and
   // IdentityManager.
   UserCloudPolicyManager* policy_manager() { return policy_manager_; }
-  identity::IdentityManager* identity_manager() { return identity_manager_; }
+  signin::IdentityManager* identity_manager() { return identity_manager_; }
 
   content::NotificationRegistrar* registrar() { return &registrar_; }
+  signin::ConsentLevel consent_level() const { return consent_level_; }
 
  private:
+  // Parent profile for this service.
+  Profile* profile_;
   // Weak pointer to the UserCloudPolicyManager and IdentityManager this service
   // is associated with.
   UserCloudPolicyManager* policy_manager_;
-  identity::IdentityManager* identity_manager_;
+  signin::IdentityManager* identity_manager_;
 
   content::NotificationRegistrar registrar_;
 
@@ -166,7 +172,8 @@ class UserPolicySigninServiceBase : public KeyedService,
   DeviceManagementService* device_management_service_;
   scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory_;
 
-  base::WeakPtrFactory<UserPolicySigninServiceBase> weak_factory_;
+  signin::ConsentLevel consent_level_;
+  base::WeakPtrFactory<UserPolicySigninServiceBase> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(UserPolicySigninServiceBase);
 };

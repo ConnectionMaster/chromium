@@ -7,8 +7,8 @@
 #include <memory>
 #include <utility>
 
-#include "base/logging.h"
-#include "base/memory/ptr_util.h"
+#include "base/check.h"
+#include "base/notreached.h"
 #include "base/values.h"
 #include "printing/metafile.h"
 #include "printing/print_dialog_gtk_interface.h"
@@ -19,8 +19,8 @@ namespace printing {
 
 namespace {
 
-// Function pointer for creating print dialogs. |callback| is only used when
-// |show_dialog| is true.
+// Function pointer for creating print dialogs. `callback` is only used when
+// `show_dialog` is true.
 PrintDialogGtkInterface* (*create_dialog_func_)(PrintingContextLinux* context) =
     nullptr;
 
@@ -31,7 +31,7 @@ gfx::Size (*get_pdf_paper_size_)(PrintingContextLinux* context) = nullptr;
 
 // static
 std::unique_ptr<PrintingContext> PrintingContext::Create(Delegate* delegate) {
-  return base::WrapUnique(new PrintingContextLinux(delegate));
+  return std::make_unique<PrintingContextLinux>(delegate);
 }
 
 PrintingContextLinux::PrintingContextLinux(Delegate* delegate)
@@ -122,18 +122,23 @@ PrintingContext::Result PrintingContextLinux::UpdatePrinterSettings(
     print_dialog_->AddRefToDialog();
   }
 
-  print_dialog_->UpdateSettings(&settings_);
+  // PrintDialogGtk::UpdateSettings() calls InitWithSettings() so settings_ will
+  // remain non-null after this line.
+  print_dialog_->UpdateSettings(std::move(settings_));
+  DCHECK(settings_);
+
   return OK;
 }
 
-void PrintingContextLinux::InitWithSettings(const PrintSettings& settings) {
+void PrintingContextLinux::InitWithSettings(
+    std::unique_ptr<PrintSettings> settings) {
   DCHECK(!in_print_job_);
 
-  settings_ = settings;
+  settings_ = std::move(settings);
 }
 
 PrintingContext::Result PrintingContextLinux::NewDocument(
-    const base::string16& document_name) {
+    const std::u16string& document_name) {
   DCHECK(!in_print_job_);
   in_print_job_ = true;
 

@@ -4,19 +4,19 @@
 
 #include "media/mojo/services/mojo_cdm_helper.h"
 
+#include "base/macros.h"
 #include "base/stl_util.h"
 #include "media/base/cdm_context.h"
 #include "media/cdm/cdm_helpers.h"
 #include "media/mojo/services/mojo_cdm_allocator.h"
 #include "media/mojo/services/mojo_cdm_file_io.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
-#include "services/service_manager/public/cpp/connect.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 
 namespace media {
 
-MojoCdmHelper::MojoCdmHelper(
-    service_manager::mojom::InterfaceProvider* interface_provider)
-    : interface_provider_(interface_provider), weak_factory_(this) {}
+MojoCdmHelper::MojoCdmHelper(mojom::FrameInterfaceFactory* frame_interfaces)
+    : frame_interfaces_(frame_interfaces) {}
 
 MojoCdmHelper::~MojoCdmHelper() = default;
 
@@ -25,11 +25,13 @@ void MojoCdmHelper::SetFileReadCB(FileReadCB file_read_cb) {
 }
 
 cdm::FileIO* MojoCdmHelper::CreateCdmFileIO(cdm::FileIOClient* client) {
-  ConnectToCdmStorage();
+  mojo::Remote<mojom::CdmStorage> cdm_storage;
+  frame_interfaces_->CreateCdmStorage(cdm_storage.BindNewPipeAndPassReceiver());
+  // No reset_on_disconnect() since when document is destroyed the CDM should be
+  // destroyed as well.
 
-  // Pass a reference to CdmStorage so that MojoCdmFileIO can open a file.
   auto mojo_cdm_file_io =
-      std::make_unique<MojoCdmFileIO>(this, client, cdm_storage_ptr_.get());
+      std::make_unique<MojoCdmFileIO>(this, client, std::move(cdm_storage));
 
   cdm::FileIO* cdm_file_io = mojo_cdm_file_io.get();
   DVLOG(3) << __func__ << ": cdm_file_io = " << cdm_file_io;
@@ -38,24 +40,21 @@ cdm::FileIO* MojoCdmHelper::CreateCdmFileIO(cdm::FileIOClient* client) {
   return cdm_file_io;
 }
 
-cdm::CdmProxy* MojoCdmHelper::CreateCdmProxy(cdm::CdmProxyClient* client) {
-  DVLOG(3) << __func__;
-
-  if (cdm_proxy_) {
-    DVLOG(1) << __func__ << ": Only one outstanding CdmProxy allowed.";
-    return nullptr;
-  }
-
-  mojom::CdmProxyPtr cdm_proxy_ptr;
-  service_manager::GetInterface<mojom::CdmProxy>(interface_provider_,
-                                                 &cdm_proxy_ptr);
-  cdm_proxy_ = std::make_unique<MojoCdmProxy>(std::move(cdm_proxy_ptr), client);
-  return cdm_proxy_.get();
+url::Origin MojoCdmHelper::GetCdmOrigin() {
+  url::Origin cdm_origin;
+  // Since the CDM is created asynchronously, by the time this function is
+  // called, the render frame host in the browser process may already be gone.
+  // It's safe to ignore the error since the origin is used for crash reporting.
+  ignore_result(frame_interfaces_->GetCdmOrigin(&cdm_origin));
+  return cdm_origin;
 }
 
-int MojoCdmHelper::GetCdmProxyCdmId() {
-  return cdm_proxy_ ? cdm_proxy_->GetCdmId() : CdmContext::kInvalidCdmId;
+#if defined(OS_WIN)
+void MojoCdmHelper::GetCdmOriginId(GetCdmOriginIdCB callback) {
+  ConnectToCdmDocumentService();
+  cdm_document_service_->GetCdmOriginId(std::move(callback));
 }
+#endif  // defined(OS_WIN)
 
 cdm::Buffer* MojoCdmHelper::CreateCdmBuffer(size_t capacity) {
   return GetAllocator()->CreateCdmBuffer(capacity);
@@ -69,7 +68,7 @@ void MojoCdmHelper::QueryStatus(QueryStatusCB callback) {
   QueryStatusCB scoped_callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
       std::move(callback), false, 0, 0);
   ConnectToOutputProtection();
-  output_protection_ptr_->QueryStatus(std::move(scoped_callback));
+  output_protection_->QueryStatus(std::move(scoped_callback));
 }
 
 void MojoCdmHelper::EnableProtection(uint32_t desired_protection_mask,
@@ -77,8 +76,8 @@ void MojoCdmHelper::EnableProtection(uint32_t desired_protection_mask,
   EnableProtectionCB scoped_callback =
       mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback), false);
   ConnectToOutputProtection();
-  output_protection_ptr_->EnableProtection(desired_protection_mask,
-                                           std::move(scoped_callback));
+  output_protection_->EnableProtection(desired_protection_mask,
+                                       std::move(scoped_callback));
 }
 
 void MojoCdmHelper::ChallengePlatform(const std::string& service_id,
@@ -87,16 +86,16 @@ void MojoCdmHelper::ChallengePlatform(const std::string& service_id,
   ChallengePlatformCB scoped_callback =
       mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback), false,
                                                   "", "", "");
-  ConnectToPlatformVerification();
-  platform_verification_ptr_->ChallengePlatform(service_id, challenge,
-                                                std::move(scoped_callback));
+  ConnectToCdmDocumentService();
+  cdm_document_service_->ChallengePlatform(service_id, challenge,
+                                           std::move(scoped_callback));
 }
 
 void MojoCdmHelper::GetStorageId(uint32_t version, StorageIdCB callback) {
   StorageIdCB scoped_callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
       std::move(callback), version, std::vector<uint8_t>());
-  ConnectToPlatformVerification();
-  platform_verification_ptr_->GetStorageId(version, std::move(scoped_callback));
+  ConnectToCdmDocumentService();
+  cdm_document_service_->GetStorageId(version, std::move(scoped_callback));
 }
 
 void MojoCdmHelper::CloseCdmFileIO(MojoCdmFileIO* cdm_file_io) {
@@ -113,10 +112,33 @@ void MojoCdmHelper::ReportFileReadSize(int file_size_bytes) {
     file_read_cb_.Run(file_size_bytes);
 }
 
-void MojoCdmHelper::ConnectToCdmStorage() {
-  if (!cdm_storage_ptr_) {
-    service_manager::GetInterface<mojom::CdmStorage>(interface_provider_,
-                                                     &cdm_storage_ptr_);
+void MojoCdmHelper::ConnectToOutputProtection() {
+  if (!output_protection_) {
+    DVLOG(2) << "Connect to mojom::OutputProtection";
+    frame_interfaces_->BindEmbedderReceiver(
+        output_protection_.BindNewPipeAndPassReceiver());
+    // Reset on disconnect is needed since MediaInterfaceProxy doesn't reset
+    // it's states (e.g. mojom::InterfaceFactory remotes) during document
+    // navigation, while the mojom::OutputProtection implementation is tied
+    // to the document's lifetime.
+    // TODO(crbug.com/1223163): Fix MediaInterfaceProxy lifetime to avoid
+    // similar issues in the future.
+    output_protection_.reset_on_disconnect();
+  }
+}
+
+void MojoCdmHelper::ConnectToCdmDocumentService() {
+  if (!cdm_document_service_) {
+    DVLOG(2) << "Connect to mojom::CdmDocumentService";
+    frame_interfaces_->BindEmbedderReceiver(
+        cdm_document_service_.BindNewPipeAndPassReceiver());
+    // Reset on disconnect is needed since MediaInterfaceProxy doesn't reset
+    // it's states (e.g. mojom::InterfaceFactory remotes) during document
+    // navigation, while the mojom::CdmDocumentService implementation is tied
+    // to the document's lifetime.
+    // TODO(crbug.com/1223163): Fix MediaInterfaceProxy lifetime to avoid
+    // similar issues in the future.
+    cdm_document_service_.reset_on_disconnect();
   }
 }
 
@@ -124,20 +146,6 @@ CdmAllocator* MojoCdmHelper::GetAllocator() {
   if (!allocator_)
     allocator_ = std::make_unique<MojoCdmAllocator>();
   return allocator_.get();
-}
-
-void MojoCdmHelper::ConnectToOutputProtection() {
-  if (!output_protection_ptr_) {
-    service_manager::GetInterface<mojom::OutputProtection>(
-        interface_provider_, &output_protection_ptr_);
-  }
-}
-
-void MojoCdmHelper::ConnectToPlatformVerification() {
-  if (!platform_verification_ptr_) {
-    service_manager::GetInterface<mojom::PlatformVerification>(
-        interface_provider_, &platform_verification_ptr_);
-  }
 }
 
 }  // namespace media

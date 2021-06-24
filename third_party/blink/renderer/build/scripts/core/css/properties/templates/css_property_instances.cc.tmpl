@@ -8,15 +8,9 @@
 
 #include "third_party/blink/renderer/core/css/properties/css_property_instances.h"
 
+#include "third_party/blink/renderer/core/css/properties/longhands.h"
 #include "third_party/blink/renderer/core/css/properties/longhands/variable.h"
-{% for property_filename in longhand_property_filenames %}
-  {% if property_filename != "longhand" %}
-#include "third_party/blink/renderer/core/css/properties/longhands/{{property_filename}}.h"
-  {% endif %}
-{% endfor %}
-{% for property_filename in shorthand_property_filenames %}
-#include "third_party/blink/renderer/core/css/properties/shorthands/{{property_filename}}.h"
-{% endfor %}
+#include "third_party/blink/renderer/core/css/properties/shorthands.h"
 
 namespace blink {
 namespace {
@@ -37,8 +31,8 @@ const CSSProperty& Get{{property_class_data.property_id}}() {
 {% endfor %}
 
 const CSSUnresolvedProperty* GetAliasPropertyInternal(CSSPropertyID id) {
-  DCHECK_GT(id, lastCSSProperty);  // last property id
-  DCHECK_LE(id, lastUnresolvedCSSProperty);  // last unresolved property id
+  DCHECK_GT(id, kLastCSSProperty);  // last property id
+  DCHECK_LE(id, kLastUnresolvedCSSProperty);  // last unresolved property id
   switch (id) {
     {% for property_class_data in alias_classes_by_property_id %}
     case CSSPropertyID::{{property_class_data.enum_key}}:
@@ -53,7 +47,7 @@ const CSSUnresolvedProperty* GetAliasPropertyInternal(CSSPropertyID id) {
 const CSSUnresolvedProperty& GetNonAliasPropertyInternal(CSSPropertyID id) {
   DCHECK_NE(id, CSSPropertyID::kInvalid);
   DCHECK_NE(id, CSSPropertyID::kVariable);
-  DCHECK_LE(id, lastCSSProperty);  // last property id
+  DCHECK_LE(id, kLastCSSProperty);  // last property id
   static constexpr const CSSUnresolvedProperty* const property_classes[] = {
     {% for property_class_data in property_classes_by_property_id %}
     &property_{{property_class_data.property_id.lower()}},  // {{property_class_data.property_id}}

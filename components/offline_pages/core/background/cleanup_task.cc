@@ -5,7 +5,7 @@
 #include "components/offline_pages/core/background/cleanup_task.h"
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "components/offline_pages/core/background/offliner_policy.h"
 #include "components/offline_pages/core/background/offliner_policy_utils.h"
 #include "components/offline_pages/core/background/request_coordinator_event_logger.h"
@@ -40,8 +40,7 @@ CleanupTask::CleanupTask(RequestQueueStore* store,
     : store_(store),
       policy_(policy),
       notifier_(notifier),
-      event_logger_(event_logger),
-      weak_ptr_factory_(this) {}
+      event_logger_(event_logger) {}
 
 CleanupTask::~CleanupTask() {}
 

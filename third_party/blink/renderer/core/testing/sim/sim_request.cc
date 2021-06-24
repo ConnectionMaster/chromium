@@ -4,11 +4,11 @@
 
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 
-#include <vector>
 #include "third_party/blink/public/platform/web_url_loader_client.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_network.h"
 #include "third_party/blink/renderer/platform/loader/static_data_navigation_body_loader.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 
 namespace blink {
 
@@ -19,11 +19,13 @@ SimRequestBase::SimRequestBase(String url,
     : url_(url),
       redirect_url_(params.redirect_url),
       mime_type_(mime_type),
+      referrer_(params.referrer),
       start_immediately_(start_immediately),
       started_(false),
       client_(nullptr),
       total_encoded_data_length_(0),
-      response_http_headers_(params.response_http_headers) {
+      response_http_headers_(params.response_http_headers),
+      response_http_status_(params.response_http_status) {
   SimNetwork::Current().AddRequest(*this);
 }
 
@@ -58,23 +60,20 @@ void SimRequestBase::UsedForNavigation(
 void SimRequestBase::StartInternal() {
   DCHECK(!started_);
   DCHECK(redirect_url_.IsEmpty());  // client_ is nullptr on redirects
+  DCHECK(client_);
   started_ = true;
   client_->DidReceiveResponse(response_);
 }
 
 void SimRequestBase::Write(const String& data) {
-  if (!started_)
-    ServePending();
-  DCHECK(started_);
-  DCHECK(!error_);
-  total_encoded_data_length_ += data.length();
-  if (navigation_body_loader_)
-    navigation_body_loader_->Write(data.Utf8().data(), data.length());
-  else
-    client_->DidReceiveData(data.Utf8().data(), data.length());
+  WriteInternal(StringUTF8Adaptor(data));
 }
 
 void SimRequestBase::Write(const Vector<char>& data) {
+  WriteInternal(data);
+}
+
+void SimRequestBase::WriteInternal(base::span<const char> data) {
   if (!started_)
     ServePending();
   DCHECK(started_);
@@ -86,23 +85,23 @@ void SimRequestBase::Write(const Vector<char>& data) {
     client_->DidReceiveData(data.data(), data.size());
 }
 
-void SimRequestBase::Finish() {
+void SimRequestBase::Finish(bool body_loader_finished) {
   if (!started_)
     ServePending();
   DCHECK(started_);
   if (error_) {
     DCHECK(!navigation_body_loader_);
-    client_->DidFail(*error_, total_encoded_data_length_,
-                     total_encoded_data_length_, total_encoded_data_length_);
+    client_->DidFail(*error_, base::TimeTicks::Now(),
+                     total_encoded_data_length_, total_encoded_data_length_,
+                     total_encoded_data_length_);
   } else {
     if (navigation_body_loader_) {
-      navigation_body_loader_->Finish();
+      if (!body_loader_finished)
+        navigation_body_loader_->Finish();
     } else {
-      // TODO(esprehn): Is claiming a request time of 0 okay for tests?
       client_->DidFinishLoading(
-          TimeTicks(), total_encoded_data_length_, total_encoded_data_length_,
-          total_encoded_data_length_, false,
-          std::vector<network::cors::PreflightTimingInfo>());
+          base::TimeTicks::Now(), total_encoded_data_length_,
+          total_encoded_data_length_, total_encoded_data_length_, false);
     }
   }
   Reset();

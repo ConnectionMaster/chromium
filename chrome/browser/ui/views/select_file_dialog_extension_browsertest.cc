@@ -6,10 +6,10 @@
 
 #include <memory>
 
-#include "ash/public/interfaces/constants.mojom.h"
-#include "ash/public/interfaces/shell_test_api.test-mojom-test-utils.h"
-#include "ash/public/interfaces/shell_test_api.test-mojom.h"
-#include "base/bind_helpers.h"
+#include "ash/constants/ash_features.h"
+#include "ash/public/cpp/keyboard/keyboard_switches.h"
+#include "ash/public/cpp/test/shell_test_api.h"
+#include "base/callback_helpers.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/logging.h"
@@ -17,15 +17,15 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
-#include "chrome/browser/chromeos/file_manager/file_manager_test_util.h"
+#include "chrome/browser/ash/file_manager/file_manager_test_util.h"
 #include "chrome/browser/chromeos/file_manager/volume_manager.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
-#include "chrome/browser/ui/ash/tablet_mode_client_test_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_navigator_params.h"
@@ -33,11 +33,11 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "chromeos/constants/chromeos_features.h"
+#include "chromeos/ui/base/window_properties.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
-#include "content/public/common/service_manager_connection.h"
+#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_registry.h"
@@ -46,8 +46,8 @@
 #include "extensions/test/background_page_watcher.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "services/service_manager/public/cpp/connector.h"
-#include "ui/keyboard/public/keyboard_switches.h"
+#include "ui/aura/window.h"
+#include "ui/gfx/color_palette.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/shell_dialogs/selected_file_info.h"
@@ -134,9 +134,8 @@ class MockSelectFileDialogListener : public ui::SelectFileDialog::Listener {
   DISALLOW_COPY_AND_ASSIGN(MockSelectFileDialogListener);
 };
 
-class SelectFileDialogExtensionBrowserTest
-    : public extensions::ExtensionBrowserTest,
-      public testing::WithParamInterface<bool> {
+class BaseSelectFileDialogExtensionBrowserTest
+    : public extensions::ExtensionBrowserTest {
  public:
   enum DialogButtonType {
     DIALOG_BTN_OK,
@@ -144,9 +143,8 @@ class SelectFileDialogExtensionBrowserTest
   };
 
   void SetUp() override {
-    feature_list_.InitAndEnableFeature(chromeos::features::kMyFilesVolume);
     // Create the dialog wrapper and listener objects.
-    listener_.reset(new MockSelectFileDialogListener());
+    listener_ = std::make_unique<MockSelectFileDialogListener>();
     dialog_ = new SelectFileDialogExtension(listener_.get(), NULL);
 
     // One mount point will be needed. Files app looks for the "Downloads"
@@ -160,17 +158,6 @@ class SelectFileDialogExtensionBrowserTest
 
     // Must run after our setup because it actually runs the test.
     extensions::ExtensionBrowserTest::SetUp();
-  }
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    // Ash tablet mode does not automatically enable the virtual keyboard, so
-    // force the virtual keyboard via the command line for tablet mode tests.
-    const char* test_name =
-        ::testing::UnitTest::GetInstance()->current_test_info()->name();
-    if (base::StringPiece(test_name).find("_TabletMode") != std::string::npos)
-      command_line->AppendSwitch(keyboard::switches::kEnableVirtualKeyboard);
-
-    extensions::ExtensionBrowserTest::SetUpCommandLine(command_line);
   }
 
   void SetUpOnMainThread() override {
@@ -205,15 +192,14 @@ class SelectFileDialogExtensionBrowserTest
     extensions::ExtensionBrowserTest::TearDown();
 
     // Delete the dialogs first since they hold a pointer to their listener.
-    dialog_ = NULL;
+    dialog_.reset();
     listener_.reset();
-    second_dialog_ = NULL;
+    second_dialog_.reset();
     second_listener_.reset();
   }
 
   void CheckJavascriptErrors() {
-    content::RenderFrameHost* host =
-        dialog_->GetRenderViewHost()->GetMainFrame();
+    content::RenderFrameHost* host = dialog_->GetMainFrame();
     base::Value value =
         content::ExecuteScriptAndGetValue(host, "window.JSErrorCount");
     int js_error_count = value.GetInt();
@@ -221,8 +207,7 @@ class SelectFileDialogExtensionBrowserTest
   }
 
   void ClickElement(const std::string& selector) {
-    content::RenderFrameHost* frame_host =
-        dialog_->GetRenderViewHost()->GetMainFrame();
+    content::RenderFrameHost* frame_host = dialog_->GetMainFrame();
 
     auto* web_contents = content::WebContents::FromRenderFrameHost(frame_host);
     CHECK(web_contents);
@@ -262,16 +247,16 @@ class SelectFileDialogExtensionBrowserTest
 
     std::unique_ptr<ExtensionTestMessageListener> additional_listener;
     if (!additional_message.empty()) {
-      additional_listener.reset(
-          new ExtensionTestMessageListener(additional_message, will_reply));
+      additional_listener = std::make_unique<ExtensionTestMessageListener>(
+          additional_message, will_reply);
     }
 
     // Include a file type filter. This triggers additional functionality within
     // the Files app.
     ui::SelectFileDialog::FileTypeInfo file_types;
     file_types.extensions = {{"html"}};
-    dialog_->SelectFile(dialog_type, base::string16() /* title */, file_path,
-                        GetParam() ? &file_types : nullptr,
+    dialog_->SelectFile(dialog_type, std::u16string() /* title */, file_path,
+                        UseFileTypeFilter() ? &file_types : nullptr,
                         0 /* file_type_index */,
                         FILE_PATH_LITERAL("") /* default_extension */,
                         owning_window, this /* params */);
@@ -300,36 +285,33 @@ class SelectFileDialogExtensionBrowserTest
   }
 
   void TryOpeningSecondDialog(const gfx::NativeWindow& owning_window) {
-    second_listener_.reset(new MockSelectFileDialogListener());
+    second_listener_ = std::make_unique<MockSelectFileDialogListener>();
     second_dialog_ = new SelectFileDialogExtension(second_listener_.get(),
                                                    NULL);
 
     // The dialog type is not relevant for this test but is required: use the
     // open file dialog type.
-    second_dialog_->SelectFile(ui::SelectFileDialog::SELECT_OPEN_FILE,
-                               base::string16() /* title */,
-                               base::FilePath() /* default_path */,
-                               NULL /* file_types */,
-                               0 /* file_type_index */,
-                               FILE_PATH_LITERAL("") /* default_extension */,
-                               owning_window,
-                               this /* params */);
+    second_dialog_->SelectFile(
+        ui::SelectFileDialog::SELECT_OPEN_FILE, std::u16string() /* title */,
+        base::FilePath() /* default_path */, NULL /* file_types */,
+        0 /* file_type_index */, FILE_PATH_LITERAL("") /* default_extension */,
+        owning_window, this /* params */);
   }
 
   void CloseDialog(DialogButtonType button_type,
                    const gfx::NativeWindow& owning_window) {
     // Inject JavaScript into the dialog to click the dialog |button_type|.
-    content::RenderViewHost* host = dialog_->GetRenderViewHost();
+    content::RenderFrameHost* frame_host = dialog_->GetMainFrame();
     std::string button_class =
         (button_type == DIALOG_BTN_OK) ? ".button-panel .ok" :
                                          ".button-panel .cancel";
-    base::string16 script = base::ASCIIToUTF16(
+    std::u16string script = base::ASCIIToUTF16(
         "console.log(\'Test JavaScript injected.\');"
-        "document.querySelector(\'" + button_class + "\').click();");
+        "document.querySelector(\'" +
+        button_class + "\').click();");
     // The file selection handler code closes the dialog but does not return
     // control to JavaScript, so do not wait for the script return value.
-    host->GetMainFrame()->ExecuteJavaScriptForTests(script,
-                                                    base::NullCallback());
+    frame_host->ExecuteJavaScriptForTests(script, base::NullCallback());
 
     // Instead, wait for Listener notification that the window has closed.
     LOG(INFO) << "Waiting for window close notification.";
@@ -340,7 +322,8 @@ class SelectFileDialogExtensionBrowserTest
       ASSERT_FALSE(dialog_->IsRunning(owning_window));
   }
 
-  base::test::ScopedFeatureList feature_list_;
+  virtual bool UseFileTypeFilter() { return false; }
+
   base::ScopedTempDir tmp_dir_;
   base::FilePath downloads_dir_;
 
@@ -349,6 +332,15 @@ class SelectFileDialogExtensionBrowserTest
 
   std::unique_ptr<MockSelectFileDialogListener> second_listener_;
   scoped_refptr<SelectFileDialogExtension> second_dialog_;
+
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Tests FileDialog with and without file filter.
+class SelectFileDialogExtensionBrowserTest
+    : public BaseSelectFileDialogExtensionBrowserTest,
+      public testing::WithParamInterface<bool> {
+  bool UseFileTypeFilter() override { return GetParam(); }
 };
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, CreateAndDestroy) {
@@ -385,7 +377,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
   ASSERT_NE(nullptr, owning_window);
 
   // Setup tablet mode.
-  test::SetAndWaitForTabletMode(true);
+  ash::ShellTestApi().SetTabletModeEnabledForTest(true);
 
   // Open the file dialog on the default path.
   ASSERT_NO_FATAL_FAILURE(OpenDialog(ui::SelectFileDialog::SELECT_OPEN_FILE,
@@ -472,15 +464,10 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
   ASSERT_NE(nullptr, owning_window);
 
   // Setup tablet mode.
-  test::SetAndWaitForTabletMode(true);
+  ash::ShellTestApi().SetTabletModeEnabledForTest(true);
 
   // Enable the virtual keyboard.
-  ash::mojom::ShellTestApiPtr shell_test_api;
-  content::ServiceManagerConnection::GetForProcess()
-      ->GetConnector()
-      ->BindInterface(ash::mojom::kServiceName, &shell_test_api);
-  ash::mojom::ShellTestApiAsyncWaiter waiter(shell_test_api.get());
-  waiter.EnableVirtualKeyboard();
+  ash::ShellTestApi().EnableVirtualKeyboard();
 
   auto* client = ChromeKeyboardControllerClient::Get();
   EXPECT_FALSE(client->is_keyboard_visible());
@@ -604,4 +591,42 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, MultipleOpenFile) {
 
 INSTANTIATE_TEST_SUITE_P(SelectFileDialogExtensionBrowserTest,
                          SelectFileDialogExtensionBrowserTest,
+                         testing::Bool());
+
+// Tests that ash window has correct colors for GM2.
+// TODO(adanilo) factor out the unnecessary override of Setup().
+class SelectFileDialogExtensionFlagTest
+    : public BaseSelectFileDialogExtensionBrowserTest,
+      public testing::WithParamInterface<bool> {
+  void SetUp() override {
+    BaseSelectFileDialogExtensionBrowserTest::SetUp();
+  }
+};
+
+IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionFlagTest, DialogColoredTitle) {
+  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  ASSERT_NE(nullptr, owning_window);
+
+  // Open the file dialog on the default path.
+  ASSERT_NO_FATAL_FAILURE(OpenDialog(ui::SelectFileDialog::SELECT_OPEN_FILE,
+                                     base::FilePath(), owning_window, ""));
+  content::RenderFrameHost* frame_host = dialog_->GetMainFrame();
+  aura::Window* dialog_window =
+      frame_host->GetNativeView()->GetToplevelWindow();
+  SkColor active_color =
+      dialog_window->GetProperty(chromeos::kFrameActiveColorKey);
+  SkColor inactive_color =
+      dialog_window->GetProperty(chromeos::kFrameInactiveColorKey);
+
+  constexpr SkColor kFilesNgTitleColor = gfx::kGoogleGrey200;
+  // FilesNG enabled the title should be Google Grey 200.
+  EXPECT_EQ(active_color, kFilesNgTitleColor);
+  // Active and Inactive should have the same color.
+  EXPECT_EQ(active_color, inactive_color);
+
+  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+}
+
+INSTANTIATE_TEST_SUITE_P(SelectFileDialogExtensionFlagTest,
+                         SelectFileDialogExtensionFlagTest,
                          testing::Bool());

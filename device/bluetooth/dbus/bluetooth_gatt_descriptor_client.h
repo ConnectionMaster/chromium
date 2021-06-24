@@ -15,7 +15,9 @@
 #include "dbus/object_path.h"
 #include "dbus/property.h"
 #include "device/bluetooth/bluetooth_export.h"
+#include "device/bluetooth/bluetooth_gatt_service.h"
 #include "device/bluetooth/dbus/bluez_dbus_client.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace bluez {
 
@@ -65,9 +67,12 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothGattDescriptorClient
   };
 
   // Callbacks used to report the result of asynchronous methods.
-  typedef base::Callback<void(const std::string& error_name,
-                              const std::string& error_message)> ErrorCallback;
-  typedef base::Callback<void(const std::vector<uint8_t>& value)> ValueCallback;
+  using ErrorCallback =
+      base::OnceCallback<void(const std::string& error_name,
+                              const std::string& error_message)>;
+  using ValueCallback = base::OnceCallback<void(
+      absl::optional<device::BluetoothGattService::GattErrorCode> error_code,
+      const std::vector<uint8_t>& value)>;
 
   ~BluetoothGattDescriptorClient() override;
 
@@ -88,16 +93,16 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothGattDescriptorClient
   // |object_path| and returns the value in |callback| on success. On error,
   // invokes |error_callback|.
   virtual void ReadValue(const dbus::ObjectPath& object_path,
-                         const ValueCallback& callback,
-                         const ErrorCallback& error_callback) = 0;
+                         ValueCallback callback,
+                         ErrorCallback error_callback) = 0;
 
   // Issues a request to write the value of GATT descriptor with object path
   // |object_path| with value |value|. Invokes |callback| on success and
   // |error_callback| on failure.
   virtual void WriteValue(const dbus::ObjectPath& object_path,
                           const std::vector<uint8_t>& value,
-                          const base::Closure& callback,
-                          const ErrorCallback& error_callback) = 0;
+                          base::OnceClosure callback,
+                          ErrorCallback error_callback) = 0;
 
   // Creates the instance.
   static BluetoothGattDescriptorClient* Create();

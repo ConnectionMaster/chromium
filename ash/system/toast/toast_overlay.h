@@ -6,15 +6,15 @@
 #define ASH_SYSTEM_TOAST_TOAST_OVERLAY_H_
 
 #include <memory>
+#include <string>
 
 #include "ash/ash_export.h"
-#include "base/optional.h"
-#include "base/strings/string16.h"
+#include "ash/public/cpp/keyboard/keyboard_controller_observer.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/keyboard/keyboard_controller_observer.h"
 
 namespace gfx {
 class Rect;
@@ -26,12 +26,12 @@ class Widget;
 
 namespace ash {
 
-class ToastManagerTest;
+class ToastManagerImplTest;
 class ToastOverlayView;
 class ToastOverlayButton;
 
 class ASH_EXPORT ToastOverlay : public ui::ImplicitAnimationObserver,
-                                public keyboard::KeyboardControllerObserver {
+                                public KeyboardControllerObserver {
  public:
   class ASH_EXPORT Delegate {
    public:
@@ -46,11 +46,12 @@ class ASH_EXPORT ToastOverlay : public ui::ImplicitAnimationObserver,
   // |dismiss_text| is the message for the button to dismiss the toast message.
   // If |dismiss_text| is null, no dismiss button will be shown. If
   // |dismiss_text| has a value but the string is empty, the default text is
-  // used.
+  // used. If |is_managed| is true, a managed icon will be added to the toast.
   ToastOverlay(Delegate* delegate,
-               const base::string16& text,
-               base::Optional<base::string16> dismiss_text,
-               bool show_on_lock_screen = false);
+               const std::u16string& text,
+               absl::optional<std::u16string> dismiss_text,
+               bool show_on_lock_screen,
+               bool is_managed);
   ~ToastOverlay() override;
 
   // Shows or hides the overlay.
@@ -60,7 +61,7 @@ class ASH_EXPORT ToastOverlay : public ui::ImplicitAnimationObserver,
   void UpdateOverlayBounds();
 
  private:
-  friend class ToastManagerTest;
+  friend class ToastManagerImplTest;
 
   class ToastDisplayObserver;
 
@@ -71,17 +72,16 @@ class ASH_EXPORT ToastOverlay : public ui::ImplicitAnimationObserver,
   void OnImplicitAnimationsScheduled() override;
   void OnImplicitAnimationsCompleted() override;
 
-  // keyboard::KeyboardControllerObserver:
-  void OnKeyboardWorkspaceOccludedBoundsChanged(
-      const gfx::Rect& new_bounds) override;
+  // KeyboardControllerObserver:
+  void OnKeyboardOccludedBoundsChanged(const gfx::Rect& new_bounds) override;
 
   views::Widget* widget_for_testing();
   ToastOverlayButton* dismiss_button_for_testing();
   void ClickDismissButtonForTesting(const ui::Event& event);
 
   Delegate* const delegate_;
-  const base::string16 text_;
-  const base::Optional<base::string16> dismiss_text_;
+  const std::u16string text_;
+  const absl::optional<std::u16string> dismiss_text_;
   std::unique_ptr<views::Widget> overlay_widget_;
   std::unique_ptr<ToastOverlayView> overlay_view_;
   std::unique_ptr<ToastDisplayObserver> display_observer_;

@@ -5,11 +5,16 @@
 #include "chrome/test/nacl/nacl_browsertest_util.h"
 
 #include <stdlib.h>
+
+#include <memory>
+
 #include "base/command_line.h"
 #include "base/json/json_reader.h"
 #include "base/macros.h"
 #include "base/path_service.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
@@ -25,26 +30,28 @@ typedef content::TestMessageHandler::MessageResponse MessageResponse;
 
 MessageResponse StructuredMessageHandler::HandleMessage(
     const std::string& json) {
-  base::JSONReader reader(base::JSON_ALLOW_TRAILING_COMMAS);
   // Automation messages are stringified before they are sent because the
   // automation channel cannot handle arbitrary objects.  This means we
   // need to decode the json twice to get the original message.
-  std::unique_ptr<base::Value> value = reader.ReadToValueDeprecated(json);
-  if (!value.get())
-    return InternalError("Could parse automation JSON: " + json +
-                         " because " + reader.GetErrorMessage());
+  base::JSONReader::ValueWithError parsed_json =
+      base::JSONReader::ReadAndReturnValueWithError(
+          json, base::JSON_ALLOW_TRAILING_COMMAS);
+  if (!parsed_json.value)
+    return InternalError("Could parse automation JSON: " + json + " because " +
+                         parsed_json.error_message);
 
   std::string temp;
-  if (!value->GetAsString(&temp))
+  if (!parsed_json.value->GetAsString(&temp))
     return InternalError("Message was not a string: " + json);
 
-  value = reader.ReadToValueDeprecated(temp);
-  if (!value.get())
-    return InternalError("Could not parse message JSON: " + temp +
-                         " because " + reader.GetErrorMessage());
+  parsed_json = base::JSONReader::ReadAndReturnValueWithError(
+      temp, base::JSON_ALLOW_TRAILING_COMMAS);
+  if (!parsed_json.value)
+    return InternalError("Could not parse message JSON: " + temp + " because " +
+                         parsed_json.error_message);
 
   base::DictionaryValue* msg;
-  if (!value->GetAsDictionary(&msg))
+  if (!parsed_json.value->GetAsDictionary(&msg))
     return InternalError("Message was not an object: " + temp);
 
   std::string type;
@@ -248,7 +255,11 @@ void NaClBrowserTestBase::RunNaClIntegrationTest(
   }
   base::FilePath::StringType url_fragment_with_both = url_fragment_with_pnacl;
   bool ok = RunJavascriptTest(full_url
+#if defined(OS_WIN)
+                              ? GURL(base::WideToUTF16(url_fragment_with_both))
+#else
                               ? GURL(url_fragment_with_both)
+#endif
                               : TestURL(url_fragment_with_both),
                               &handler);
   ASSERT_TRUE(ok) << handler.error_message();
@@ -260,7 +271,7 @@ bool NaClBrowserTestBase::StartTestServer() {
   base::FilePath document_root;
   if (!GetDocumentRoot(&document_root))
     return false;
-  test_server_.reset(new net::EmbeddedTestServer);
+  test_server_ = std::make_unique<net::EmbeddedTestServer>();
   test_server_->ServeFilesFromSourceDirectory(document_root);
   return test_server_->Start();
 }

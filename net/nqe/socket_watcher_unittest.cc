@@ -9,11 +9,12 @@
 #include "base/test/simple_test_tick_clock.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "net/base/address_list.h"
 #include "net/base/ip_address.h"
 #include "net/socket/socket_performance_watcher.h"
 #include "net/socket/socket_performance_watcher_factory.h"
-#include "net/test/test_with_scoped_task_environment.h"
+#include "net/test/test_with_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -24,7 +25,7 @@ namespace internal {
 
 namespace {
 
-class NetworkQualitySocketWatcherTest : public TestWithScopedTaskEnvironment {
+class NetworkQualitySocketWatcherTest : public TestWithTaskEnvironment {
  protected:
   NetworkQualitySocketWatcherTest() { ResetExpectedCallbackParams(); }
   ~NetworkQualitySocketWatcherTest() override { ResetExpectedCallbackParams(); }
@@ -32,7 +33,7 @@ class NetworkQualitySocketWatcherTest : public TestWithScopedTaskEnvironment {
   static void OnUpdatedRTTAvailableStoreParams(
       SocketPerformanceWatcherFactory::Protocol protocol,
       const base::TimeDelta& rtt,
-      const base::Optional<IPHash>& host) {
+      const absl::optional<IPHash>& host) {
     // Need to verify before another callback is executed, or explicitly call
     // |ResetCallbackParams()|.
     ASSERT_FALSE(callback_executed_);
@@ -44,7 +45,7 @@ class NetworkQualitySocketWatcherTest : public TestWithScopedTaskEnvironment {
   static void OnUpdatedRTTAvailable(
       SocketPerformanceWatcherFactory::Protocol protocol,
       const base::TimeDelta& rtt,
-      const base::Optional<IPHash>& host) {
+      const absl::optional<IPHash>& host) {
     // Need to verify before another callback is executed, or explicitly call
     // |ResetCallbackParams()|.
     ASSERT_FALSE(callback_executed_);
@@ -60,7 +61,7 @@ class NetworkQualitySocketWatcherTest : public TestWithScopedTaskEnvironment {
   }
 
   static void VerifyCallbackParams(const base::TimeDelta& rtt,
-                                   const base::Optional<IPHash>& host) {
+                                   const absl::optional<IPHash>& host) {
     ASSERT_TRUE(callback_executed_);
     EXPECT_EQ(rtt, callback_rtt_);
     if (host)
@@ -72,7 +73,7 @@ class NetworkQualitySocketWatcherTest : public TestWithScopedTaskEnvironment {
 
   static void ResetExpectedCallbackParams() {
     callback_rtt_ = base::TimeDelta::FromMilliseconds(0);
-    callback_host_ = base::nullopt;
+    callback_host_ = absl::nullopt;
     callback_executed_ = false;
     should_notify_rtt_callback_ = false;
   }
@@ -81,7 +82,7 @@ class NetworkQualitySocketWatcherTest : public TestWithScopedTaskEnvironment {
 
  private:
   static base::TimeDelta callback_rtt_;
-  static base::Optional<IPHash> callback_host_;
+  static absl::optional<IPHash> callback_host_;
   static bool callback_executed_;
   static bool should_notify_rtt_callback_;
 
@@ -91,8 +92,8 @@ class NetworkQualitySocketWatcherTest : public TestWithScopedTaskEnvironment {
 base::TimeDelta NetworkQualitySocketWatcherTest::callback_rtt_ =
     base::TimeDelta::FromMilliseconds(0);
 
-base::Optional<IPHash> NetworkQualitySocketWatcherTest::callback_host_ =
-    base::nullopt;
+absl::optional<IPHash> NetworkQualitySocketWatcherTest::callback_host_ =
+    absl::nullopt;
 
 bool NetworkQualitySocketWatcherTest::callback_executed_ = false;
 
@@ -108,14 +109,16 @@ TEST_F(NetworkQualitySocketWatcherTest, NotificationsThrottled) {
   IPAddress ip_address;
   ASSERT_TRUE(ip_address.AssignFromIPLiteral("157.0.0.1"));
   ip_list.push_back(ip_address);
+  std::vector<std::string> aliases({"canonical.example.com"});
   AddressList address_list =
-      AddressList::CreateFromIPAddressList(ip_list, "canonical.example.com");
+      AddressList::CreateFromIPAddressList(ip_list, std::move(aliases));
 
   SocketWatcher socket_watcher(
       SocketPerformanceWatcherFactory::PROTOCOL_TCP, address_list,
       base::TimeDelta::FromMilliseconds(2000), false,
-      base::ThreadTaskRunnerHandle::Get(), base::Bind(OnUpdatedRTTAvailable),
-      base::Bind(ShouldNotifyRTTCallback), &tick_clock);
+      base::ThreadTaskRunnerHandle::Get(),
+      base::BindRepeating(OnUpdatedRTTAvailable),
+      base::BindRepeating(ShouldNotifyRTTCallback), &tick_clock);
 
   EXPECT_TRUE(socket_watcher.ShouldNotifyUpdatedRTT());
   socket_watcher.OnUpdatedRTTAvailable(base::TimeDelta::FromSeconds(10));
@@ -151,15 +154,16 @@ TEST_F(NetworkQualitySocketWatcherTest, QuicFirstNotificationDropped) {
   IPAddress ip_address;
   ASSERT_TRUE(ip_address.AssignFromIPLiteral("157.0.0.1"));
   ip_list.push_back(ip_address);
+  std::vector<std::string> aliases({"canonical.example.com"});
   AddressList address_list =
-      AddressList::CreateFromIPAddressList(ip_list, "canonical.example.com");
+      AddressList::CreateFromIPAddressList(ip_list, std::move(aliases));
 
   SocketWatcher socket_watcher(
       SocketPerformanceWatcherFactory::PROTOCOL_QUIC, address_list,
       base::TimeDelta::FromMilliseconds(2000), false,
       base::ThreadTaskRunnerHandle::Get(),
-      base::Bind(OnUpdatedRTTAvailableStoreParams),
-      base::Bind(ShouldNotifyRTTCallback), &tick_clock);
+      base::BindRepeating(OnUpdatedRTTAvailableStoreParams),
+      base::BindRepeating(ShouldNotifyRTTCallback), &tick_clock);
 
   EXPECT_TRUE(socket_watcher.ShouldNotifyUpdatedRTT());
   socket_watcher.OnUpdatedRTTAvailable(base::TimeDelta::FromSeconds(10));
@@ -188,7 +192,13 @@ TEST_F(NetworkQualitySocketWatcherTest, QuicFirstNotificationDropped) {
   EXPECT_TRUE(socket_watcher.ShouldNotifyUpdatedRTT());
 }
 
-TEST_F(NetworkQualitySocketWatcherTest, PrivateAddressRTTNotNotified) {
+#if defined(OS_IOS)
+// Flaky on iOS: crbug.com/672917.
+#define MAYBE_PrivateAddressRTTNotNotified DISABLED_PrivateAddressRTTNotNotified
+#else
+#define MAYBE_PrivateAddressRTTNotNotified PrivateAddressRTTNotNotified
+#endif
+TEST_F(NetworkQualitySocketWatcherTest, MAYBE_PrivateAddressRTTNotNotified) {
   base::SimpleTestTickClock tick_clock;
   tick_clock.SetNowTicks(base::TimeTicks::Now());
 
@@ -206,14 +216,16 @@ TEST_F(NetworkQualitySocketWatcherTest, PrivateAddressRTTNotNotified) {
     IPAddress ip_address;
     ASSERT_TRUE(ip_address.AssignFromIPLiteral(test.ip_address));
     ip_list.push_back(ip_address);
+    std::vector<std::string> aliases({"canonical.example.com"});
     AddressList address_list =
-        AddressList::CreateFromIPAddressList(ip_list, "canonical.example.com");
+        AddressList::CreateFromIPAddressList(ip_list, std::move(aliases));
 
     SocketWatcher socket_watcher(
         SocketPerformanceWatcherFactory::PROTOCOL_TCP, address_list,
         base::TimeDelta::FromMilliseconds(2000), false,
-        base::ThreadTaskRunnerHandle::Get(), base::Bind(OnUpdatedRTTAvailable),
-        base::Bind(ShouldNotifyRTTCallback), &tick_clock);
+        base::ThreadTaskRunnerHandle::Get(),
+        base::BindRepeating(OnUpdatedRTTAvailable),
+        base::BindRepeating(ShouldNotifyRTTCallback), &tick_clock);
 
     EXPECT_EQ(test.expect_should_notify_rtt,
               socket_watcher.ShouldNotifyUpdatedRTT());
@@ -244,15 +256,16 @@ TEST_F(NetworkQualitySocketWatcherTest, RemoteHostIPHashComputedCorrectly) {
     IPAddress ip_address;
     ASSERT_TRUE(ip_address.AssignFromIPLiteral(test.ip_address));
     ip_list.push_back(ip_address);
+    std::vector<std::string> aliases({"canonical.example.com"});
     AddressList address_list =
-        AddressList::CreateFromIPAddressList(ip_list, "canonical.example.com");
+        AddressList::CreateFromIPAddressList(ip_list, std::move(aliases));
 
     SocketWatcher socket_watcher(
         SocketPerformanceWatcherFactory::PROTOCOL_TCP, address_list,
         base::TimeDelta::FromMilliseconds(2000), false,
         base::ThreadTaskRunnerHandle::Get(),
-        base::Bind(OnUpdatedRTTAvailableStoreParams),
-        base::Bind(ShouldNotifyRTTCallback), &tick_clock);
+        base::BindRepeating(OnUpdatedRTTAvailableStoreParams),
+        base::BindRepeating(ShouldNotifyRTTCallback), &tick_clock);
     EXPECT_TRUE(socket_watcher.ShouldNotifyUpdatedRTT());
     socket_watcher.OnUpdatedRTTAvailable(base::TimeDelta::FromSeconds(10));
     base::RunLoop().RunUntilIdle();

@@ -29,15 +29,15 @@ class ONCPolicyValueValidatorBase : public PolicyValueValidator<PayloadProto> {
   bool ValidateValues(
       const PayloadProto& policy_payload,
       std::vector<ValueValidationIssue>* out_validation_issues) const override {
-    base::Optional<std::string> onc_string =
+    absl::optional<std::string> onc_string =
         GetONCStringFromPayload(policy_payload);
 
     if (!onc_string.has_value())
       return true;
 
-    std::unique_ptr<base::Value> root_dict =
+    base::Value root_dict =
         chromeos::onc::ReadDictionaryFromJson(onc_string.value());
-    if (!root_dict.get()) {
+    if (!root_dict.is_dict()) {
       out_validation_issues->push_back({policy_name_,
                                         ValueValidationIssue::Severity::kError,
                                         "JSON parse error."});
@@ -52,8 +52,8 @@ class ONCPolicyValueValidatorBase : public PolicyValueValidator<PayloadProto> {
         true);  // Log warnings.
     validator.SetOncSource(source_);
     chromeos::onc::Validator::Result validation_result;
-    root_dict = validator.ValidateAndRepairObject(
-        &chromeos::onc::kToplevelConfigurationSignature, *root_dict,
+    validator.ValidateAndRepairObject(
+        &chromeos::onc::kToplevelConfigurationSignature, root_dict,
         &validation_result);
 
     bool error_found = false;
@@ -69,7 +69,7 @@ class ONCPolicyValueValidatorBase : public PolicyValueValidator<PayloadProto> {
   }
 
  protected:
-  virtual base::Optional<std::string> GetONCStringFromPayload(
+  virtual absl::optional<std::string> GetONCStringFromPayload(
       const PayloadProto& policy_payload) const = 0;
 
  private:

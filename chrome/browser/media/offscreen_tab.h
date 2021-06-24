@@ -13,7 +13,7 @@
 #include "base/macros.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/media/router/presentation/independent_otr_profile_manager.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/gfx/geometry/size.h"
@@ -43,8 +43,9 @@ class BrowserContext;
 //   3. Automatically, when the associated profile is destroyed.
 //
 // This class operates exclusively on the UI thread and so is not thread-safe.
-class OffscreenTab : protected content::WebContentsDelegate,
-                     protected content::WebContentsObserver {
+class OffscreenTab final : public ProfileObserver,
+                           protected content::WebContentsDelegate,
+                           protected content::WebContentsObserver {
  public:
   class Owner {
    public:
@@ -100,40 +101,29 @@ class OffscreenTab : protected content::WebContentsDelegate,
                              const blink::WebGestureEvent& event) final;
   bool CanDragEnter(content::WebContents* source,
                     const content::DropData& data,
-                    blink::WebDragOperationsMask operations_allowed) final;
-  bool ShouldCreateWebContents(
-      content::WebContents* web_contents,
-      content::RenderFrameHost* opener,
+                    blink::DragOperationsMask operations_allowed) final;
+  bool IsWebContentsCreationOverridden(
       content::SiteInstance* source_site_instance,
-      int32_t route_id,
-      int32_t main_frame_route_id,
-      int32_t main_frame_widget_route_id,
       content::mojom::WindowContainerType window_container_type,
       const GURL& opener_url,
       const std::string& frame_name,
-      const GURL& target_url,
-      const std::string& partition_id,
-      content::SessionStorageNamespace* session_storage_namespace) final;
-  bool EmbedsFullscreenWidget() const final;
+      const GURL& target_url) final;
   void EnterFullscreenModeForTab(
-      content::WebContents* contents,
-      const GURL& origin,
-      const blink::WebFullscreenOptions& options) final;
+      content::RenderFrameHost* requesting_frame,
+      const blink::mojom::FullscreenOptions& options) final;
   void ExitFullscreenModeForTab(content::WebContents* contents) final;
-  bool IsFullscreenForTabOrPending(
-      const content::WebContents* contents) const final;
-  blink::WebDisplayMode GetDisplayMode(
-      const content::WebContents* contents) const final;
+  bool IsFullscreenForTabOrPending(const content::WebContents* contents) final;
+  blink::mojom::DisplayMode GetDisplayMode(
+      const content::WebContents* contents) final;
   void RequestMediaAccessPermission(
       content::WebContents* contents,
       const content::MediaStreamRequest& request,
       content::MediaResponseCallback callback) final;
   bool CheckMediaAccessPermission(content::RenderFrameHost* render_frame_host,
                                   const GURL& security_origin,
-                                  blink::MediaStreamType type) final;
+                                  blink::mojom::MediaStreamType type) final;
 
   // content::WebContentsObserver overrides
-  void DidShowFullscreenWidget() final;
   void DidStartNavigation(content::NavigationHandle* navigation_handle) final;
 
   bool in_fullscreen_mode() const { return !non_fullscreen_size_.IsEmpty(); }
@@ -142,9 +132,10 @@ class OffscreenTab : protected content::WebContentsDelegate,
   // when the capturer count returns to zero.
   void DieIfContentCaptureEnded();
 
-  // Called if the profile that our OTR profile is based on is being destroyed
-  // and |this| therefore needs to be destroyed also.
-  void DieIfOriginalProfileDestroyed(Profile* profile);
+  // Called if OTR profile is being destroyed and |this| therefore needs to be
+  // destroyed also.
+  // ProfileObserver:
+  void OnProfileWillBeDestroyed(Profile* profile) override;
 
   Owner* const owner_;  // Outlives this class.
 
@@ -154,8 +145,7 @@ class OffscreenTab : protected content::WebContentsDelegate,
 
   // A non-shared off-the-record profile based on the profile of the extension
   // background page.
-  const std::unique_ptr<IndependentOTRProfileManager::OTRProfileRegistration>
-      otr_profile_registration_;
+  Profile* otr_profile_;
 
   // The WebContents containing the off-screen tab's page.
   std::unique_ptr<content::WebContents> offscreen_tab_web_contents_;

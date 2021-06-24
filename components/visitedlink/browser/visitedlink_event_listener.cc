@@ -4,6 +4,8 @@
 
 #include "components/visitedlink/browser/visitedlink_event_listener.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "components/visitedlink/browser/visitedlink_delegate.h"
 #include "components/visitedlink/common/visitedlink.mojom.h"
@@ -11,7 +13,7 @@
 #include "content/public/browser/notification_types.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host.h"
-#include "services/service_manager/public/cpp/interface_provider.h"
+#include "mojo/public/cpp/bindings/remote.h"
 
 using base::Time;
 using base::TimeDelta;
@@ -44,8 +46,8 @@ class VisitedLinkUpdater {
       : reset_needed_(false),
         invalidate_hashes_(false),
         render_process_id_(render_process_id) {
-    BindInterface(content::RenderProcessHost::FromID(render_process_id),
-                  &sink_);
+    content::RenderProcessHost::FromID(render_process_id)
+        ->BindReceiver(sink_.BindNewPipeAndPassReceiver());
   }
 
   // Informs the renderer about a new visited link table.
@@ -112,7 +114,7 @@ class VisitedLinkUpdater {
   bool reset_needed_;
   bool invalidate_hashes_;
   int render_process_id_;
-  mojom::VisitedLinkNotificationSinkPtr sink_;
+  mojo::Remote<mojom::VisitedLinkNotificationSink> sink_;
   VisitedLinkCommon::Fingerprints pending_;
 };
 
@@ -152,7 +154,7 @@ void VisitedLinkEventListener::NewTable(
   }
 }
 
-void VisitedLinkEventListener::Add(VisitedLinkMaster::Fingerprint fingerprint) {
+void VisitedLinkEventListener::Add(VisitedLinkWriter::Fingerprint fingerprint) {
   pending_visited_links_.push_back(fingerprint);
 
   if (!coalesce_timer_->IsRunning()) {
@@ -203,8 +205,8 @@ void VisitedLinkEventListener::Observe(
       if (!table_region_.IsValid())
         return;
 
-      updaters_[process->GetID()].reset(
-          new VisitedLinkUpdater(process->GetID()));
+      updaters_[process->GetID()] =
+          std::make_unique<VisitedLinkUpdater>(process->GetID());
       updaters_[process->GetID()]->SendVisitedLinkTable(&table_region_);
       break;
     }

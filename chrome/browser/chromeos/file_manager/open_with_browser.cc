@@ -8,14 +8,15 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
-#include "base/stl_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
+#include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/file_manager/filesystem_api_util.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/drive/drive_integration_service.h"
-#include "chrome/browser/chromeos/file_manager/filesystem_api_util.h"
 #include "chrome/browser/chromeos/fileapi/external_file_url_util.h"
 #include "chrome/browser/plugins/plugin_prefs.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -27,6 +28,7 @@
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
+#include "chromeos/components/drivefs/drivefs_util.h"
 #include "chromeos/components/drivefs/mojom/drivefs.mojom.h"
 #include "components/drive/drive_api_util.h"
 #include "components/drive/file_system_core_util.h"
@@ -43,7 +45,6 @@ namespace util {
 namespace {
 
 const base::FilePath::CharType kPdfExtension[] = FILE_PATH_LITERAL(".pdf");
-const base::FilePath::CharType kSwfExtension[] = FILE_PATH_LITERAL(".swf");
 
 // List of file extensions viewable in the browser.
 constexpr const base::FilePath::CharType* kFileExtensionsViewableInBrowser[] = {
@@ -90,22 +91,11 @@ bool IsPdfPluginEnabled(Profile* profile) {
   return IsPepperPluginEnabled(profile, *plugin_path);
 }
 
-bool IsFlashPluginEnabled(Profile* profile) {
-  DCHECK(profile);
-
-  base::FilePath plugin_path(
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueNative(
-          switches::kPpapiFlashPath));
-  if (plugin_path.empty())
-    base::PathService::Get(chrome::FILE_PEPPER_FLASH_PLUGIN, &plugin_path);
-  return IsPepperPluginEnabled(profile, plugin_path);
-}
-
 void OpenNewTab(Profile* profile, const GURL& url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   // Check the validity of the pointer so that the closure from
-  // base::Bind(&OpenNewTab, profile) can be passed between threads.
+  // base::BindOnce(&OpenNewTab, profile) can be passed between threads.
   if (!g_browser_process->profile_manager()->IsValidProfile(profile))
     return;
 
@@ -131,7 +121,7 @@ GURL ReadUrlFromGDocAsync(const base::FilePath& file_path) {
 
 // Parse a local file to extract the Docs url and open this url.
 void OpenGDocUrlFromFile(const base::FilePath& file_path, Profile* profile) {
-  base::PostTaskWithTraitsAndReplyWithResult(
+  base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock()},
       base::BindOnce(&ReadUrlFromGDocAsync, file_path),
       base::BindOnce(&OpenNewTab, profile));
@@ -144,7 +134,7 @@ void OpenHostedDriveFsFile(const base::FilePath& file_path,
                            drivefs::mojom::FileMetadataPtr metadata) {
   if (error != drive::FILE_ERROR_OK)
     return;
-  if (metadata->type != drivefs::mojom::FileMetadata::Type::kHosted) {
+  if (drivefs::IsLocal(metadata->type)) {
     OpenGDocUrlFromFile(file_path, profile);
     return;
   }
@@ -220,8 +210,6 @@ bool ShouldBeOpenedWithPlugin(Profile* profile,
       base::FilePath::FromUTF8Unsafe("dummy").AddExtension(file_extension);
   if (file_path.MatchesExtension(kPdfExtension) || action_id == "view-pdf")
     return IsPdfPluginEnabled(profile);
-  if (file_path.MatchesExtension(kSwfExtension))
-    return IsFlashPluginEnabled(profile);
   return false;
 }
 

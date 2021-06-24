@@ -27,12 +27,12 @@ consent_auditor::ConsentStatus ConvertConsentStatus(
 
 namespace consent_auditor {
 
-FakeConsentAuditor::FakeConsentAuditor() {}
+FakeConsentAuditor::FakeConsentAuditor() = default;
 
-FakeConsentAuditor::~FakeConsentAuditor() {}
+FakeConsentAuditor::~FakeConsentAuditor() = default;
 
 void FakeConsentAuditor::RecordSyncConsent(
-    const std::string& account_id,
+    const CoreAccountId& account_id,
     const sync_pb::UserConsentTypes::SyncConsent& consent) {
   // TODO(markusheintz): Change the Fake to store the proto instead of calling
   // RecordGaiaConsent.
@@ -43,20 +43,20 @@ void FakeConsentAuditor::RecordSyncConsent(
                     ConvertConsentStatus(consent.status()));
 }
 
-void FakeConsentAuditor::RecordUnifiedConsent(
-    const std::string& account_id,
-    const sync_pb::UserConsentTypes::UnifiedConsent& consent) {
-  NOTIMPLEMENTED();
-}
-
 void FakeConsentAuditor::RecordAssistantActivityControlConsent(
-    const std::string& account_id,
+    const CoreAccountId& account_id,
     const sync_pb::UserConsentTypes::AssistantActivityControlConsent& consent) {
   NOTIMPLEMENTED();
 }
 
+void FakeConsentAuditor::RecordAccountPasswordsConsent(
+    const CoreAccountId& account_id,
+    const sync_pb::UserConsentTypes::AccountPasswordsConsent& consent) {
+  NOTIMPLEMENTED();
+}
+
 void FakeConsentAuditor::RecordGaiaConsent(
-    const std::string& account_id,
+    const CoreAccountId& account_id,
     consent_auditor::Feature feature,
     const std::vector<int>& description_grd_ids,
     int confirmation_grd_id,

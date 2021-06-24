@@ -9,7 +9,7 @@
 
 #include "base/component_export.h"
 #include "ui/base/ime/candidate_window.h"
-#include "ui/base/ime/ime_candidate_window_handler_interface.h"
+#include "ui/base/ime/chromeos/ime_candidate_window_handler_interface.h"
 #include "ui/gfx/geometry/rect.h"
 
 namespace chromeos {
@@ -33,7 +33,7 @@ class COMPONENT_EXPORT(UI_BASE_IME_CHROMEOS) MockIMECandidateWindowHandler
   // IMECandidateWindowHandlerInterface override.
   void UpdateLookupTable(const ui::CandidateWindow& candidate_window,
                          bool visible) override;
-  void UpdatePreeditText(const base::string16& text,
+  void UpdatePreeditText(const std::u16string& text,
                          uint32_t cursor_pos,
                          bool visible) override;
   void SetCursorBounds(const gfx::Rect& cursor_bounds,

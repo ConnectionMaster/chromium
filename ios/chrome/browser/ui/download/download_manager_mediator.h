@@ -7,16 +7,13 @@
 
 #include <memory>
 
+#include "base/files/file_path.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #import "ios/chrome/browser/ui/download/download_manager_consumer.h"
 #include "ios/web/public/download/download_task_observer.h"
 
 @protocol DownloadManagerConsumer;
-
-namespace base {
-class FilePath;
-}  // namespace base
 
 namespace net {
 class URLFetcherFileWriter;
@@ -39,6 +36,10 @@ class DownloadManagerMediator : public web::DownloadTaskObserver {
   // Sets download task. Must be set to null when task is destroyed.
   void SetDownloadTask(web::DownloadTask* task);
 
+  // Returns the path of the downloaded file after download is completed.
+  // Returns empty path otherwise (f.e. download is still in progress).
+  base::FilePath GetDownloadPath();
+
   // Asynchronously starts download operation.
   void StartDowloading();
 
@@ -56,6 +57,15 @@ class DownloadManagerMediator : public web::DownloadTaskObserver {
   // Updates consumer from web::DownloadTask.
   void UpdateConsumer();
 
+  // Moves the downloaded file to user's Documents if it exists.
+  void MoveToUserDocumentsIfFileExists(base::FilePath download_path_,
+                                       bool file_exists);
+
+  // Restores the download path once the downloaded file has been moved to
+  // user's Documents.
+  void RestoreDownloadPath(base::FilePath user_download_path,
+                           bool moveCompleted);
+
   // Converts web::DownloadTask::State to DownloadManagerState.
   DownloadManagerState GetDownloadManagerState() const;
 
@@ -70,6 +80,7 @@ class DownloadManagerMediator : public web::DownloadTaskObserver {
   void OnDownloadUpdated(web::DownloadTask* task) override;
   void OnDownloadDestroyed(web::DownloadTask* task) override;
 
+  base::FilePath download_path_;
   web::DownloadTask* task_ = nullptr;
   __weak id<DownloadManagerConsumer> consumer_ = nil;
   base::WeakPtrFactory<DownloadManagerMediator> weak_ptr_factory_;

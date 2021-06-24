@@ -5,14 +5,17 @@
 #ifndef REMOTING_CODEC_WEBRTC_VIDEO_ENCODER_GPU_H_
 #define REMOTING_CODEC_WEBRTC_VIDEO_ENCODER_GPU_H_
 
+#include "base/memory/shared_memory_mapping.h"
+#include "base/memory/unsafe_shared_memory_region.h"
+#include "build/build_config.h"
 #include "media/video/video_encode_accelerator.h"
 #include "remoting/codec/encoder_bitrate_filter.h"
 #include "remoting/codec/webrtc_video_encoder.h"
 #include "remoting/codec/webrtc_video_encoder_selector.h"
 
-namespace base {
-class SharedMemory;
-}
+#if defined(OS_WIN)
+#include "base/win/scoped_com_initializer.h"
+#endif
 
 namespace remoting {
 
@@ -59,6 +62,13 @@ class WebrtcVideoEncoderGpu : public WebrtcVideoEncoder,
  private:
   enum State { UNINITIALIZED, INITIALIZING, INITIALIZED, INITIALIZATION_ERROR };
 
+  struct OutputBuffer {
+    base::UnsafeSharedMemoryRegion region;
+    base::WritableSharedMemoryMapping mapping;
+
+    bool IsValid();
+  };
+
   explicit WebrtcVideoEncoderGpu(media::VideoCodecProfile codec_profile);
 
   void BeginInitialization();
@@ -66,6 +76,17 @@ class WebrtcVideoEncoderGpu : public WebrtcVideoEncoder,
   void UseOutputBitstreamBufferId(int32_t bitstream_buffer_id);
 
   void RunAnyPendingEncode();
+
+#if defined(OS_WIN)
+  // This object is required by Chromium to ensure proper init/uninit of COM on
+  // this thread.  The guidance is to match the lifetime of this object to the
+  // lifetime of the thread if possible.  Since we are still experimenting with
+  // H.264 and run the encoder on a different thread, we use an object-lifetime
+  // scoped instance for now.
+  // TODO(joedow): Use a COMscoped Autothread (or run in a separate process) if
+  // H.264 becomes a common use case for us.
+  base::win::ScopedCOMInitializer scoped_com_initializer_;
+#endif
 
   State state_;
 
@@ -81,7 +102,7 @@ class WebrtcVideoEncoderGpu : public WebrtcVideoEncoder,
   media::VideoCodecProfile codec_profile_;
 
   // Shared memory with which the VEA transfers output to WebrtcVideoEncoderGpu
-  std::vector<std::unique_ptr<base::SharedMemory>> output_buffers_;
+  std::vector<std::unique_ptr<OutputBuffer>> output_buffers_;
 
   // TODO(gusss): required_input_frame_count_ is currently unused; evaluate
   // whether or not it's actually needed. This variable represents the number of
@@ -106,7 +127,7 @@ class WebrtcVideoEncoderGpu : public WebrtcVideoEncoder,
 
   EncoderBitrateFilter bitrate_filter_;
 
-  base::WeakPtrFactory<WebrtcVideoEncoderGpu> weak_factory_;
+  base::WeakPtrFactory<WebrtcVideoEncoderGpu> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(WebrtcVideoEncoderGpu);
 };

@@ -1,7 +1,5 @@
 #include "rar.hpp"
 
-namespace third_party_unrar {
-
 RAROptions::RAROptions()
 {
   Init();
@@ -24,7 +22,7 @@ void RAROptions::Init()
   Method=3;
   MsgStream=MSG_STDOUT;
   ConvertNames=NAMES_ORIGINALCASE;
-  xmtime=EXTTIME_HIGH3;
+  xmtime=EXTTIME_MAX;
   FileSizeLess=INT64NDF;
   FileSizeMore=INT64NDF;
   HashType=HASH_CRC32;
@@ -35,5 +33,3 @@ void RAROptions::Init()
   QOpenMode=QOPEN_AUTO;
 #endif
 }
-
-}  // namespace third_party_unrar

@@ -10,14 +10,13 @@
 #include <string>
 #include <utility>
 
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/strings/string_piece.h"
+#include "base/task/single_thread_task_executor.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
 #include "components/data_reduction_proxy/core/browser/data_reduction_proxy_settings.h"
 #include "components/prefs/testing_pref_service.h"
-#include "net/url_request/test_url_fetcher_factory.h"
-#include "net/url_request/url_request_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -30,8 +29,7 @@ class DataReductionProxyTestContext;
 template <class C>
 class MockDataReductionProxySettings : public C {
  public:
-  MockDataReductionProxySettings<C>() : C() {
-  }
+  MockDataReductionProxySettings<C>() : C(false) {}
   MOCK_CONST_METHOD0(GetOriginalProfilePrefs, PrefService*());
   MOCK_METHOD0(GetLocalStatePrefs, PrefService*());
   MOCK_CONST_METHOD1(RecordStartupState, void(ProxyStartupState state));
@@ -52,9 +50,6 @@ class DataReductionProxySettingsTestBase : public testing::Test {
   void ResetSettings(base::Clock* clock);
   virtual void ResetSettings(base::Clock* clock) = 0;
 
-  void ExpectSetProxyPrefs(bool expected_enabled,
-                           bool expected_at_startup);
-
   void CheckMaybeActivateDataReductionProxy(bool initially_enabled,
                                             bool request_succeeded,
                                             bool expected_enabled,
@@ -68,7 +63,7 @@ class DataReductionProxySettingsTestBase : public testing::Test {
                                          base::StringPiece group_name);
 
  protected:
-  base::MessageLoopForIO message_loop_;
+  base::SingleThreadTaskExecutor io_task_executor_{base::MessagePumpType::IO};
   std::unique_ptr<DataReductionProxyTestContext> test_context_;
   std::unique_ptr<DataReductionProxySettings> settings_;
   base::Time last_update_time_;

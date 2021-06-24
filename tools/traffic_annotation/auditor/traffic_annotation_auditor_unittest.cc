@@ -4,11 +4,12 @@
 
 #include "tools/traffic_annotation/auditor/traffic_annotation_auditor.h"
 
+#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/path_service.h"
-#include "base/stl_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -16,6 +17,7 @@
 #include "build/build_config.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "tools/traffic_annotation/auditor/traffic_annotation_exporter.h"
 #include "tools/traffic_annotation/auditor/traffic_annotation_file_filter.h"
@@ -23,9 +25,11 @@
 
 namespace {
 
-#define TEST_HASH_CODE(X)                                  \
-  EXPECT_EQ(TrafficAnnotationAuditor::ComputeHashValue(X), \
-            net::DefineNetworkTrafficAnnotation(X, "").unique_id_hash_code)
+#define TEST_HASH_CODE(X)                                                    \
+  EXPECT_EQ(TrafficAnnotationAuditor::ComputeHashValue(X),                   \
+            net::DefineNetworkTrafficAnnotation(X, "").unique_id_hash_code); \
+  LOG(INFO) << "ComputeHashValue('" X "') = "                                \
+            << net::DefineNetworkTrafficAnnotation(X, "").unique_id_hash_code
 
 const char* kIrrelevantFiles[] = {
     "tools/traffic_annotation/auditor/tests/git_list.txt",
@@ -43,14 +47,8 @@ const base::FilePath kTestsFolder =
         .Append(FILE_PATH_LITERAL("auditor"))
         .Append(FILE_PATH_LITERAL("tests"));
 
-const base::FilePath kClangToolPath =
-    base::FilePath(FILE_PATH_LITERAL("tools"))
-        .Append(FILE_PATH_LITERAL("traffic_annotation/bin"));
-
 const std::set<int> kDummyDeprecatedIDs = {100, 101, 102};
 }  // namespace
-
-using namespace testing;
 
 class TrafficAnnotationAuditorTest : public ::testing::Test {
  public:
@@ -60,28 +58,17 @@ class TrafficAnnotationAuditorTest : public ::testing::Test {
       return;
     }
 
+    base::FilePath build_path;
+    if (!base::PathService::Get(base::DIR_EXE, &build_path)) {
+      LOG(ERROR) << "Could not get executable directory to find build path.";
+      return;
+    }
+
     tests_folder_ = source_path_.Append(kTestsFolder);
+    std::vector<std::string> path_filters;
 
-#if defined(OS_WIN)
-    base::FilePath platform_name(FILE_PATH_LITERAL("win32"));
-#elif defined(OS_LINUX)
-    base::FilePath platform_name(FILE_PATH_LITERAL("linux64"));
-#elif defined(OS_MACOSX)
-    base::FilePath platform_name(FILE_PATH_LITERAL("mac"));
-#else
-    NOTREACHED() << "Unexpected platform.";
-#endif
-
-    base::FilePath clang_tool_path =
-        source_path_.Append(kClangToolPath).Append(platform_name);
-
-    // As build path is not available and not used in tests, the default (empty)
-    // build path is passed to auditor.
     auditor_ = std::make_unique<TrafficAnnotationAuditor>(
-        source_path_,
-        source_path_.Append(FILE_PATH_LITERAL("out"))
-            .Append(FILE_PATH_LITERAL("Default")),
-        clang_tool_path);
+        source_path_, build_path, path_filters);
 
     id_checker_ = std::make_unique<TrafficAnnotationIDChecker>(
         TrafficAnnotationAuditor::GetReservedIDsSet(), kDummyDeprecatedIDs);
@@ -95,7 +82,7 @@ class TrafficAnnotationAuditorTest : public ::testing::Test {
 
  protected:
   // Deserializes an annotation or a call instance from a sample file similar to
-  // clang tool outputs.
+  // extractor outputs.
   AuditorResult::Type Deserialize(const std::string& file_name,
                                   InstanceBase* instance);
 
@@ -188,6 +175,7 @@ TEST_F(TrafficAnnotationAuditorTest, HashFunctionCheck) {
   TEST_HASH_CODE("ID123");
   TEST_HASH_CODE(
       "a_unique_looooooooooooooooooooooooooooooooooooooooooooooooooooooong_id");
+  TEST_HASH_CODE(u8"bébé");
 }
 
 // Tests if TrafficAnnotationFileFilter::GetFilesFromGit function returns
@@ -203,11 +191,11 @@ TEST_F(TrafficAnnotationAuditorTest, GetFilesFromGit) {
 
   EXPECT_EQ(git_files.size(), base::size(kRelevantFiles));
   for (const char* filepath : kRelevantFiles) {
-    EXPECT_TRUE(base::ContainsValue(git_files, filepath));
+    EXPECT_TRUE(base::Contains(git_files, filepath));
   }
 
   for (const char* filepath : kIrrelevantFiles) {
-    EXPECT_FALSE(base::ContainsValue(git_files, filepath));
+    EXPECT_FALSE(base::Contains(git_files, filepath));
   }
 }
 
@@ -233,7 +221,7 @@ TEST_F(TrafficAnnotationAuditorTest, RelevantFilesReceived) {
   file_paths.clear();
   filter.GetRelevantFiles(base::FilePath(), ignore_list, "", &file_paths);
   EXPECT_EQ(file_paths.size(), git_files_count - 1);
-  EXPECT_FALSE(base::ContainsValue(file_paths, ignore_list[0]));
+  EXPECT_FALSE(base::Contains(file_paths, ignore_list[0]));
 
   // Check if files are filtered based on given directory.
   ignore_list.clear();
@@ -286,7 +274,7 @@ TEST_F(TrafficAnnotationAuditorTest, IsSafeListed) {
                              AuditorException::ExceptionType::TEST_ANNOTATION));
 }
 
-// Tests if annotation instances are corrrectly deserialized.
+// Tests if annotation instances are correctly deserialized.
 TEST_F(TrafficAnnotationAuditorTest, AnnotationDeserialization) {
   struct AnnotationSample {
     std::string file_name;
@@ -306,7 +294,6 @@ TEST_F(TrafficAnnotationAuditorTest, AnnotationDeserialization) {
        AnnotationInstance::Type::ANNOTATION_PARTIAL},
       {"good_test_annotation.txt", AuditorResult::Type::ERROR_TEST_ANNOTATION},
       {"missing_annotation.txt", AuditorResult::Type::ERROR_MISSING_TAG_USED},
-      {"no_annotation.txt", AuditorResult::Type::ERROR_NO_ANNOTATION},
       {"fatal_annotation1.txt", AuditorResult::Type::ERROR_FATAL},
       {"fatal_annotation2.txt", AuditorResult::Type::ERROR_FATAL},
       {"fatal_annotation3.txt", AuditorResult::Type::ERROR_FATAL},
@@ -335,14 +322,13 @@ TEST_F(TrafficAnnotationAuditorTest, AnnotationDeserialization) {
     EXPECT_EQ(annotation.proto.source().file(),
               "chrome/browser/supervised_user/legacy/"
               "supervised_user_refresh_token_fetcher.cc");
-    EXPECT_EQ(annotation.proto.source().function(), "OnGetTokenSuccess");
     EXPECT_EQ(annotation.proto.source().line(), 166);
     EXPECT_EQ(annotation.proto.semantics().sender(), "Supervised Users");
     EXPECT_EQ(annotation.proto.policy().cookies_allowed(), 1);
   }
 }
 
-// Tests if call instances are corrrectly deserialized.
+// Tests if call instances are correctly deserialized.
 TEST_F(TrafficAnnotationAuditorTest, CallDeserialization) {
   struct CallSample {
     std::string file_name;
@@ -366,14 +352,12 @@ TEST_F(TrafficAnnotationAuditorTest, CallDeserialization) {
 
     EXPECT_EQ(call.file_path, "headless/public/util/http_url_fetcher.cc");
     EXPECT_EQ(call.line_number, 100u);
-    EXPECT_EQ(call.function_context,
-              "headless::HttpURLFetcher::Delegate::Delegate");
     EXPECT_EQ(call.function_name, "net::URLRequestContext::CreateRequest");
     EXPECT_EQ(call.is_annotated, true);
   }
 }
 
-// Tests if call instances are corrrectly deserialized.
+// Tests if call instances are correctly deserialized.
 TEST_F(TrafficAnnotationAuditorTest, AssignmentDeserialization) {
   struct Assignmentample {
     std::string file_name;
@@ -382,8 +366,7 @@ TEST_F(TrafficAnnotationAuditorTest, AssignmentDeserialization) {
 
   Assignmentample test_cases[] = {
       {"good_assignment.txt", AuditorResult::Type::RESULT_OK},
-      {"bad_assignment1.txt", AuditorResult::Type::ERROR_FATAL},
-      {"bad_assignment2.txt", AuditorResult::Type::ERROR_FATAL},
+      {"bad_assignment.txt", AuditorResult::Type::ERROR_FATAL},
   };
 
   for (const auto& test_case : test_cases) {
@@ -402,15 +385,13 @@ TEST_F(TrafficAnnotationAuditorTest, GetReservedIDsCoverage) {
   int expected_ids[] = {
       TRAFFIC_ANNOTATION_FOR_TESTS.unique_id_hash_code,
       PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS.unique_id_hash_code,
-      NO_TRAFFIC_ANNOTATION_YET.unique_id_hash_code,
-      NO_PARTIAL_TRAFFIC_ANNOTATION_YET.unique_id_hash_code,
       MISSING_TRAFFIC_ANNOTATION.unique_id_hash_code};
 
   std::map<int, std::string> reserved_words =
       TrafficAnnotationAuditor::GetReservedIDsMap();
 
   for (int id : expected_ids) {
-    EXPECT_TRUE(base::ContainsKey(reserved_words, id));
+    EXPECT_TRUE(base::Contains(reserved_words, id));
     EXPECT_EQ(id, TrafficAnnotationAuditor::ComputeHashValue(
                       reserved_words.find(id)->second));
   }
@@ -683,9 +664,27 @@ TEST_F(TrafficAnnotationAuditorTest, CheckAllRequiredFunctionsAreAnnotated) {
 // Tests if TrafficAnnotationAuditor::CheckAnnotationsContents works as
 // expected for COMPLETE annotations. It also inherently checks
 // TrafficAnnotationAuditor::IsAnnotationComplete and
-// TrafficAnnotationAuditor::IsAnnotationConsistent.
+// TrafficAnnotationAuditor::IsAnnotationConsistent and
+// TrafficAnnotationAuditor::InGroupingXML.
 TEST_F(TrafficAnnotationAuditorTest, CheckCompleteAnnotations) {
   AnnotationInstance instance = CreateAnnotationInstanceSample();
+
+  base::FilePath grouping_xml_path =
+      tests_folder().Append(FILE_PATH_LITERAL("test_grouping.xml"));
+  std::set<std::string> annotation_unique_ids;
+  bool success = auditor().GetGroupingAnnotationsUniqueIDs(
+      grouping_xml_path, &annotation_unique_ids);
+  EXPECT_TRUE(success);
+  EXPECT_THAT(annotation_unique_ids,
+              testing::UnorderedElementsAre(
+                  "foobar_policy_fetcher", "foobar_info_fetcher",
+                  "fizzbuzz_handle_front_end_messages",
+                  "fizzbuzz_hard_coded_data_source", "fizzbuzz_http_handler",
+                  "widget_grabber"));
+  auditor().SetGroupedAnnotationUniqueIDsForTesting(annotation_unique_ids);
+  // Set unique id to be something in `tests/test_grouping.xml`.
+  instance.proto.set_unique_id("foobar_policy_fetcher");
+
   std::vector<AnnotationInstance> annotations;
   unsigned int expected_errors_count = 0;
 
@@ -964,4 +963,37 @@ TEST_F(TrafficAnnotationAuditorTest, AnnotationsXMLDifferences) {
   EXPECT_EQ(diff12, expected_diff12);
   EXPECT_EQ(diff13, expected_diff13);
   EXPECT_EQ(diff23, expected_diff23);
+}
+
+// Tests if an 'annotation' is in 'test_grouping.xml' or not.
+TEST_F(TrafficAnnotationAuditorTest, AnnotationGrouping) {
+  AnnotationInstance instance = CreateAnnotationInstanceSample();
+  instance.type = AnnotationInstance::Type::ANNOTATION_COMPLETE;
+
+  base::FilePath grouping_xml_path =
+      tests_folder().Append(FILE_PATH_LITERAL("test_grouping.xml"));
+
+  std::set<std::string> annotation_unique_ids;
+  bool success = auditor().GetGroupingAnnotationsUniqueIDs(
+      grouping_xml_path, &annotation_unique_ids);
+
+  EXPECT_TRUE(success);
+  EXPECT_THAT(annotation_unique_ids,
+              testing::UnorderedElementsAre(
+                  "foobar_policy_fetcher", "foobar_info_fetcher",
+                  "fizzbuzz_handle_front_end_messages",
+                  "fizzbuzz_hard_coded_data_source", "fizzbuzz_http_handler",
+                  "widget_grabber"));
+
+  // Test 'annotation' with unique id "empty" is not in 'test_grouping.xml'
+  instance.proto.set_unique_id("empty");
+  AuditorResult::Type returned_type =
+      instance.InGroupingXML(annotation_unique_ids).type();
+  EXPECT_EQ(returned_type, AuditorResult::Type::ERROR_MISSING_GROUPING);
+
+  // Test 'annotation' with unique id "foobar_policy_fetcher" is in
+  // 'test_grouping.xml'
+  instance.proto.set_unique_id("foobar_policy_fetcher");
+  returned_type = instance.InGroupingXML(annotation_unique_ids).type();
+  EXPECT_EQ(returned_type, AuditorResult::Type::RESULT_OK);
 }

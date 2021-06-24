@@ -4,13 +4,9 @@
 
 static_library("sync_sessions") {
   sources = [
-    "favicon_cache.cc",
-    "favicon_cache.h",
     "local_session_event_handler_impl.cc",
     "local_session_event_handler_impl.h",
     "local_session_event_router.h",
-    "lost_navigations_recorder.cc",
-    "lost_navigations_recorder.h",
     "open_tabs_ui_delegate.cc",
     "open_tabs_ui_delegate.h",
     "open_tabs_ui_delegate_impl.cc",
@@ -31,6 +27,8 @@ static_library("sync_sessions") {
     "session_sync_service_impl.h",
     "sessions_global_id_mapper.cc",
     "sessions_global_id_mapper.h",
+    "switches.cc",
+    "switches.h",
     "sync_sessions_client.cc",
     "sync_sessions_client.h",
     "synced_session.cc",
@@ -44,24 +42,23 @@ static_library("sync_sessions") {
     "synced_window_delegates_getter.h",
     "tab_node_pool.cc",
     "tab_node_pool.h",
-    "task_tracker.cc",
-    "task_tracker.h",
   ]
 
   public_deps = [
     "//components/sessions",
     "//components/sync",
-    "//components/sync:device_info",
+    "//components/sync_device_info",
   ]
 
   deps = [
     "//base",
     "//components/bookmarks/browser",
     "//components/favicon/core",
-    "//components/history/core/browser",
+    "//components/favicon_base",
+    "//components/history/core/common",
     "//components/keyed_service/core",
     "//components/prefs",
-    "//components/variations",
+    "//components/sync_user_events",
     "//components/version_info",
     "//google_apis",
     "//ui/base:base",
@@ -99,9 +96,7 @@ static_library("test_support") {
 source_set("unit_tests") {
   testonly = true
   sources = [
-    "favicon_cache_unittest.cc",
     "local_session_event_handler_impl_unittest.cc",
-    "lost_navigations_recorder_unittest.cc",
     "open_tabs_ui_delegate_impl_unittest.cc",
     "session_store_unittest.cc",
     "session_sync_bridge_unittest.cc",
@@ -109,7 +104,6 @@ source_set("unit_tests") {
     "synced_session_tracker_unittest.cc",
     "synced_session_unittest.cc",
     "tab_node_pool_unittest.cc",
-    "task_tracker_unittest.cc",
   ]
 
   deps = [
@@ -118,13 +112,9 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//components/bookmarks/browser",
     "//components/favicon/core/test:test_support",
-    "//components/history/core/browser",
     "//components/prefs:test_support",
     "//components/sessions:test_support",
-    "//components/sync",
-    "//components/sync:test_support_driver",
-    "//components/sync:test_support_engine",
-    "//components/sync:test_support_model",
+    "//components/sync:test_support",
     "//testing/gmock",
     "//testing/gtest",
     "//ui/base:base",

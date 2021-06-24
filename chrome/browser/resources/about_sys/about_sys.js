@@ -2,6 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import './strings.m.js';
+
+import {sendWithPromise} from 'chrome://resources/js/cr.m.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.m.js';
+import {$} from 'chrome://resources/js/util.m.js';
+
 // Contents of lines that act as delimiters for multi-line values.
 const DELIM_START = '---------- START ----------';
 const DELIM_END = '---------- END ----------';
@@ -112,7 +118,11 @@ function createNodeForLogEntry(log) {
   nameCell.className = 'name';
   const nameDiv = document.createElement('div');
   nameDiv.className = 'stat-name';
-  nameDiv.textContent = log.statName;
+  const a = document.createElement('a');
+  a.className = 'stat-name-link';
+  a.href = `#${log.statName}`;
+  a.name = a.text = log.statName;
+  nameDiv.appendChild(a);
   nameCell.appendChild(nameDiv);
   row.appendChild(nameCell);
 
@@ -160,14 +170,13 @@ function updateLogEntries(systemInfo) {
   const table = $('details');
 
   // Delete any existing log entries in the table
-  table.innerHtml = '';
+  table.innerHTML = trustedTypes.emptyHTML;
   table.appendChild(fragment);
 }
 
 /**
- * Callback called by system_info_ui.cc when it has finished fetching
- * system info. The log entries are passed as a list of dictionaries containing
- * the keys statName and statValue.
+ * Callback called when system info has been fetched. The log entries are passed
+ * as a list of dictionaries containing the keys statName and statValue.
  * @param {systemInfo} The fetched log entries.
  */
 function returnSystemInfo(systemInfo) {
@@ -239,7 +248,7 @@ function parseSystemLog(text) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-  chrome.send('requestSystemInfo');
+  sendWithPromise('requestSystemInfo').then(returnSystemInfo);
 
   $('collapseAll').onclick = collapseAll;
   $('expandAll').onclick = expandAll;

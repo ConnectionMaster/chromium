@@ -1,6 +1,10 @@
-kcwu@chromium.org
 mcasas@chromium.org
-posciak@chromium.org
+andrescj@chromium.org
 
-# (M)JPEG related stuff
-per-file *jpeg*=andrescj@chromium.org
+# For protected-mode video decoding.
+jkardatzke@google.com
+
+# Legacy owners.
+dstaessens@chromium.org
+kcwu@chromium.org
+posciak@chromium.org

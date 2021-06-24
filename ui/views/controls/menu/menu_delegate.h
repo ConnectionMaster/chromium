@@ -8,10 +8,8 @@
 #include <set>
 #include <string>
 
-#include "base/logging.h"
-#include "base/strings/string16.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "ui/base/dragdrop/drag_drop_types.h"
+#include "ui/base/dragdrop/mojom/drag_drop_types.mojom-forward.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/font_list.h"
@@ -24,12 +22,12 @@ using ui::OSExchangeData;
 namespace gfx {
 class FontList;
 class Point;
-}
+}  // namespace gfx
 
 namespace ui {
 class Accelerator;
 class DropTargetEvent;
-}
+}  // namespace ui
 
 namespace views {
 
@@ -45,20 +43,20 @@ class VIEWS_EXPORT MenuDelegate {
  public:
   // Used during drag and drop to indicate where the drop indicator should
   // be rendered.
-  enum DropPosition {
-    DROP_UNKNOWN = -1,
+  enum class DropPosition {
+    kUnknow = -1,
 
     // Indicates a drop is not allowed here.
-    DROP_NONE,
+    kNone,
 
     // Indicates the drop should occur before the item.
-    DROP_BEFORE,
+    kBefore,
 
     // Indicates the drop should occur after the item.
-    DROP_AFTER,
+    kAfter,
 
     // Indicates the drop should occur on the item.
-    DROP_ON
+    kOn
   };
 
   // Used when indicating the style for a given label.
@@ -75,7 +73,7 @@ class VIEWS_EXPORT MenuDelegate {
 
   // The string shown for the menu item. This is only invoked when an item is
   // added with an empty label.
-  virtual base::string16 GetLabel(int id) const;
+  virtual std::u16string GetLabel(int id) const;
 
   // The style for the label with the given |id|. Implementations may update any
   // parts of |style| or leave it unmodified.
@@ -83,7 +81,7 @@ class VIEWS_EXPORT MenuDelegate {
 
   // The tooltip shown for the menu item. This is invoked when the user
   // hovers over the item, and no tooltip text has been set for that item.
-  virtual base::string16 GetTooltipText(int id,
+  virtual std::u16string GetTooltipText(int id,
                                         const gfx::Point& screen_loc) const;
 
   // If there is an accelerator for the menu item with id |id| it is set in
@@ -107,9 +105,8 @@ class VIEWS_EXPORT MenuDelegate {
   virtual bool SupportsCommand(int id) const;
   virtual bool IsCommandEnabled(int id) const;
   virtual bool IsCommandVisible(int id) const;
-  virtual bool GetContextualLabel(int id, base::string16* out) const;
-  virtual void ExecuteCommand(int id) {
-  }
+  virtual bool GetContextualLabel(int id, std::u16string* out) const;
+  virtual void ExecuteCommand(int id) {}
 
   // If nested menus are showing (nested menus occur when a menu shows a context
   // menu) this is invoked to determine if all the menus should be closed when
@@ -162,19 +159,21 @@ class VIEWS_EXPORT MenuDelegate {
   // is set based on the location of the mouse, reset to specify a different
   // position.
   //
-  // If a drop should not be allowed, returned ui::DragDropTypes::DRAG_NONE.
-  virtual int GetDropOperation(MenuItemView* item,
-                               const ui::DropTargetEvent& event,
-                               DropPosition* position);
+  // If a drop should not be allowed, returns DragOperation::kNone.
+  virtual ui::mojom::DragOperation GetDropOperation(
+      MenuItemView* item,
+      const ui::DropTargetEvent& event,
+      DropPosition* position);
 
   // Invoked to perform the drop operation. This is ONLY invoked if CanDrop()
   // returned true for the parent menu item, and GetDropOperation() returned an
-  // operation other than ui::DragDropTypes::DRAG_NONE.
+  // operation other than DragOperation::kNone.
   //
   // |menu| is the menu the drop occurred on.
-  virtual int OnPerformDrop(MenuItemView* menu,
-                            DropPosition position,
-                            const ui::DropTargetEvent& event);
+  virtual ui::mojom::DragOperation OnPerformDrop(
+      MenuItemView* menu,
+      DropPosition position,
+      const ui::DropTargetEvent& event);
 
   // Invoked to determine if it is possible for the user to drag the specified
   // menu item.
@@ -216,18 +215,6 @@ class VIEWS_EXPORT MenuDelegate {
 
   // Invoked prior to a menu being hidden.
   virtual void WillHideMenu(MenuItemView* menu);
-
-  // Returns additional horizontal spacing for the icon of the given item.
-  // The |command_id| specifies the item of interest, the |icon_size| tells the
-  // function the size of the icon and it will then return |left_margin|
-  // and |right_margin| accordingly. Note: Negative values can be returned.
-  virtual void GetHorizontalIconMargins(int command_id,
-                                        int icon_size,
-                                        int* left_margin,
-                                        int* right_margin) const;
-  // Returns true if the labels should reserve additional spacing for e.g.
-  // submenu indicators at the end of the line.
-  virtual bool ShouldReserveSpaceForSubmenuIndicator() const;
 
   // Returns true if menus should fall back to positioning beside the anchor,
   // rather than directly above or below it, when the menu is too tall to fit

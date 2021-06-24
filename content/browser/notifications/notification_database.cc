@@ -12,9 +12,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/task/post_task.h"
 #include "content/browser/notifications/notification_database_conversions.h"
-#include "content/common/service_worker/service_worker_types.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/notification_database_data.h"
@@ -277,11 +275,13 @@ NotificationDatabase::Status NotificationDatabase::ForEachNotificationData(
       std::move(callback));
 }
 
-NotificationDatabase::Status NotificationDatabase::ReadAllNotificationData(
-    std::vector<NotificationDatabaseData>* notification_data_vector) const {
-  return ReadAllNotificationDataInternal(
-      GURL() /* origin */, blink::mojom::kInvalidServiceWorkerRegistrationId,
-      notification_data_vector);
+NotificationDatabase::Status
+NotificationDatabase::ForEachNotificationDataForServiceWorkerRegistration(
+    const GURL& origin,
+    int64_t service_worker_registration_id,
+    ReadAllNotificationsCallback callback) const {
+  return ForEachNotificationDataInternal(origin, service_worker_registration_id,
+                                         std::move(callback));
 }
 
 NotificationDatabase::Status
@@ -351,9 +351,8 @@ NotificationDatabase::Status NotificationDatabase::DeleteNotificationData(
   NotificationDatabaseData data;
   Status status = ReadNotificationData(notification_id, origin, &data);
   if (status == STATUS_OK && record_notification_to_ukm_callback_) {
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI},
-        base::BindOnce(record_notification_to_ukm_callback_, data));
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(record_notification_to_ukm_callback_, data));
   }
 
   leveldb::WriteBatch batch;
@@ -362,6 +361,19 @@ NotificationDatabase::Status NotificationDatabase::DeleteNotificationData(
 
   return LevelDBStatusToNotificationDatabaseStatus(
       db_->Write(leveldb::WriteOptions(), &batch));
+}
+
+NotificationDatabase::Status NotificationDatabase::DeleteNotificationResources(
+    const std::string& notification_id,
+    const GURL& origin) {
+  DCHECK(sequence_checker_.CalledOnValidSequence());
+  DCHECK_EQ(State::INITIALIZED, state_);
+  DCHECK(!notification_id.empty());
+  DCHECK(origin.is_valid());
+
+  std::string key = CreateResourcesKey(origin, notification_id);
+  return LevelDBStatusToNotificationDatabaseStatus(
+      db_->Delete(leveldb::WriteOptions(), key));
 }
 
 NotificationDatabase::Status
@@ -468,6 +480,7 @@ NotificationDatabase::DeleteAllNotificationDataInternal(
 
   leveldb::Slice prefix_slice(prefix);
   leveldb::WriteBatch batch;
+  bool did_delete = false;
 
   NotificationDatabaseData notification_database_data;
   std::unique_ptr<leveldb::Iterator> iter(
@@ -494,10 +507,9 @@ NotificationDatabase::DeleteAllNotificationDataInternal(
     }
 
     if (record_notification_to_ukm_callback_) {
-      base::PostTaskWithTraits(
-          FROM_HERE, {BrowserThread::UI},
-          base::BindOnce(record_notification_to_ukm_callback_,
-                         notification_database_data));
+      GetUIThreadTaskRunner({})->PostTask(
+          FROM_HERE, base::BindOnce(record_notification_to_ukm_callback_,
+                                    notification_database_data));
     }
 
     std::string notification_id = notification_database_data.notification_id;
@@ -505,11 +517,12 @@ NotificationDatabase::DeleteAllNotificationDataInternal(
 
     batch.Delete(iter->key());
     batch.Delete(CreateResourcesKey(origin, notification_id));
+    did_delete = true;
 
     deleted_notification_ids->insert(notification_id);
   }
 
-  if (deleted_notification_ids->empty())
+  if (!did_delete)
     return STATUS_OK;
 
   return LevelDBStatusToNotificationDatabaseStatus(

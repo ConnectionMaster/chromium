@@ -17,36 +17,37 @@ const char kSafeAreaInsetLeftName[] = "safe-area-inset-left";
 const char kSafeAreaInsetBottomName[] = "safe-area-inset-bottom";
 const char kSafeAreaInsetRightName[] = "safe-area-inset-right";
 
-String GetPx(int value) {
-  return String::Format("%dpx", value);
-}
-
 }  // namespace
 
 DisplayCutoutClientImpl::DisplayCutoutClientImpl(
     LocalFrame* frame,
-    mojom::blink::DisplayCutoutClientAssociatedRequest request)
-    : frame_(frame), binding_(this, std::move(request)) {}
+    mojo::PendingAssociatedReceiver<mojom::blink::DisplayCutoutClient> receiver)
+    : frame_(frame), receiver_(this, std::move(receiver)) {}
 
-void DisplayCutoutClientImpl::BindMojoRequest(
+void DisplayCutoutClientImpl::BindMojoReceiver(
     LocalFrame* frame,
-    mojom::blink::DisplayCutoutClientAssociatedRequest request) {
+    mojo::PendingAssociatedReceiver<mojom::blink::DisplayCutoutClient>
+        receiver) {
   if (!frame)
     return;
-  MakeGarbageCollected<DisplayCutoutClientImpl>(frame, std::move(request));
+  MakeGarbageCollected<DisplayCutoutClientImpl>(frame, std::move(receiver));
 }
 
 void DisplayCutoutClientImpl::SetSafeArea(
     mojom::blink::DisplayCutoutSafeAreaPtr safe_area) {
   DocumentStyleEnvironmentVariables& vars =
       frame_->GetDocument()->GetStyleEngine().EnsureEnvironmentVariables();
-  vars.SetVariable(kSafeAreaInsetTopName, GetPx(safe_area->top));
-  vars.SetVariable(kSafeAreaInsetLeftName, GetPx(safe_area->left));
-  vars.SetVariable(kSafeAreaInsetBottomName, GetPx(safe_area->bottom));
-  vars.SetVariable(kSafeAreaInsetRightName, GetPx(safe_area->right));
+  vars.SetVariable(kSafeAreaInsetTopName,
+                   StyleEnvironmentVariables::FormatPx(safe_area->top));
+  vars.SetVariable(kSafeAreaInsetLeftName,
+                   StyleEnvironmentVariables::FormatPx(safe_area->left));
+  vars.SetVariable(kSafeAreaInsetBottomName,
+                   StyleEnvironmentVariables::FormatPx(safe_area->bottom));
+  vars.SetVariable(kSafeAreaInsetRightName,
+                   StyleEnvironmentVariables::FormatPx(safe_area->right));
 }
 
-void DisplayCutoutClientImpl::Trace(Visitor* visitor) {
+void DisplayCutoutClientImpl::Trace(Visitor* visitor) const {
   visitor->Trace(frame_);
 }
 

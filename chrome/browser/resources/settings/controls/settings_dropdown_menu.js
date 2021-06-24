@@ -3,6 +3,29 @@
 // found in the LICENSE file.
 
 /**
+ * 'settings-dropdown-menu' is a control for displaying options
+ * in the settings.
+ *
+ * Example:
+ *
+ *   <settings-dropdown-menu pref="{{prefs.foo}}">
+ *   </settings-dropdown-menu>
+ */
+import '//resources/cr_elements/md_select_css.m.js';
+import '//resources/cr_elements/policy/cr_policy_pref_indicator.m.js';
+import '../settings_shared_css.js';
+import '../settings_vars_css.js';
+
+import {CrPolicyPrefBehavior} from '//resources/cr_elements/policy/cr_policy_pref_behavior.m.js';
+import {assert} from '//resources/js/assert.m.js';
+import {html, Polymer} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {loadTimeData} from '../i18n_setup.js';
+import {prefToString, stringToPrefValue} from '../prefs/pref_util.js';
+
+import {PrefControlBehavior} from './pref_control_behavior.js';
+
+/**
  * The |name| is shown in the gui.  The |value| us use to set or compare with
  * the preference value.
  * @typedef {{
@@ -15,34 +38,21 @@ let DropdownMenuOption;
 /**
  * @typedef {!Array<!DropdownMenuOption>}
  */
-let DropdownMenuOptionList;
+export let DropdownMenuOptionList;
 
-/**
- * 'settings-dropdown-menu' is a control for displaying options
- * in the settings.
- *
- * Example:
- *
- *   <settings-dropdown-menu pref="{{prefs.foo}}">
- *   </settings-dropdown-menu>
- */
 Polymer({
   is: 'settings-dropdown-menu',
+
+  _template: html`{__html_template__}`,
 
   behaviors: [CrPolicyPrefBehavior, PrefControlBehavior],
 
   properties: {
     /**
      * List of options for the drop-down menu.
-     * @type {?DropdownMenuOptionList}
+     * @type {!DropdownMenuOptionList}
      */
-    menuOptions: {
-      type: Array,
-      // TODO(dpapad): This seems unnecessary in Polymer 2, since any
-      // bindings/observers will execute anyway, even if this is undefined.
-      // Consider removing once migration is done.
-      value: null,
-    },
+    menuOptions: Array,
 
     /** Whether the dropdown menu should be disabled. */
     disabled: {
@@ -78,14 +88,19 @@ Polymer({
     'updateSelected_(menuOptions, pref.value.*, prefKey)',
   ],
 
+  /** @override */
+  focus() {
+    this.$.dropdownMenu.focus();
+  },
+
   /**
    * Pass the selection change to the pref value.
    * @private
    */
-  onChange_: function() {
+  onChange_() {
     const selected = this.$.dropdownMenu.value;
 
-    if (selected == this.notFoundValue_) {
+    if (selected === this.notFoundValue_) {
       return;
     }
 
@@ -93,8 +108,7 @@ Polymer({
       assert(this.pref);
       this.set(`pref.value.${this.prefKey}`, selected);
     } else {
-      const prefValue =
-          Settings.PrefUtil.stringToPrefValue(selected, assert(this.pref));
+      const prefValue = stringToPrefValue(selected, assert(this.pref));
       if (prefValue !== undefined) {
         this.set('pref.value', prefValue);
       }
@@ -109,26 +123,26 @@ Polymer({
    * Updates the selected item when the pref or menuOptions change.
    * @private
    */
-  updateSelected_: function() {
+  updateSelected_() {
     if (this.menuOptions === undefined || this.pref === undefined ||
         this.prefKey === undefined) {
       return;
     }
 
-    if (this.menuOptions === null || !this.menuOptions.length) {
+    if (!this.menuOptions.length) {
       return;
     }
 
     const prefValue = this.prefStringValue_();
     const option = this.menuOptions.find(function(menuItem) {
-      return menuItem.value == prefValue;
+      return menuItem.value.toString() === prefValue;
     });
 
     // Wait for the dom-repeat to populate the <select> before setting
     // <select>#value so the correct option gets selected.
     this.async(() => {
       this.$.dropdownMenu.value =
-          option == undefined ? this.notFoundValue_ : prefValue;
+          option === undefined ? this.notFoundValue_ : prefValue;
     });
   },
 
@@ -137,12 +151,12 @@ Polymer({
    * @return {string}
    * @private
    */
-  prefStringValue_: function() {
+  prefStringValue_() {
     if (this.prefKey) {
       // Dictionary pref, values are always strings.
       return this.pref.value[this.prefKey];
     } else {
-      return Settings.PrefUtil.prefToString(assert(this.pref));
+      return prefToString(assert(this.pref));
     }
   },
 
@@ -152,18 +166,18 @@ Polymer({
    * @return {boolean}
    * @private
    */
-  showNotFoundValue_: function(menuOptions, prefValue) {
+  showNotFoundValue_(menuOptions, prefValue) {
     if (menuOptions === undefined || prefValue === undefined) {
       return false;
     }
 
     // Don't show "Custom" before the options load.
-    if (menuOptions === null || menuOptions.length == 0) {
+    if (menuOptions === null || menuOptions.length === 0) {
       return false;
     }
 
     const option = menuOptions.find((menuItem) => {
-      return menuItem.value == this.prefStringValue_();
+      return menuItem.value.toString() === this.prefStringValue_();
     });
     return !option;
   },
@@ -172,8 +186,8 @@ Polymer({
    * @return {boolean}
    * @private
    */
-  shouldDisableMenu_: function() {
+  shouldDisableMenu_() {
     return this.disabled || this.isPrefEnforced() ||
-        this.menuOptions === null || this.menuOptions.length == 0;
+        this.menuOptions === undefined || this.menuOptions.length === 0;
   },
 });

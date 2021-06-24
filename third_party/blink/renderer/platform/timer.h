@@ -26,17 +26,17 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_TIMER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_TIMER_H_
 
+#include "base/dcheck_is_on.h"
 #include "base/location.h"
-#include "base/macros.h"
 #include "base/memory/weak_ptr.h"
 #include "base/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/sanitizers.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
-#include "third_party/blink/renderer/platform/wtf/time.h"
 
 namespace blink {
 
@@ -45,18 +45,21 @@ namespace blink {
 class PLATFORM_EXPORT TimerBase {
  public:
   explicit TimerBase(scoped_refptr<base::SingleThreadTaskRunner>);
+  TimerBase(const TimerBase&) = delete;
+  TimerBase& operator=(const TimerBase&) = delete;
   virtual ~TimerBase();
 
-  void Start(TimeDelta next_fire_interval,
-             TimeDelta repeat_interval,
+  void Start(base::TimeDelta next_fire_interval,
+             base::TimeDelta repeat_interval,
              const base::Location&);
 
-  void StartRepeating(TimeDelta repeat_interval, const base::Location& caller) {
+  void StartRepeating(base::TimeDelta repeat_interval,
+                      const base::Location& caller) {
     Start(repeat_interval, repeat_interval, caller);
   }
 
-  void StartOneShot(TimeDelta interval, const base::Location& caller) {
-    Start(interval, TimeDelta(), caller);
+  void StartOneShot(base::TimeDelta interval, const base::Location& caller) {
+    Start(interval, base::TimeDelta(), caller);
   }
 
   // Timer cancellation is fast enough that you shouldn't have to worry
@@ -65,12 +68,13 @@ class PLATFORM_EXPORT TimerBase {
   bool IsActive() const;
   const base::Location& GetLocation() const { return location_; }
 
-  TimeDelta NextFireInterval() const;
-  TimeDelta RepeatInterval() const { return repeat_interval_; }
+  base::TimeDelta NextFireInterval() const;
+  base::TimeDelta RepeatInterval() const { return repeat_interval_; }
 
-  void AugmentRepeatInterval(TimeDelta delta) {
-    TimeTicks now = TimerCurrentTimeTicks();
-    SetNextFireTime(now, std::max(next_fire_time_ - now + delta, TimeDelta()));
+  void AugmentRepeatInterval(base::TimeDelta delta) {
+    base::TimeTicks now = TimerCurrentTimeTicks();
+    SetNextFireTime(now,
+                    std::max(next_fire_time_ - now + delta, base::TimeDelta()));
     repeat_interval_ += delta;
   }
 
@@ -80,49 +84,32 @@ class PLATFORM_EXPORT TimerBase {
     bool operator()(const TimerBase* a, const TimerBase* b) const;
   };
 
- private:
+ protected:
   virtual void Fired() = 0;
 
-  virtual scoped_refptr<base::SingleThreadTaskRunner> TimerTaskRunner() const;
-
-  NO_SANITIZE_ADDRESS
-  virtual bool CanFire() const { return true; }
-
-  TimeTicks TimerCurrentTimeTicks() const;
-
-  void SetNextFireTime(TimeTicks now, TimeDelta delay);
+  virtual base::OnceClosure BindTimerClosure(
+      base::WeakPtr<TimerBase> weak_ptr) {
+    return WTF::Bind(&TimerBase::RunInternal, std::move(weak_ptr));
+  }
 
   void RunInternal();
 
-  TimeTicks next_fire_time_;   // 0 if inactive
-  TimeDelta repeat_interval_;  // 0 if not repeating
+ private:
+  base::TimeTicks TimerCurrentTimeTicks() const;
+
+  void SetNextFireTime(base::TimeTicks now, base::TimeDelta delay);
+
+  base::TimeTicks next_fire_time_;   // 0 if inactive
+  base::TimeDelta repeat_interval_;  // 0 if not repeating
   base::Location location_;
   scoped_refptr<base::SingleThreadTaskRunner> web_task_runner_;
 
 #if DCHECK_IS_ON()
   base::PlatformThreadId thread_;
 #endif
-  base::WeakPtrFactory<TimerBase> weak_ptr_factory_;
-
-  friend class ThreadTimers;
-  friend class TimerHeapLessThanFunction;
-  friend class TimerHeapReference;
-
-  DISALLOW_COPY_AND_ASSIGN(TimerBase);
-};
-
-template <typename T, bool = IsGarbageCollectedType<T>::value>
-class TimerIsObjectAliveTrait {
- public:
-  static bool IsHeapObjectAlive(T*) { return true; }
-};
-
-template <typename T>
-class TimerIsObjectAliveTrait<T, true> {
- public:
-  static bool IsHeapObjectAlive(T* object_pointer) {
-    return !ThreadHeap::WillObjectBeLazilySwept(object_pointer);
-  }
+  // Used for invalidating tasks at arbitrary times and after the timer has been
+  // destructed.
+  base::WeakPtrFactory<TimerBase> weak_ptr_factory_{this};
 };
 
 template <typename TimerFiredClass>
@@ -133,28 +120,68 @@ class TaskRunnerTimer : public TimerBase {
   TaskRunnerTimer(scoped_refptr<base::SingleThreadTaskRunner> web_task_runner,
                   TimerFiredClass* o,
                   TimerFiredFunction f)
-      : TimerBase(std::move(web_task_runner)), object_(o), function_(f) {}
+      : TimerBase(std::move(web_task_runner)), object_(o), function_(f) {
+    static_assert(!WTF::IsGarbageCollectedType<TimerFiredClass>::value,
+                  "Use HeapTaskRunnerTimer with garbage-collected types.");
+  }
 
   ~TaskRunnerTimer() override = default;
 
  protected:
   void Fired() override { (object_->*function_)(this); }
 
-  NO_SANITIZE_ADDRESS
-  bool CanFire() const override {
-    // Oilpan: if a timer fires while Oilpan heaps are being lazily
-    // swept, it is not safe to proceed if the object is about to
-    // be swept (and this timer will be stopped while doing so.)
-    return TimerIsObjectAliveTrait<TimerFiredClass>::IsHeapObjectAlive(object_);
+ private:
+  TimerFiredClass* object_;
+  TimerFiredFunction function_;
+};
+
+template <typename TimerFiredClass>
+class HeapTaskRunnerTimer final : public TimerBase {
+  DISALLOW_NEW();
+
+ public:
+  using TimerFiredFunction = void (TimerFiredClass::*)(TimerBase*);
+
+  HeapTaskRunnerTimer(
+      scoped_refptr<base::SingleThreadTaskRunner> web_task_runner,
+      TimerFiredClass* object,
+      TimerFiredFunction function)
+      : TimerBase(std::move(web_task_runner)),
+        object_(object),
+        function_(function) {
+    static_assert(
+        WTF::IsGarbageCollectedType<TimerFiredClass>::value,
+        "HeapTaskRunnerTimer can only be used with garbage-collected types.");
+  }
+
+  ~HeapTaskRunnerTimer() final = default;
+
+  void Trace(Visitor* visitor) const { visitor->Trace(object_); }
+
+ protected:
+  void Fired() final { (object_->*function_)(this); }
+
+  base::OnceClosure BindTimerClosure(base::WeakPtr<TimerBase> weak_ptr) final {
+    return WTF::Bind(&HeapTaskRunnerTimer::RunInternalTrampoline,
+                     std::move(weak_ptr), WrapWeakPersistent(object_.Get()));
   }
 
  private:
-  // FIXME: Oilpan: TimerBase should be moved to the heap and m_object should be
-  // traced.  This raw pointer is safe as long as Timer<X> is held by the X
-  // itself (That's the case
-  // in the current code base).
-  GC_PLUGIN_IGNORE("363031")
-  TimerFiredClass* object_;
+  // Trampoline used for garbage-collected timer version also checks whether the
+  // object has been deemed as dead by the GC but not yet reclaimed. Dead
+  // objects that have not been reclaimed yet must not be touched (which is
+  // enforced by ASAN poisoning).
+  static void RunInternalTrampoline(base::WeakPtr<TimerBase> weak_ptr,
+                                    TimerFiredClass* object) {
+    // - {weak_ptr} is invalidated upon request and when the timer is destroyed.
+    // - {object} is null when the garbage collector deemed the timer as
+    //   unreachable.
+    if (weak_ptr && object) {
+      static_cast<HeapTaskRunnerTimer*>(weak_ptr.get())->RunInternal();
+    }
+  }
+
+  WeakMember<TimerFiredClass> object_;
   TimerFiredFunction function_;
 };
 

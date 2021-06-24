@@ -44,7 +44,7 @@ $ ./out/Debug/bin/run_net_unittests --fast-local-dev
 ```
 
 For more information about running net_unittests, read
-[Android Test Instructions](/docs/android_test_instructions.md).
+[Android Test Instructions](/docs/testing/android_test_instructions.md).
 
 There are a small number of C++ Cronet unit tests, called
 cronet_unittests_android, that can be run by following the above instructions
@@ -61,7 +61,7 @@ Once you've uploaded a Chromium change list using `git cl upload`, you can
 launch a bot to build and test your change list:
 
 ```shell
-$ git cl try -b android_cronet_tester
+$ git cl try -b android-cronet-arm-dbg
 ```
 
 This will run both the Cronet Java unit tests and net_unittests.

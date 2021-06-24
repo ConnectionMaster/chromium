@@ -9,9 +9,7 @@
 #include <memory>
 
 #include "base/macros.h"
-#include "base/scoped_observer.h"
-#include "base/strings/string16.h"
-#include "base/time/time.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/timer/timer.h"
 #include "components/infobars/core/infobar_manager.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -68,15 +66,12 @@ class HungPluginTabHelper
   // state accordingly. The plugin must not have an infobar already.
   void ShowBar(int child_id, PluginState* state);
 
-  // Closes the infobar associated with the given state. Note that this can
-  // be called even if the bar is not opened, in which case it will do nothing.
-  void CloseBar(PluginState* state);
-
   // All currently hung plugins.
   std::map<int, std::unique_ptr<PluginState>> hung_plugins_;
 
-  ScopedObserver<infobars::InfoBarManager, infobars::InfoBarManager::Observer>
-      infobar_observer_;
+  base::ScopedMultiSourceObservation<infobars::InfoBarManager,
+                                     infobars::InfoBarManager::Observer>
+      infobar_observations_{this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

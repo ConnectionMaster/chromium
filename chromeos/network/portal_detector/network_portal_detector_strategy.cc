@@ -4,6 +4,8 @@
 
 #include "chromeos/network/portal_detector/network_portal_detector_strategy.h"
 
+#include <memory>
+
 #include "base/logging.h"
 #include "base/macros.h"
 #include "chromeos/network/network_handler.h"
@@ -127,7 +129,7 @@ PortalDetectorStrategy::PortalDetectorStrategy(Delegate* delegate)
   policy_.maximum_backoff_ms = 2 * 60 * 1000;
   policy_.entry_lifetime_ms = -1;
   policy_.always_use_initial_delay = true;
-  backoff_entry_.reset(new net::BackoffEntry(&policy_, delegate_));
+  backoff_entry_ = std::make_unique<net::BackoffEntry>(&policy_, delegate_);
 }
 
 PortalDetectorStrategy::~PortalDetectorStrategy() = default;
@@ -138,19 +140,14 @@ std::unique_ptr<PortalDetectorStrategy> PortalDetectorStrategy::CreateById(
     Delegate* delegate) {
   switch (id) {
     case STRATEGY_ID_LOGIN_SCREEN:
-      return std::unique_ptr<PortalDetectorStrategy>(
-          new LoginScreenStrategy(delegate));
+      return std::make_unique<LoginScreenStrategy>(delegate);
     case STRATEGY_ID_ERROR_SCREEN:
-      return std::unique_ptr<PortalDetectorStrategy>(
-          new ErrorScreenStrategy(delegate));
+      return std::make_unique<ErrorScreenStrategy>(delegate);
     case STRATEGY_ID_SESSION:
-      return std::unique_ptr<PortalDetectorStrategy>(
-          new SessionStrategy(delegate));
-    default:
-      NOTREACHED();
-      return std::unique_ptr<PortalDetectorStrategy>(
-          static_cast<PortalDetectorStrategy*>(nullptr));
+      return std::make_unique<SessionStrategy>(delegate);
   }
+  NOTREACHED();
+  return nullptr;
 }
 
 base::TimeDelta PortalDetectorStrategy::GetDelayTillNextAttempt() {
@@ -172,7 +169,7 @@ void PortalDetectorStrategy::Reset() {
 void PortalDetectorStrategy::SetPolicyAndReset(
     const net::BackoffEntry::Policy& policy) {
   policy_ = policy;
-  backoff_entry_.reset(new net::BackoffEntry(&policy_, delegate_));
+  backoff_entry_ = std::make_unique<net::BackoffEntry>(&policy_, delegate_);
 }
 
 void PortalDetectorStrategy::OnDetectionCompleted() {

@@ -40,18 +40,17 @@ ProgressShadowElement::ProgressShadowElement(Document& document)
   SetHasCustomStyleCallbacks();
 }
 
-DEFINE_NODE_FACTORY(ProgressShadowElement)
-
 HTMLProgressElement* ProgressShadowElement::ProgressElement() const {
-  return ToHTMLProgressElement(OwnerShadowHost());
+  return To<HTMLProgressElement>(OwnerShadowHost());
 }
 
-scoped_refptr<ComputedStyle>
-ProgressShadowElement::CustomStyleForLayoutObject() {
-  scoped_refptr<ComputedStyle> style = OriginalStyleForLayoutObject();
+scoped_refptr<ComputedStyle> ProgressShadowElement::CustomStyleForLayoutObject(
+    const StyleRecalcContext& style_recalc_context) {
+  scoped_refptr<ComputedStyle> style =
+      OriginalStyleForLayoutObject(style_recalc_context);
   const ComputedStyle* progress_style = ProgressElement()->GetComputedStyle();
   DCHECK(progress_style);
-  if (progress_style->HasAppearance())
+  if (progress_style->HasEffectiveAppearance())
     style->SetDisplay(EDisplay::kNone);
   return style;
 }

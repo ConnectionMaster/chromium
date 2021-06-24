@@ -9,7 +9,7 @@
 
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
-#include "net/third_party/quiche/src/quic/platform/api/quic_string_piece.h"
+#include "base/strings/abseil_string_conversions.h"
 
 using base::FilePath;
 
@@ -19,7 +19,8 @@ namespace quic {
 std::vector<std::string> ReadFileContentsImpl(const std::string& dirname) {
   std::vector<std::string> files;
   FilePath directory(FilePath::FromUTF8Unsafe(dirname));
-  base::FileEnumerator file_list(directory, true, base::FileEnumerator::FILES);
+  base::FileEnumerator file_list(directory, true /* recursive */,
+                                 base::FileEnumerator::FILES);
   for (FilePath file_iter = file_list.Next(); !file_iter.empty();
        file_iter = file_list.Next()) {
     files.push_back(file_iter.AsUTF8Unsafe());
@@ -28,8 +29,10 @@ std::vector<std::string> ReadFileContentsImpl(const std::string& dirname) {
 }
 
 // Reads the contents of |filename| as a string into |contents|.
-void ReadFileContentsImpl(QuicStringPiece filename, std::string* contents) {
-  base::ReadFileToString(FilePath::FromUTF8Unsafe(filename), contents);
+void ReadFileContentsImpl(absl::string_view filename, std::string* contents) {
+  base::ReadFileToString(
+      FilePath::FromUTF8Unsafe(base::StringViewToStringPiece(filename)),
+      contents);
 }
 
 }  // namespace quic

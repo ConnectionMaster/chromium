@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROME_RENDERER_EXTENSIONS_RUNTIME_HOOKS_DELEGATE_H_
-#define CHROME_RENDERER_EXTENSIONS_RUNTIME_HOOKS_DELEGATE_H_
+#ifndef EXTENSIONS_RENDERER_RUNTIME_HOOKS_DELEGATE_H_
+#define EXTENSIONS_RENDERER_RUNTIME_HOOKS_DELEGATE_H_
 
 #include <vector>
 
@@ -21,6 +21,14 @@ class RuntimeHooksDelegate : public APIBindingHooksDelegate {
   explicit RuntimeHooksDelegate(
       NativeRendererMessagingService* messaging_service);
   ~RuntimeHooksDelegate() override;
+
+  // Returns an absolute url for a path inside of an extension, as requested
+  // through the getURL API call.
+  // NOTE: Static as the logic is used by both the runtime and extension
+  // hooks.
+  static APIBindingHooks::RequestResult GetURL(
+      ScriptContext* script_context,
+      const std::vector<v8::Local<v8::Value>>& arguments);
 
   // APIBindingHooksDelegate:
   APIBindingHooks::RequestResult HandleRequest(
@@ -69,4 +77,4 @@ class RuntimeHooksDelegate : public APIBindingHooksDelegate {
 
 }  // namespace extensions
 
-#endif  // CHROME_RENDERER_EXTENSIONS_RUNTIME_HOOKS_DELEGATE_H_
+#endif  // EXTENSIONS_RENDERER_RUNTIME_HOOKS_DELEGATE_H_

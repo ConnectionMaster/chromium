@@ -6,7 +6,7 @@
 
 #include "components/cronet/native/generated/cronet.idl_impl_interface.h"
 
-#include "base/logging.h"
+#include "base/check.h"
 
 // C functions of Cronet_Buffer that forward calls to C++ implementation.
 void Cronet_Buffer_Destroy(Cronet_BufferPtr self) {
@@ -937,9 +937,11 @@ Cronet_ClientContext Cronet_RequestFinishedInfoListener_GetClientContext(
 
 void Cronet_RequestFinishedInfoListener_OnRequestFinished(
     Cronet_RequestFinishedInfoListenerPtr self,
-    Cronet_RequestFinishedInfoPtr request_info) {
+    Cronet_RequestFinishedInfoPtr request_info,
+    Cronet_UrlResponseInfoPtr response_info,
+    Cronet_ErrorPtr error) {
   DCHECK(self);
-  self->OnRequestFinished(request_info);
+  self->OnRequestFinished(request_info, response_info, error);
 }
 
 // Implementation of Cronet_RequestFinishedInfoListener that forwards calls to C
@@ -955,8 +957,10 @@ class Cronet_RequestFinishedInfoListenerStub
   ~Cronet_RequestFinishedInfoListenerStub() override {}
 
  protected:
-  void OnRequestFinished(Cronet_RequestFinishedInfoPtr request_info) override {
-    OnRequestFinishedFunc_(this, request_info);
+  void OnRequestFinished(Cronet_RequestFinishedInfoPtr request_info,
+                         Cronet_UrlResponseInfoPtr response_info,
+                         Cronet_ErrorPtr error) override {
+    OnRequestFinishedFunc_(this, request_info, response_info, error);
   }
 
  private:

@@ -43,37 +43,19 @@
 
 #include "third_party/blink/renderer/core/scroll/scroll_alignment.h"
 
-#include "third_party/blink/renderer/platform/geometry/layout_rect.h"
+#include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
 
 namespace blink {
 
-const ScrollAlignment ScrollAlignment::kAlignCenterIfNeeded = {
-    kScrollAlignmentNoScroll, kScrollAlignmentCenter,
-    kScrollAlignmentClosestEdge};
-const ScrollAlignment ScrollAlignment::kAlignToEdgeIfNeeded = {
-    kScrollAlignmentNoScroll, kScrollAlignmentClosestEdge,
-    kScrollAlignmentClosestEdge};
-const ScrollAlignment ScrollAlignment::kAlignCenterAlways = {
-    kScrollAlignmentCenter, kScrollAlignmentCenter, kScrollAlignmentCenter};
-const ScrollAlignment ScrollAlignment::kAlignTopAlways = {
-    kScrollAlignmentTop, kScrollAlignmentTop, kScrollAlignmentTop};
-const ScrollAlignment ScrollAlignment::kAlignBottomAlways = {
-    kScrollAlignmentBottom, kScrollAlignmentBottom, kScrollAlignmentBottom};
-const ScrollAlignment ScrollAlignment::kAlignLeftAlways = {
-    kScrollAlignmentLeft, kScrollAlignmentLeft, kScrollAlignmentLeft};
-const ScrollAlignment ScrollAlignment::kAlignRightAlways = {
-    kScrollAlignmentRight, kScrollAlignmentRight, kScrollAlignmentRight};
-
-#define MIN_INTERSECT_FOR_REVEAL 32
-
+// static
 ScrollOffset ScrollAlignment::GetScrollOffsetToExpose(
-    const LayoutRect& scroll_snapport_rect,
-    const LayoutRect& expose_rect,
-    const ScrollAlignment& align_x,
-    const ScrollAlignment& align_y,
+    const PhysicalRect& scroll_snapport_rect,
+    const PhysicalRect& expose_rect,
+    const mojom::blink::ScrollAlignment& align_x,
+    const mojom::blink::ScrollAlignment& align_y,
     const ScrollOffset& current_scroll_offset) {
   // Prevent degenerate cases by giving the visible rect a minimum non-0 size.
-  LayoutRect non_zero_visible_rect(scroll_snapport_rect);
+  PhysicalRect non_zero_visible_rect = scroll_snapport_rect;
   LayoutUnit minimum_layout_unit;
   minimum_layout_unit.SetRawValue(1);
   if (non_zero_visible_rect.Width() == LayoutUnit())
@@ -82,90 +64,92 @@ ScrollOffset ScrollAlignment::GetScrollOffsetToExpose(
     non_zero_visible_rect.SetHeight(minimum_layout_unit);
 
   // Determine the appropriate X behavior.
-  ScrollAlignmentBehavior scroll_x;
-  LayoutRect expose_rect_x(expose_rect.X(), non_zero_visible_rect.Y(),
-                           expose_rect.Width(), non_zero_visible_rect.Height());
+  mojom::blink::ScrollAlignment::Behavior scroll_x;
+  PhysicalRect expose_rect_x(expose_rect.X(), non_zero_visible_rect.Y(),
+                             expose_rect.Width(),
+                             non_zero_visible_rect.Height());
   LayoutUnit intersect_width =
       Intersection(non_zero_visible_rect, expose_rect_x).Width();
-  if (intersect_width == expose_rect.Width() ||
-      intersect_width >= MIN_INTERSECT_FOR_REVEAL) {
+  if (intersect_width == expose_rect.Width()) {
     // If the rectangle is fully visible, use the specified visible behavior.
     // If the rectangle is partially visible, but over a certain threshold,
     // then treat it as fully visible to avoid unnecessary horizontal scrolling
-    scroll_x = GetVisibleBehavior(align_x);
+    scroll_x = align_x.rect_visible;
   } else if (intersect_width == non_zero_visible_rect.Width()) {
     // If the rect is bigger than the visible area, don't bother trying to
     // center. Other alignments will work.
-    scroll_x = GetVisibleBehavior(align_x);
-    if (scroll_x == kScrollAlignmentCenter)
-      scroll_x = kScrollAlignmentNoScroll;
+    scroll_x = align_x.rect_visible;
+    if (scroll_x == mojom::blink::ScrollAlignment::Behavior::kCenter)
+      scroll_x = mojom::blink::ScrollAlignment::Behavior::kNoScroll;
   } else if (intersect_width > 0) {
     // If the rectangle is partially visible, but not above the minimum
     // threshold, use the specified partial behavior
-    scroll_x = GetPartialBehavior(align_x);
+    scroll_x = align_x.rect_partial;
   } else {
-    scroll_x = GetHiddenBehavior(align_x);
+    scroll_x = align_x.rect_hidden;
   }
 
-  if (scroll_x == kScrollAlignmentClosestEdge) {
+  if (scroll_x == mojom::blink::ScrollAlignment::Behavior::kClosestEdge) {
     // Closest edge is the right in two cases:
     // (1) exposeRect to the right of and smaller than nonZeroVisibleRect
     // (2) exposeRect to the left of and larger than nonZeroVisibleRect
-    if ((expose_rect.MaxX() > non_zero_visible_rect.MaxX() &&
+    if ((expose_rect.Right() > non_zero_visible_rect.Right() &&
          expose_rect.Width() < non_zero_visible_rect.Width()) ||
-        (expose_rect.MaxX() < non_zero_visible_rect.MaxX() &&
+        (expose_rect.Right() < non_zero_visible_rect.Right() &&
          expose_rect.Width() > non_zero_visible_rect.Width())) {
-      scroll_x = kScrollAlignmentRight;
+      scroll_x = mojom::blink::ScrollAlignment::Behavior::kRight;
     }
   }
 
   // Determine the appropriate Y behavior.
-  ScrollAlignmentBehavior scroll_y;
-  LayoutRect expose_rect_y(non_zero_visible_rect.X(), expose_rect.Y(),
-                           non_zero_visible_rect.Width(), expose_rect.Height());
+  mojom::blink::ScrollAlignment::Behavior scroll_y;
+  PhysicalRect expose_rect_y(non_zero_visible_rect.X(), expose_rect.Y(),
+                             non_zero_visible_rect.Width(),
+                             expose_rect.Height());
   LayoutUnit intersect_height =
       Intersection(non_zero_visible_rect, expose_rect_y).Height();
   if (intersect_height == expose_rect.Height()) {
     // If the rectangle is fully visible, use the specified visible behavior.
-    scroll_y = GetVisibleBehavior(align_y);
+    scroll_y = align_y.rect_visible;
   } else if (intersect_height == non_zero_visible_rect.Height()) {
     // If the rect is bigger than the visible area, don't bother trying to
     // center. Other alignments will work.
-    scroll_y = GetVisibleBehavior(align_y);
-    if (scroll_y == kScrollAlignmentCenter)
-      scroll_y = kScrollAlignmentNoScroll;
+    scroll_y = align_y.rect_visible;
+    if (scroll_y == mojom::blink::ScrollAlignment::Behavior::kCenter)
+      scroll_y = mojom::blink::ScrollAlignment::Behavior::kNoScroll;
   } else if (intersect_height > 0) {
     // If the rectangle is partially visible, use the specified partial behavior
-    scroll_y = GetPartialBehavior(align_y);
+    scroll_y = align_y.rect_partial;
   } else {
-    scroll_y = GetHiddenBehavior(align_y);
+    scroll_y = align_y.rect_hidden;
   }
 
-  if (scroll_y == kScrollAlignmentClosestEdge) {
+  if (scroll_y == mojom::blink::ScrollAlignment::Behavior::kClosestEdge) {
     // Closest edge is the bottom in two cases:
     // (1) exposeRect below and smaller than nonZeroVisibleRect
     // (2) exposeRect above and larger than nonZeroVisibleRect
-    if ((expose_rect.MaxY() > non_zero_visible_rect.MaxY() &&
+    if ((expose_rect.Bottom() > non_zero_visible_rect.Bottom() &&
          expose_rect.Height() < non_zero_visible_rect.Height()) ||
-        (expose_rect.MaxY() < non_zero_visible_rect.MaxY() &&
+        (expose_rect.Bottom() < non_zero_visible_rect.Bottom() &&
          expose_rect.Height() > non_zero_visible_rect.Height())) {
-      scroll_y = kScrollAlignmentBottom;
+      scroll_y = mojom::blink::ScrollAlignment::Behavior::kBottom;
     }
   }
 
   // We would like calculate the ScrollPosition to move |expose_rect| inside
   // the scroll_snapport, which is based on the scroll_origin of the scroller.
-  non_zero_visible_rect.Move(LayoutSize(-current_scroll_offset));
+  non_zero_visible_rect.Move(
+      -PhysicalOffset::FromFloatSizeRound(current_scroll_offset));
 
   // Given the X behavior, compute the X coordinate.
   float x;
-  if (scroll_x == kScrollAlignmentNoScroll) {
+  if (scroll_x == mojom::blink::ScrollAlignment::Behavior::kNoScroll) {
     x = current_scroll_offset.Width();
-  } else if (scroll_x == kScrollAlignmentRight) {
-    x = (expose_rect.MaxX() - non_zero_visible_rect.MaxX()).ToFloat();
-  } else if (scroll_x == kScrollAlignmentCenter) {
-    x = ((expose_rect.X() + expose_rect.MaxX() -
-          (non_zero_visible_rect.X() + non_zero_visible_rect.MaxX())) /
+  } else if (scroll_x == mojom::blink::ScrollAlignment::Behavior::kRight) {
+    x = (expose_rect.Right() - non_zero_visible_rect.Right()).ToFloat();
+  } else if (scroll_x == mojom::blink::ScrollAlignment::Behavior::kCenter) {
+    x = ((expose_rect.X() + expose_rect.Right() -
+          (non_zero_visible_rect.X() + non_zero_visible_rect.Right())) /
          2)
             .ToFloat();
   } else {
@@ -174,13 +158,13 @@ ScrollOffset ScrollAlignment::GetScrollOffsetToExpose(
 
   // Given the Y behavior, compute the Y coordinate.
   float y;
-  if (scroll_y == kScrollAlignmentNoScroll) {
+  if (scroll_y == mojom::blink::ScrollAlignment::Behavior::kNoScroll) {
     y = current_scroll_offset.Height();
-  } else if (scroll_y == kScrollAlignmentBottom) {
-    y = (expose_rect.MaxY() - non_zero_visible_rect.MaxY()).ToFloat();
-  } else if (scroll_y == kScrollAlignmentCenter) {
-    y = ((expose_rect.Y() + expose_rect.MaxY() -
-          (non_zero_visible_rect.Y() + non_zero_visible_rect.MaxY())) /
+  } else if (scroll_y == mojom::blink::ScrollAlignment::Behavior::kBottom) {
+    y = (expose_rect.Bottom() - non_zero_visible_rect.Bottom()).ToFloat();
+  } else if (scroll_y == mojom::blink::ScrollAlignment::Behavior::kCenter) {
+    y = ((expose_rect.Y() + expose_rect.Bottom() -
+          (non_zero_visible_rect.Y() + non_zero_visible_rect.Bottom())) /
          2)
             .ToFloat();
   } else {
@@ -188,6 +172,97 @@ ScrollOffset ScrollAlignment::GetScrollOffsetToExpose(
   }
 
   return ScrollOffset(x, y);
+}
+
+// static
+const mojom::blink::ScrollAlignment& ScrollAlignment::CenterIfNeeded() {
+  DEFINE_STATIC_LOCAL(const mojom::blink::ScrollAlignment,
+                      g_scroll_align_center_if_needed,
+                      (mojom::blink::ScrollAlignment::Behavior::kNoScroll,
+                       mojom::blink::ScrollAlignment::Behavior::kCenter,
+                       mojom::blink::ScrollAlignment::Behavior::kClosestEdge));
+  return g_scroll_align_center_if_needed;
+}
+
+// static
+const mojom::blink::ScrollAlignment& ScrollAlignment::ToEdgeIfNeeded() {
+  DEFINE_STATIC_LOCAL(const mojom::blink::ScrollAlignment,
+                      g_scroll_align_to_edge_if_needed,
+                      (mojom::blink::ScrollAlignment::Behavior::kNoScroll,
+                       mojom::blink::ScrollAlignment::Behavior::kClosestEdge,
+                       mojom::blink::ScrollAlignment::Behavior::kClosestEdge));
+  return g_scroll_align_to_edge_if_needed;
+}
+
+// static
+const mojom::blink::ScrollAlignment& ScrollAlignment::CenterAlways() {
+  DEFINE_STATIC_LOCAL(const mojom::blink::ScrollAlignment,
+                      g_scroll_align_center_always,
+                      (mojom::blink::ScrollAlignment::Behavior::kCenter,
+                       mojom::blink::ScrollAlignment::Behavior::kCenter,
+                       mojom::blink::ScrollAlignment::Behavior::kCenter));
+  return g_scroll_align_center_always;
+}
+
+// static
+const mojom::blink::ScrollAlignment& ScrollAlignment::TopAlways() {
+  DEFINE_STATIC_LOCAL(const mojom::blink::ScrollAlignment,
+                      g_scroll_align_top_always,
+                      (mojom::blink::ScrollAlignment::Behavior::kTop,
+                       mojom::blink::ScrollAlignment::Behavior::kTop,
+                       mojom::blink::ScrollAlignment::Behavior::kTop));
+  return g_scroll_align_top_always;
+}
+
+// static
+const mojom::blink::ScrollAlignment& ScrollAlignment::BottomAlways() {
+  DEFINE_STATIC_LOCAL(const mojom::blink::ScrollAlignment,
+                      g_scroll_align_bottom_always,
+                      (mojom::blink::ScrollAlignment::Behavior::kBottom,
+                       mojom::blink::ScrollAlignment::Behavior::kBottom,
+                       mojom::blink::ScrollAlignment::Behavior::kBottom));
+  return g_scroll_align_bottom_always;
+}
+
+// static
+const mojom::blink::ScrollAlignment& ScrollAlignment::LeftAlways() {
+  DEFINE_STATIC_LOCAL(const mojom::blink::ScrollAlignment,
+                      g_scroll_align_left_always,
+                      (mojom::blink::ScrollAlignment::Behavior::kLeft,
+                       mojom::blink::ScrollAlignment::Behavior::kLeft,
+                       mojom::blink::ScrollAlignment::Behavior::kLeft));
+  return g_scroll_align_left_always;
+}
+
+// static
+const mojom::blink::ScrollAlignment& ScrollAlignment::RightAlways() {
+  DEFINE_STATIC_LOCAL(const mojom::blink::ScrollAlignment,
+                      g_scroll_align_right_always,
+                      (mojom::blink::ScrollAlignment::Behavior::kRight,
+                       mojom::blink::ScrollAlignment::Behavior::kRight,
+                       mojom::blink::ScrollAlignment::Behavior::kRight));
+  return g_scroll_align_right_always;
+}
+
+// static
+mojom::blink::ScrollIntoViewParamsPtr
+ScrollAlignment::CreateScrollIntoViewParams(
+    const mojom::blink::ScrollAlignment& align_x,
+    const mojom::blink::ScrollAlignment& align_y,
+    mojom::blink::ScrollType scroll_type,
+    bool make_visible_in_visual_viewport,
+    mojom::blink::ScrollBehavior scroll_behavior,
+    bool is_for_scroll_sequence,
+    bool zoom_into_rect) {
+  auto params = mojom::blink::ScrollIntoViewParams::New();
+  params->align_x = mojom::blink::ScrollAlignment::New(align_x);
+  params->align_y = mojom::blink::ScrollAlignment::New(align_y);
+  params->type = scroll_type;
+  params->make_visible_in_visual_viewport = make_visible_in_visual_viewport;
+  params->behavior = scroll_behavior;
+  params->is_for_scroll_sequence = is_for_scroll_sequence;
+  params->zoom_into_rect = zoom_into_rect;
+  return params;
 }
 
 }  // namespace blink

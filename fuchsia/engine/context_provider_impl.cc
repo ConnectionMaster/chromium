@@ -4,48 +4,11 @@
 
 #include "fuchsia/engine/context_provider_impl.h"
 
-#include <fuchsia/sys/cpp/fidl.h>
-#include <lib/async/default.h>
-#include <lib/fdio/io.h>
-#include <lib/zx/job.h>
-#include <stdio.h>
-#include <zircon/processargs.h>
-
+#include <chromium/internal/cpp/fidl.h>
+#include <lib/sys/cpp/service_directory.h>
 #include <utility>
-#include <vector>
 
-#include "base/base_paths_fuchsia.h"
-#include "base/bind.h"
-#include "base/command_line.h"
-#include "base/fuchsia/default_job.h"
-#include "base/fuchsia/fuchsia_logging.h"
 #include "base/logging.h"
-#include "base/path_service.h"
-#include "base/process/launch.h"
-#include "fuchsia/engine/common.h"
-#include "services/service_manager/sandbox/fuchsia/sandbox_policy_fuchsia.h"
-
-namespace {
-
-// Returns the underlying channel if |directory| is a client endpoint for a
-// |fuchsia::io::Directory| protocol. Otherwise, returns an empty channel.
-zx::channel ValidateDirectoryAndTakeChannel(
-    fidl::InterfaceHandle<fuchsia::io::Directory> directory_handle) {
-  fidl::SynchronousInterfacePtr<fuchsia::io::Directory> directory =
-      directory_handle.BindSync();
-  zx_status_t status = ZX_ERR_INTERNAL;
-  std::vector<uint8_t> entries;
-
-  directory->ReadDirents(0, &status, &entries);
-  if (status == ZX_OK) {
-    return directory.Unbind().TakeChannel();
-  }
-
-  // Not a directory.
-  return zx::channel();
-}
-
-}  // namespace
 
 ContextProviderImpl::ContextProviderImpl() = default;
 
@@ -55,73 +18,48 @@ void ContextProviderImpl::Create(
     fuchsia::web::CreateContextParams params,
     fidl::InterfaceRequest<fuchsia::web::Context> context_request) {
   if (!context_request.is_valid()) {
-    // TODO(crbug.com/934539): Add type epitaph.
-    DLOG(WARNING) << "Invalid |context_request|.";
-    return;
-  }
-  if (!params.has_service_directory()) {
-    // TODO(crbug.com/934539): Add type epitaph.
-    DLOG(WARNING)
-        << "Missing argument |service_directory| in CreateContextParams.";
+    DLOG(ERROR) << "Invalid |context_request|.";
     return;
   }
 
-  base::LaunchOptions launch_options;
-  service_manager::SandboxPolicyFuchsia sandbox_policy;
-  sandbox_policy.Initialize(service_manager::SANDBOX_TYPE_WEB_CONTEXT);
-  sandbox_policy.SetServiceDirectory(
-      std::move(*params.mutable_service_directory()));
-  sandbox_policy.UpdateLaunchOptionsForSandbox(&launch_options);
+  // Request access to the component's outgoing service directory.
+  fidl::InterfaceRequest<fuchsia::io::Directory> services_request;
+  auto services = sys::ServiceDirectory::CreateWithRequest(&services_request);
 
-  // Transfer the ContextRequest handle to a well-known location in the child
-  // process' handle table.
-  zx::channel context_handle(context_request.TakeChannel());
-  launch_options.handles_to_transfer.push_back(
-      {kContextRequestHandleId, context_handle.get()});
-
-  // Bind |data_directory| to /data directory, if provided.
-  if (params.has_data_directory()) {
-    zx::channel data_directory_channel = ValidateDirectoryAndTakeChannel(
-        std::move(*params.mutable_data_directory()));
-    if (data_directory_channel.get() == ZX_HANDLE_INVALID) {
-      // TODO(crbug.com/934539): Add type epitaph.
-      DLOG(WARNING)
-          << "Invalid argument |data_directory| in CreateContextParams.";
-      return;
+  // If there are DevToolsListeners active then set the remote-debugging option
+  // and create DevToolsPerContextListener channels to connect asynchronously
+  // to the instance.
+  const bool have_devtools_listeners = devtools_listeners_.size() > 0;
+  web_instance_host_.set_enable_remote_debug_mode(have_devtools_listeners);
+  if (have_devtools_listeners) {
+    chromium::internal::DevToolsConnectorPtr devtools_connector;
+    services->Connect(devtools_connector.NewRequest());
+    for (auto& devtools_listener : devtools_listeners_.ptrs()) {
+      fidl::InterfaceHandle<fuchsia::web::DevToolsPerContextListener> listener;
+      devtools_listener.get()->get()->OnContextDevToolsAvailable(
+          listener.NewRequest());
+      devtools_connector->ConnectPerContextListener(std::move(listener));
     }
-
-    base::FilePath data_path;
-    if (!base::PathService::Get(base::DIR_APP_DATA, &data_path)) {
-      // TODO(crbug.com/934539): Add type epitaph.
-      DLOG(WARNING) << "Failed to get data directory service path.";
-      return;
-    }
-    launch_options.paths_to_transfer.push_back(
-        base::PathToTransfer{data_path, data_directory_channel.release()});
   }
 
-  // Isolate the child Context processes by containing them within their own
-  // respective jobs.
-  zx::job job;
-  zx_status_t status = zx::job::create(*base::GetDefaultJob(), 0, &job);
-  if (status != ZX_OK) {
-    ZX_LOG(FATAL, status) << "zx_job_create";
-    return;
+  zx_status_t result = web_instance_host_.CreateInstanceForContext(
+      std::move(params), std::move(services_request));
+
+  if (result == ZX_OK) {
+    // Route the fuchsia.web.Context request to the new Component.
+    services->Connect(std::move(context_request));
+  } else {
+    context_request.Close(result);
   }
-  launch_options.job_handle = job.get();
-
-  const base::CommandLine* launch_command =
-      base::CommandLine::ForCurrentProcess();
-  if (launch_for_test_)
-    launch_for_test_.Run(*launch_command, launch_options);
-  else
-    base::LaunchProcess(*launch_command, launch_options);
-
-  // |context_handle| was transferred (not copied) to the Context process.
-  ignore_result(context_handle.release());
 }
 
-void ContextProviderImpl::SetLaunchCallbackForTest(
-    LaunchCallbackForTest launch) {
-  launch_for_test_ = std::move(launch);
+void ContextProviderImpl::set_config_for_test(base::Value config) {
+  web_instance_host_.set_config_for_test(std::move(config));  // IN-TEST
+}
+
+void ContextProviderImpl::EnableDevTools(
+    fidl::InterfaceHandle<fuchsia::web::DevToolsListener> listener,
+    EnableDevToolsCallback callback) {
+  devtools_listeners_.AddInterfacePtr(listener.Bind());
+  callback();
 }

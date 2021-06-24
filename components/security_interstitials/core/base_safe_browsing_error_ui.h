@@ -32,9 +32,12 @@ class BaseSafeBrowsingErrorUI {
                           bool is_off_the_record,
                           bool is_extended_reporting_enabled,
                           bool is_extended_reporting_policy_managed,
+                          bool is_enhanced_protection_enabled,
                           bool is_proceed_anyway_disabled,
                           bool should_open_links_in_new_tab,
                           bool always_show_back_to_safety,
+                          bool is_enhanced_protection_message_enabled,
+                          bool is_safe_browsing_managed,
                           const std::string& help_center_article_link);
 
     SBErrorDisplayOptions(const SBErrorDisplayOptions& other);
@@ -55,6 +58,9 @@ class BaseSafeBrowsingErrorUI {
     // user is unable to change the pref.
     bool is_extended_reporting_policy_managed;
 
+    // Indicates if enhanced protection is on for the user.
+    bool is_enhanced_protection_enabled;
+
     // Indicates if kSafeBrowsingProceedAnywayDisabled preference is set.
     bool is_proceed_anyway_disabled;
 
@@ -66,6 +72,13 @@ class BaseSafeBrowsingErrorUI {
     // a proper page to navigate back to. Chrome and Chromium builds should
     // always set this option to true,
     bool always_show_back_to_safety;
+
+    // Indicates if the feature to show enhanced protection message on the
+    // interstitial is enabled.
+    bool is_enhanced_protection_message_enabled;
+
+    // Indicates if Safe Browsing is managed.
+    bool is_safe_browsing_managed;
 
     // The p= query parameter used when visiting the Help Center. If this is
     // nullptr, then a default value will be used for the SafeBrowsing article.
@@ -104,6 +117,10 @@ class BaseSafeBrowsingErrorUI {
     return display_options_.is_extended_reporting_policy_managed;
   }
 
+  bool is_enhanced_protection_enabled() const {
+    return display_options_.is_enhanced_protection_enabled;
+  }
+
   bool is_proceed_anyway_disabled() const {
     return display_options_.is_proceed_anyway_disabled;
   }
@@ -120,6 +137,14 @@ class BaseSafeBrowsingErrorUI {
     return display_options_.help_center_article_link;
   }
 
+  bool is_enhanced_protection_message_enabled() const {
+    return display_options_.is_enhanced_protection_message_enabled;
+  }
+
+  bool is_safe_browsing_managed() const {
+    return display_options_.is_safe_browsing_managed;
+  }
+
   const SBErrorDisplayOptions& get_error_display_options() const {
     return display_options_;
   }
@@ -129,9 +154,23 @@ class BaseSafeBrowsingErrorUI {
   // - in incognito mode
   // - if kSafeBrowsingExtendedReportingOptInAllowed preference is disabled.
   // - if kSafeBrowsingExtendedReporting is managed by enterprise policy.
+  // - if enhanced protection is on
   bool CanShowExtendedReportingOption() {
     return !is_off_the_record() && is_extended_reporting_opt_in_allowed() &&
-           !is_extended_reporting_policy_managed();
+           !is_extended_reporting_policy_managed() &&
+           !is_enhanced_protection_enabled();
+  }
+
+  // Checks if we should even show the enhanced protection message.
+  // We don't show it:
+  // - in incognito mode, OR
+  // - if kEnhancedProtectionMessageInInterstitials flag is disabled, OR
+  // - if kSafeBrowsingEnabled or kSafeBrowsingEnhanced is managed by enterprise
+  // policy, OR
+  // - if enhanced protection is on
+  bool CanShowEnhancedProtectionMessage() {
+    return !is_off_the_record() && is_enhanced_protection_message_enabled() &&
+           !is_safe_browsing_managed() && !is_enhanced_protection_enabled();
   }
 
   SBInterstitialReason interstitial_reason() const {
@@ -145,8 +184,7 @@ class BaseSafeBrowsingErrorUI {
   GURL request_url() const { return request_url_; }
   GURL main_frame_url() const { return main_frame_url_; }
 
-  virtual void PopulateStringsForHtml(
-      base::DictionaryValue* load_time_data) = 0;
+  virtual void PopulateStringsForHtml(base::Value* load_time_data) = 0;
   virtual void HandleCommand(SecurityInterstitialCommand command) = 0;
 
   virtual int GetHTMLTemplateId() const = 0;

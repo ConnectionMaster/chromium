@@ -2,6 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+// #import {FilesAppDirEntry, FakeEntry} from '../../externs/files_app_entry_interfaces.js';
+// #import {DirectoryModel} from './directory_model.m.js';
+// #import {FileFilter} from './directory_contents.m.js';
+// #import {NativeEventTarget as EventTarget} from 'chrome://resources/js/cr/event_target.m.js';
+// clang-format on
+
 /**
  * @returns {!FileFilter} fake for unittests.
  */
@@ -26,7 +33,7 @@ function createFakeFileFilter() {
 /**
  * @returns {!DirectoryModel} fake for unittests.
  */
-function createFakeDirectoryModel() {
+/* #export */ function createFakeDirectoryModel() {
   /**
    * DirectoryModel fake.
    */
@@ -53,6 +60,29 @@ function createFakeDirectoryModel() {
      */
     getFileFilter() {
       return this.fileFilter_;
+    }
+
+    /**
+     * @return {DirectoryEntry|FakeEntry|FilesAppDirEntry} Current directory.
+     */
+    getCurrentDirEntry() {
+      return null;
+    }
+
+    /**
+     * @param {!DirectoryEntry|!FilesAppDirEntry} dirEntry The entry of the new
+     *     directory to be changed to.
+     * @param {function()=} opt_callback Executed if the directory loads
+     *     successfully.
+     */
+    changeDirectoryEntry(dirEntry, opt_callback) {
+      if (opt_callback) {
+        opt_callback();
+      }
+    }
+
+    isReadOnly() {
+      return false;
     }
   }
 

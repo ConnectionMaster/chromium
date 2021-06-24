@@ -1,23 +1,28 @@
 // Copyright 2015 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
 package org.chromium.chrome.browser.contextualsearch;
 
 import android.net.Uri;
-import android.support.annotation.Nullable;
 import android.text.TextUtils;
 
-import org.chromium.base.VisibleForTesting;
-import org.chromium.chrome.browser.search_engines.TemplateUrlService;
-import org.chromium.chrome.browser.util.UrlUtilities;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
+
+import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
+import org.chromium.components.embedder_support.util.UrlUtilitiesJni;
 
 import java.net.MalformedURLException;
 import java.net.URL;
 
 /**
- * Bundles a Search Request URL with a low-priority version of the URL, helps manage the
- * fall-back when the low-priority version fails, and tracks which one is in use.
+ * Builds a Search Request URL to be used to populate the content of the Bottom Sheet in response
+ * to a particular Contextual Search.
+ * The URL has a low-priority version to help with server overload, and helps manage the
+ * fall-back to normal when that is needed after the low-priority version fails.
+ * The URL building includes triggering of feature one-boxes on the SERP like a translation
+ * One-box or a knowledge panel.
  */
 class ContextualSearchRequest {
     private final boolean mWasPrefetch;
@@ -30,6 +35,7 @@ class ContextualSearchRequest {
     private boolean mIsTranslationForced;
     private boolean mIsFullSearchUrlProvided;
 
+    private static final String GWS_NORMAL_PRIORITY_SEARCH_PATH = "search";
     private static final String GWS_LOW_PRIORITY_SEARCH_PATH = "s";
     private static final String GWS_SEARCH_NO_SUGGESTIONS_PARAM = "sns";
     private static final String GWS_SEARCH_NO_SUGGESTIONS_PARAM_VALUE = "1";
@@ -62,6 +68,15 @@ class ContextualSearchRequest {
      */
     ContextualSearchRequest(String searchTerm, boolean isLowPriorityEnabled) {
         this(searchTerm, null, null, isLowPriorityEnabled, null, null);
+    }
+
+    /**
+     * Creates a search request for the given URL without any alternate term or low priority
+     * loading capability for preload.
+     * @param searchUrlFull The URI for the full search to present in the overlay.
+     */
+    ContextualSearchRequest(@NonNull Uri searchUrlFull) {
+        this(null, null, null, false, searchUrlFull.toString(), null);
     }
 
     /**
@@ -174,14 +189,17 @@ class ContextualSearchRequest {
     }
 
     /**
-     * Adds translation parameters.
+     * Adds translation parameters, unless they match.
      * @param sourceLanguage The language of the original search term.
      * @param targetLanguage The language the that the user prefers.
      */
     void forceTranslation(String sourceLanguage, String targetLanguage) {
         mIsTranslationForced = true;
         // If the server is providing a full URL then we shouldn't alter it.
-        if (mIsFullSearchUrlProvided) return;
+        if (mIsFullSearchUrlProvided || TextUtils.isEmpty(targetLanguage)
+                || targetLanguage.equals(sourceLanguage)) {
+            return;
+        }
 
         if (mLowPriorityUri != null) {
             mLowPriorityUri = makeTranslateUri(mLowPriorityUri, sourceLanguage, targetLanguage);
@@ -220,8 +238,12 @@ class ContextualSearchRequest {
      */
     protected Uri getUriTemplate(String query, @Nullable String alternateTerm, @Nullable String mid,
             boolean shouldPrefetch) {
-        Uri uri = Uri.parse(TemplateUrlService.getInstance().getUrlForContextualSearchQuery(
-                query, alternateTerm, shouldPrefetch, CTXS_TWO_REQUEST_PROTOCOL));
+        // TODO(https://crbug.com/783819): Avoid parsing the GURL as a Uri, and update
+        // makeKPTriggeringUri to operate on GURLs.
+        Uri uri = Uri.parse(TemplateUrlServiceFactory.get()
+                                    .getUrlForContextualSearchQuery(query, alternateTerm,
+                                            shouldPrefetch, CTXS_TWO_REQUEST_PROTOCOL)
+                                    .getSpec());
         if (!TextUtils.isEmpty(mid)) uri = makeKPTriggeringUri(uri, mid);
         return uri;
     }
@@ -233,13 +255,18 @@ class ContextualSearchRequest {
      */
     @VisibleForTesting
     boolean isGoogleUrl(@Nullable String someUrl) {
-        return !TextUtils.isEmpty(someUrl) && UrlUtilities.nativeIsGoogleDomainUrl(someUrl, true);
+        return !TextUtils.isEmpty(someUrl) && UrlUtilitiesJni.get().isGoogleSubDomainUrl(someUrl);
     }
 
     /**
      * @return a low-priority {@code Uri} from the given base {@code Uri}.
      */
     private Uri makeLowPriorityUri(Uri baseUri) {
+        if (baseUri.getPath() == null
+                || !baseUri.getPath().contains(GWS_NORMAL_PRIORITY_SEARCH_PATH)) {
+            return baseUri;
+        }
+
         return baseUri.buildUpon()
                 .path(GWS_LOW_PRIORITY_SEARCH_PATH)
                 .appendQueryParameter(

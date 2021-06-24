@@ -9,7 +9,6 @@
 
 #include <memory>
 #include <queue>
-#include <string>
 #include <vector>
 
 #include "base/callback.h"
@@ -31,10 +30,7 @@
 #include "gpu/ipc/service/gpu_config.h"
 #include "gpu/ipc/service/x_util.h"
 #include "media/base/android_overlay_mojo_factory.h"
-#include "mojo/public/cpp/bindings/associated_binding_set.h"
-#include "services/service_manager/public/cpp/service_context_ref.h"
-#include "services/viz/privileged/interfaces/viz_main.mojom.h"
-#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
+#include "ui/gfx/gpu_extra_info.h"
 #include "ui/gfx/native_widget_types.h"
 
 namespace content {
@@ -48,8 +44,7 @@ class GpuChildThread : public ChildThreadImpl,
                        public viz::VizMainImpl::Delegate {
  public:
   GpuChildThread(base::RepeatingClosure quit_closure,
-                 std::unique_ptr<gpu::GpuInit> gpu_init,
-                 viz::VizMainImpl::LogMessages deferred_messages);
+                 std::unique_ptr<gpu::GpuInit> gpu_init);
 
   GpuChildThread(const InProcessChildThreadParams& params,
                  std::unique_ptr<gpu::GpuInit> gpu_init);
@@ -60,23 +55,13 @@ class GpuChildThread : public ChildThreadImpl,
 
  private:
   GpuChildThread(base::RepeatingClosure quit_closure,
-                 const ChildThreadImpl::Options& options,
+                 ChildThreadImpl::Options options,
                  std::unique_ptr<gpu::GpuInit> gpu_init);
-
-  void CreateVizMainService(viz::mojom::VizMainAssociatedRequest request);
 
   bool in_process_gpu() const;
 
   // ChildThreadImpl:
-  bool Send(IPC::Message* msg) override;
-  void RunService(
-      const std::string& service_name,
-      mojo::PendingReceiver<service_manager::mojom::Service> receiver) override;
-
-  // IPC::Listener implementation via ChildThreadImpl:
-  void OnAssociatedInterfaceRequest(
-      const std::string& name,
-      mojo::ScopedInterfaceEndpointHandle handle) override;
+  void BindServiceInterface(mojo::GenericPendingReceiver receiver) override;
 
   // viz::VizMainImpl::Delegate:
   void OnInitializationFailed() override;
@@ -103,34 +88,19 @@ class GpuChildThread : public ChildThreadImpl,
 
   viz::VizMainImpl viz_main_;
 
-  // ServiceFactory for service_manager::Service hosting.
+  // ServiceFactory for Mojo service hosting.
   std::unique_ptr<GpuServiceFactory> service_factory_;
 
-  blink::AssociatedInterfaceRegistry associated_interfaces_;
-
-  // Holds a closure that releases pending interface requests on the IO thread.
-  base::OnceClosure release_pending_requests_closure_;
+  // A queue of incoming service interface requests received prior to
+  // |service_factory_| initialization.
+  std::vector<mojo::GenericPendingReceiver> pending_service_receivers_;
 
   // A closure which quits the main message loop.
   base::RepeatingClosure quit_closure_;
 
   std::unique_ptr<base::MemoryPressureListener> memory_pressure_listener_;
 
-  // Retains pending GPU-process service startup requests (i.e. RunService
-  // invocations from the browser) until the process is fully initialized.
-  struct PendingServiceRequest {
-    PendingServiceRequest(
-        const std::string& service_name,
-        mojo::PendingReceiver<service_manager::mojom::Service> receiver);
-    PendingServiceRequest(PendingServiceRequest&&);
-    ~PendingServiceRequest();
-
-    std::string service_name;
-    mojo::PendingReceiver<service_manager::mojom::Service> receiver;
-  };
-  std::vector<PendingServiceRequest> pending_service_requests_;
-
-  base::WeakPtrFactory<GpuChildThread> weak_factory_;
+  base::WeakPtrFactory<GpuChildThread> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(GpuChildThread);
 };

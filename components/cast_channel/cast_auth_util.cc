@@ -13,7 +13,6 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "components/cast_certificate/cast_cert_validator.h"
 #include "components/cast_certificate/cast_crl.h"
 #include "components/cast_channel/cast_channel_enum.h"
@@ -68,7 +67,8 @@ namespace cast_crypto = ::cast_certificate;
 // message.
 AuthResult ParseAuthMessage(const CastMessage& challenge_reply,
                             DeviceAuthMessage* auth_message) {
-  if (challenge_reply.payload_type() != CastMessage_PayloadType_BINARY) {
+  if (challenge_reply.payload_type() !=
+      cast::channel::CastMessage_PayloadType_BINARY) {
     return AuthResult::CreateWithParseError(
         "Wrong payload type in challenge reply",
         AuthResult::ERROR_WRONG_PAYLOAD_TYPE);
@@ -258,9 +258,26 @@ AuthContext AuthContext::Create() {
   return AuthContext(CastNonce::Get());
 }
 
+// static
+AuthContext AuthContext::CreateForTest(const std::string& nonce_data) {
+  // Given some garbage data, try to turn it into a string that at least has the
+  // right length.
+  std::string nonce;
+  if (nonce_data.empty()) {
+    nonce = std::string(kNonceSizeInBytes, '0');
+  } else {
+    while (nonce.size() < kNonceSizeInBytes) {
+      nonce += nonce_data;
+    }
+    nonce.erase(kNonceSizeInBytes);
+  }
+  DCHECK(nonce.size() == kNonceSizeInBytes);
+  return AuthContext(nonce);
+}
+
 AuthContext::AuthContext(const std::string& nonce) : nonce_(nonce) {}
 
-AuthContext::~AuthContext() {}
+AuthContext::~AuthContext() = default;
 
 AuthResult AuthContext::VerifySenderNonce(
     const std::string& nonce_response) const {
@@ -280,10 +297,11 @@ AuthResult AuthContext::VerifySenderNonce(
   return AuthResult();
 }
 
-AuthResult VerifyAndMapDigestAlgorithm(HashAlgorithm response_digest_algorithm,
-                                       net::DigestAlgorithm* digest_algorithm) {
+AuthResult VerifyAndMapDigestAlgorithm(
+    cast::channel::HashAlgorithm response_digest_algorithm,
+    net::DigestAlgorithm* digest_algorithm) {
   switch (response_digest_algorithm) {
-    case SHA1:
+    case cast::channel::SHA1:
       RecordSignatureEvent(SIGNATURE_ALGORITHM_UNSUPPORTED);
       *digest_algorithm = net::DigestAlgorithm::Sha1;
       if (base::FeatureList::IsEnabled(kEnforceSHA256Checking)) {
@@ -291,7 +309,7 @@ AuthResult VerifyAndMapDigestAlgorithm(HashAlgorithm response_digest_algorithm,
                           AuthResult::ERROR_DIGEST_UNSUPPORTED);
       }
       break;
-    case SHA256:
+    case cast::channel::SHA256:
       *digest_algorithm = net::DigestAlgorithm::Sha256;
       break;
   }
@@ -434,9 +452,13 @@ AuthResult VerifyCredentialsImpl(const AuthResponse& response,
 
   if (!verification_context->VerifySignatureOverData(
           response.signature(), signature_input, digest_algorithm)) {
+    // For fuzz testing we just pretend the signature was OK.  The signature is
+    // normally verified using boringssl, which has its own fuzz tests.
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
     RecordSignatureEvent(SIGNATURE_VERIFY_FAILED);
     return AuthResult("Failed verifying signature over data.",
                       AuthResult::ERROR_SIGNED_BLOBS_MISMATCH);
+#endif
   }
   RecordSignatureEvent(SIGNATURE_OK);
 

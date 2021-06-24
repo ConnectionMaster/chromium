@@ -5,8 +5,8 @@
 (async function() {
   TestRunner.addResult(
       `Verify that sourcemap sources are mapped event when sourcemap compiled url matches with one of the source urls.\n`);
-  await TestRunner.loadModule('bindings_test_runner');
-  await TestRunner.loadModule('sources_test_runner');
+  await TestRunner.loadTestModule('bindings_test_runner');
+  await TestRunner.loadModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.addScriptTag('resources/sourcemap-name-clash/out.js');
 
@@ -37,7 +37,7 @@
     return promise;
 
     function onSource(uiSourceCode) {
-      uiSourceCode.requestContent().then(content => fulfill(content));
+      uiSourceCode.requestContent().then(({ content, error, isEncoded }) => fulfill(content));
     }
   }
 })();

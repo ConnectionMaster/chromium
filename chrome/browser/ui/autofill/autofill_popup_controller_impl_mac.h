@@ -25,16 +25,17 @@ class AutofillPopupControllerImplMac : public AutofillPopupControllerImpl {
   // If the popup contains credit card items, find and set
   // |touchBarController_| and show the credit card autofill touch bar.
   void Show(const std::vector<autofill::Suggestion>& suggestions,
-            bool autoselect_first_suggestion) override;
+            bool autoselect_first_suggestion,
+            PopupType popup_type) override;
 
   // Updates the data list values currently shown with the popup. Calls
   // -invalidateTouchBar from |touchBarController_|.
-  void UpdateDataListValues(const std::vector<base::string16>& values,
-                            const std::vector<base::string16>& labels) override;
+  void UpdateDataListValues(const std::vector<std::u16string>& values,
+                            const std::vector<std::u16string>& labels) override;
 
   // Hides the popup and destroys the controller. This also invalidates
   // |delegate_|.
-  void Hide() override;
+  void Hide(PopupHidingReason reason) override;
 
  private:
   // The controller providing the autofill touch bar.
@@ -48,4 +49,4 @@ class AutofillPopupControllerImplMac : public AutofillPopupControllerImpl {
 
 }  // namespace autofill
 
-#endif  // CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_POPUP_CONTROLLER_IMPL_H_
+#endif  // CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_POPUP_CONTROLLER_IMPL_MAC_H_

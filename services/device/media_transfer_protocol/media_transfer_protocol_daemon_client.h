@@ -19,10 +19,11 @@
 #include "base/callback.h"
 #include "base/macros.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "services/device/public/mojom/mtp_file_entry.mojom.h"
 #include "services/device/public/mojom/mtp_storage_info.mojom.h"
 
-#if !defined(OS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS_ASH)
 #error "Only used on ChromeOS"
 #endif
 
@@ -88,7 +89,8 @@ class MediaTransferProtocolDaemonClient {
   // The first argument is true for attach, false for detach.
   // The second argument is the storage name.
   using MTPStorageEventHandler =
-      base::Callback<void(bool is_attach, const std::string& storage_name)>;
+      base::RepeatingCallback<void(bool is_attach,
+                                   const std::string& storage_name)>;
 
   virtual ~MediaTransferProtocolDaemonClient();
 

@@ -41,10 +41,7 @@ class BluetoothGattAttributeValueDelegate {
   // out if left pending for too long causing a disconnection.
   virtual void GetValue(
       const dbus::ObjectPath& device_path,
-      const device::BluetoothLocalGattService::Delegate::ValueCallback&
-          callback,
-      const device::BluetoothLocalGattService::Delegate::ErrorCallback&
-          error_callback) = 0;
+      device::BluetoothLocalGattService::Delegate::ValueCallback callback) = 0;
 
   // This method will be called, when a remote device requests to write the
   // value of the exported GATT attribute. Invoke |callback| to report
@@ -56,8 +53,8 @@ class BluetoothGattAttributeValueDelegate {
   virtual void SetValue(
       const dbus::ObjectPath& device_path,
       const std::vector<uint8_t>& value,
-      const base::Closure& callback,
-      const device::BluetoothLocalGattService::Delegate::ErrorCallback&
+      base::OnceClosure callback,
+      device::BluetoothLocalGattService::Delegate::ErrorCallback
           error_callback) = 0;
 
   // This method will be called, when a remote device requests to start sending
@@ -82,8 +79,8 @@ class BluetoothGattAttributeValueDelegate {
       const std::vector<uint8_t>& value,
       int offset,
       bool has_subsequent_request,
-      const base::Closure& callback,
-      const device::BluetoothLocalGattService::Delegate::ErrorCallback&
+      base::OnceClosure callback,
+      device::BluetoothLocalGattService::Delegate::ErrorCallback
           error_callback) {}
 
  protected:

@@ -12,7 +12,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/sync_socket.h"
-#include "content/public/renderer/plugin_instance_throttler.h"
 #include "content/renderer/pepper/audio_helper.h"
 #include "ppapi/c/pp_completion_callback.h"
 #include "ppapi/c/ppb_audio.h"
@@ -32,8 +31,7 @@ class PepperPlatformAudioOutput;
 // to look more like typical HostResource implementations.
 class PPB_Audio_Impl : public ppapi::Resource,
                        public ppapi::PPB_Audio_Shared,
-                       public AudioHelper,
-                       public PluginInstanceThrottler::Observer {
+                       public AudioHelper {
  public:
   explicit PPB_Audio_Impl(PP_Instance instance);
 
@@ -56,13 +54,7 @@ class PPB_Audio_Impl : public ppapi::Resource,
 
   // AudioHelper implementation.
   void OnSetStreamInfo(base::UnsafeSharedMemoryRegion shared_memory_region,
-                       base::SyncSocket::Handle socket) override;
-
-  // PluginInstanceThrottler::Observer implementation.
-  void OnThrottleStateChange() override;
-
-  // Starts the deferred playback and unsubscribes from the throttler.
-  void StartDeferredPlayback();
+                       base::SyncSocket::ScopedHandle socket) override;
 
   // AudioConfig used for creating this Audio object. We own a ref.
   ppapi::ScopedPPResource config_;
@@ -70,9 +62,6 @@ class PPB_Audio_Impl : public ppapi::Resource,
   // PluginDelegate audio object that we delegate audio IPC through. We don't
   // own this pointer but are responsible for calling Shutdown on it.
   PepperPlatformAudioOutput* audio_;
-
-  // Stream is playing, but throttled due to Plugin Power Saver.
-  bool playback_throttled_;
 
   DISALLOW_COPY_AND_ASSIGN(PPB_Audio_Impl);
 };

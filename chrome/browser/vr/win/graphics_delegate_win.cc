@@ -7,9 +7,9 @@
 #include "base/numerics/math_constants.h"
 #include "content/public/browser/gpu_utils.h"
 #include "content/public/common/gpu_stream_constants.h"
+#include "device/vr/public/mojom/vr_service.mojom.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
 #include "gpu/command_buffer/client/gles2_lib.h"
-#include "mojo/public/cpp/system/platform_handle.h"
 
 namespace vr {
 
@@ -18,9 +18,9 @@ constexpr float kZNear = 0.1f;
 constexpr float kZFar = 10000.0f;
 }  // namespace
 
-GraphicsDelegateWin::GraphicsDelegateWin() {}
+GraphicsDelegateWin::GraphicsDelegateWin() = default;
 
-GraphicsDelegateWin::~GraphicsDelegateWin() {}
+GraphicsDelegateWin::~GraphicsDelegateWin() = default;
 
 bool GraphicsDelegateWin::InitializeOnMainThread() {
   gpu::GpuChannelEstablishFactory* factory =
@@ -38,13 +38,13 @@ bool GraphicsDelegateWin::InitializeOnMainThread() {
   attributes.sample_buffers = 0;
   attributes.bind_generates_resource = false;
 
-  context_provider_ = base::MakeRefCounted<ws::ContextProviderCommandBuffer>(
+  context_provider_ = base::MakeRefCounted<viz::ContextProviderCommandBuffer>(
       host, factory->GetGpuMemoryBufferManager(), content::kGpuStreamIdDefault,
       content::kGpuStreamPriorityUI, gpu::kNullSurfaceHandle,
       GURL(std::string("chrome://gpu/VrUiWin")), false /* automatic flushes */,
       false /* support locking */, false /* support grcontext */,
       gpu::SharedMemoryLimits::ForMailboxContext(), attributes,
-      ws::command_buffer_metrics::ContextType::XR_COMPOSITING);
+      viz::command_buffer_metrics::ContextType::XR_COMPOSITING);
   gpu_memory_buffer_manager_ = factory->GetGpuMemoryBufferManager();
   return true;
 }
@@ -68,22 +68,22 @@ void GraphicsDelegateWin::ClearContext() {
 }
 
 gfx::Rect GraphicsDelegateWin::GetTextureSize() {
-  int width = info_->leftEye->renderWidth + info_->rightEye->renderWidth;
-  int height =
-      std::max(info_->leftEye->renderHeight, info_->rightEye->renderWidth);
+  int width = left_->viewport.width() + right_->viewport.width();
+  int height = std::max(left_->viewport.height(), right_->viewport.height());
+
   return gfx::Rect(width, height);
 }
 
-void GraphicsDelegateWin::PreRender() {
+bool GraphicsDelegateWin::PreRender() {
   if (!gl_)
-    return;
+    return false;
 
   BindContext();
   gfx::Rect size = GetTextureSize();
 
   // Create a memory buffer, and an image referencing that memory buffer.
   if (!EnsureMemoryBuffer(size.width(), size.height()))
-    return;
+    return false;
 
   // Create a texture id, and associate it with our image.
   gl_->GenTextures(1, &dest_texture_id_);
@@ -100,6 +100,15 @@ void GraphicsDelegateWin::PreRender() {
   gl_->BindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_frame_buffer_);
   gl_->FramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                             GL_TEXTURE_2D, dest_texture_id_, 0);
+
+  if (gl_->GetError() != GL_NO_ERROR) {
+    // Clear any remaining GL errors.
+    while (gl_->GetError() != GL_NO_ERROR) {
+    }
+    return false;
+  }
+
+  return true;
 }
 
 void GraphicsDelegateWin::PostRender() {
@@ -118,34 +127,27 @@ void GraphicsDelegateWin::PostRender() {
   ClearContext();
 }
 
-mojo::ScopedHandle GraphicsDelegateWin::GetTexture() {
-  // Hand out the gpu memory buffer.
-  mojo::ScopedHandle handle;
-  if (!gpu_memory_buffer_) {
-    return handle;
-  }
+mojo::PlatformHandle GraphicsDelegateWin::GetTexture() {
+  if (!gpu_memory_buffer_)
+    return {};
 
   gfx::GpuMemoryBufferHandle gpu_handle = gpu_memory_buffer_->CloneHandle();
-  return mojo::WrapPlatformFile(gpu_handle.dxgi_handle.GetHandle());
+  return mojo::PlatformHandle(std::move(gpu_handle.dxgi_handle));
 }
 
 gfx::RectF GraphicsDelegateWin::GetLeft() {
   gfx::Rect size = GetTextureSize();
   return gfx::RectF(
-      0, 0, static_cast<float>(info_->leftEye->renderWidth) / size.width(),
-      static_cast<float>(info_->leftEye->renderHeight) / size.height());
+      0, 0, static_cast<float>(left_->viewport.width()) / size.width(),
+      static_cast<float>(left_->viewport.height()) / size.height());
 }
 
 gfx::RectF GraphicsDelegateWin::GetRight() {
   gfx::Rect size = GetTextureSize();
   return gfx::RectF(
-      static_cast<float>(info_->leftEye->renderWidth) / size.width(), 0,
-      static_cast<float>(info_->rightEye->renderWidth) / size.width(),
-      static_cast<float>(info_->rightEye->renderHeight) / size.height());
-}
-
-void GraphicsDelegateWin::Cleanup() {
-  context_provider_ = nullptr;
+      static_cast<float>(left_->viewport.width()) / size.width(), 0,
+      static_cast<float>(right_->viewport.width()) / size.width(),
+      static_cast<float>(right_->viewport.height()) / size.height());
 }
 
 bool GraphicsDelegateWin::EnsureMemoryBuffer(int width, int height) {
@@ -160,7 +162,7 @@ bool GraphicsDelegateWin::EnsureMemoryBuffer(int width, int height) {
 
     gpu_memory_buffer_ = gpu_memory_buffer_manager_->CreateGpuMemoryBuffer(
         gfx::Size(width, height), gfx::BufferFormat::RGBA_8888,
-        gfx::BufferUsage::SCANOUT, gpu::kNullSurfaceHandle);
+        gfx::BufferUsage::SCANOUT, gpu::kNullSurfaceHandle, nullptr);
     if (!gpu_memory_buffer_)
       return false;
 
@@ -184,23 +186,39 @@ void GraphicsDelegateWin::ResetMemoryBuffer() {
 
 void GraphicsDelegateWin::SetVRDisplayInfo(
     device::mojom::VRDisplayInfoPtr info) {
-  info_ = std::move(info);
+  // Store the first left and right views. VRUiHostImpl::SetVRDisplayInfo has
+  // already validated that the left and right views exist.
+  for (auto& view : info->views) {
+    if (!left_ && view->eye == device::mojom::XREye::kLeft) {
+      left_ = std::move(view);
+    } else if (!right_ && view->eye == device::mojom::XREye::kRight) {
+      right_ = std::move(view);
+    }
+
+    if (left_ && right_) {
+      break;
+    }
+  }
+
+  DCHECK(left_);
+  DCHECK(right_);
 }
 
 FovRectangles GraphicsDelegateWin::GetRecommendedFovs() {
-  DCHECK(info_);
+  DCHECK(left_);
+  DCHECK(right_);
   FovRectangle left = {
-      info_->leftEye->fieldOfView->leftDegrees,
-      info_->leftEye->fieldOfView->rightDegrees,
-      info_->leftEye->fieldOfView->downDegrees,
-      info_->leftEye->fieldOfView->upDegrees,
+      left_->field_of_view->left_degrees,
+      left_->field_of_view->right_degrees,
+      left_->field_of_view->down_degrees,
+      left_->field_of_view->up_degrees,
   };
 
   FovRectangle right = {
-      info_->rightEye->fieldOfView->leftDegrees,
-      info_->rightEye->fieldOfView->rightDegrees,
-      info_->rightEye->fieldOfView->downDegrees,
-      info_->rightEye->fieldOfView->upDegrees,
+      right_->field_of_view->left_degrees,
+      right_->field_of_view->right_degrees,
+      right_->field_of_view->down_degrees,
+      right_->field_of_view->up_degrees,
   };
 
   return std::pair<FovRectangle, FovRectangle>(left, right);
@@ -212,27 +230,23 @@ float GraphicsDelegateWin::GetZNear() {
 
 namespace {
 
-CameraModel CameraModelViewProjFromVREyeParameters(
-    const device::mojom::VREyeParametersPtr& eye_params,
-    gfx::Transform head_from_world) {
+CameraModel CameraModelViewProjFromXRView(const device::mojom::XRViewPtr& view,
+                                          gfx::Transform head_from_world) {
   CameraModel model = {};
-  gfx::Transform eye_from_head;
-  // We have offsets of the eyes in head space, so invert the translation to
-  // calculate the transform from head space to eye space.  For example,
-  // (0, 0, 0) in head space is (-offset.x, -offset.y, -offset.z) in eye space,
-  // and (offset.x, offset.y, offset.z) in head space is (0, 0, 0) in eye space.
-  eye_from_head.Translate3d(-eye_params->offset[0], -eye_params->offset[1],
-                            -eye_params->offset[2]);
-  model.view_matrix = eye_from_head * head_from_world;
 
-  float up_tan =
-      tanf(eye_params->fieldOfView->upDegrees * base::kPiFloat / 180.0);
+  DCHECK(view->head_from_eye.IsInvertible());
+  gfx::Transform eye_from_head;
+  if (view->head_from_eye.GetInverse(&eye_from_head)) {
+    model.view_matrix = eye_from_head * head_from_world;
+  }
+
+  float up_tan = tanf(view->field_of_view->up_degrees * base::kPiFloat / 180.0);
   float left_tan =
-      tanf(eye_params->fieldOfView->leftDegrees * base::kPiFloat / 180.0);
+      tanf(view->field_of_view->left_degrees * base::kPiFloat / 180.0);
   float right_tan =
-      tanf(eye_params->fieldOfView->rightDegrees * base::kPiFloat / 180.0);
+      tanf(view->field_of_view->right_degrees * base::kPiFloat / 180.0);
   float down_tan =
-      tanf(eye_params->fieldOfView->downDegrees * base::kPiFloat / 180.0);
+      tanf(view->field_of_view->down_degrees * base::kPiFloat / 180.0);
   float x_scale = 2.0f / (left_tan + right_tan);
   float y_scale = 2.0f / (up_tan + down_tan);
   // clang-format off
@@ -254,19 +268,17 @@ RenderInfo GraphicsDelegateWin::GetRenderInfo(FrameType frame_type,
   RenderInfo info;
   info.head_pose = head_pose;
 
-  CameraModel left =
-      CameraModelViewProjFromVREyeParameters(info_->leftEye, head_pose);
+  CameraModel left = CameraModelViewProjFromXRView(left_, head_pose);
   left.eye_type = kLeftEye;
-  left.viewport = gfx::Rect(0, 0, info_->leftEye->renderWidth,
-                            info_->leftEye->renderHeight);
+  left.viewport =
+      gfx::Rect(0, 0, left_->viewport.width(), left_->viewport.height());
   info.left_eye_model = left;
 
-  CameraModel right =
-      CameraModelViewProjFromVREyeParameters(info_->rightEye, head_pose);
+  CameraModel right = CameraModelViewProjFromXRView(right_, head_pose);
   right.eye_type = kRightEye;
   right.viewport =
-      gfx::Rect(info_->leftEye->renderWidth, 0, info_->rightEye->renderWidth,
-                info_->rightEye->renderHeight);
+      gfx::Rect(left_->viewport.width(), 0, right_->viewport.width(),
+                right_->viewport.height());
   info.right_eye_model = right;
   cached_info_ = info;
   return info;

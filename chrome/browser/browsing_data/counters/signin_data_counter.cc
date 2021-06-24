@@ -4,14 +4,18 @@
 
 #include "chrome/browser/browsing_data/counters/signin_data_counter.h"
 
+#include <string>
+#include <utility>
+
 namespace browsing_data {
 
 SigninDataCounter::SigninDataCounter(
-    scoped_refptr<password_manager::PasswordStore> store,
+    scoped_refptr<password_manager::PasswordStore> profile_store,
+    scoped_refptr<password_manager::PasswordStore> account_store,
     syncer::SyncService* sync_service,
     std::unique_ptr<::device::fido::PlatformCredentialStore>
         opt_platform_credential_store)
-    : PasswordsCounter(store, sync_service),
+    : PasswordsCounter(profile_store, account_store, sync_service),
       credential_store_(std::move(opt_platform_credential_store)) {}
 
 SigninDataCounter::~SigninDataCounter() = default;
@@ -22,20 +26,31 @@ int SigninDataCounter::CountWebAuthnCredentials() {
                            : 0;
 }
 
-std::unique_ptr<BrowsingDataCounter::SyncResult>
+std::unique_ptr<PasswordsCounter::PasswordsResult>
 SigninDataCounter::MakeResult() {
+  DCHECK(!(is_sync_active() && num_account_passwords() > 0));
   return std::make_unique<SigninDataResult>(
-      this, num_passwords(), CountWebAuthnCredentials(), is_sync_active());
+      this, num_passwords(), num_account_passwords(),
+      CountWebAuthnCredentials(), is_sync_active(), domain_examples(),
+      account_domain_examples());
 }
 
 SigninDataCounter::SigninDataResult::SigninDataResult(
     const SigninDataCounter* source,
     ResultInt num_passwords,
+    ResultInt num_account_passwords,
     ResultInt num_webauthn_credentials,
-    bool sync_enabled)
-    : BrowsingDataCounter::SyncResult(source, num_passwords, sync_enabled),
+    bool sync_enabled,
+    std::vector<std::string> domain_examples,
+    std::vector<std::string> account_domain_examples)
+    : PasswordsCounter::PasswordsResult(source,
+                                        num_passwords,
+                                        num_account_passwords,
+                                        sync_enabled,
+                                        std::move(domain_examples),
+                                        std::move(account_domain_examples)),
       num_webauthn_credentials_(num_webauthn_credentials) {}
 
-SigninDataCounter::SigninDataResult::~SigninDataResult() {}
+SigninDataCounter::SigninDataResult::~SigninDataResult() = default;
 
 }  // namespace browsing_data

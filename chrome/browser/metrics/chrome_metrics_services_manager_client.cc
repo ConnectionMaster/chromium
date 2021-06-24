@@ -8,26 +8,26 @@
 #include <string>
 
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
-#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/metrics/chrome_metrics_service_client.h"
 #include "chrome/browser/metrics/variations/chrome_variations_service_client.h"
 #include "chrome/browser/metrics/variations/ui_string_overrider_factory.h"
 #include "chrome/browser/net/system_network_context_manager.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_otr_state.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/installer/util/google_update_settings.h"
 #include "components/metrics/enabled_state_provider.h"
 #include "components/metrics/metrics_state_manager.h"
 #include "components/prefs/pref_service.h"
-#include "components/rappor/rappor_service_impl.h"
 #include "components/variations/service/variations_service.h"
 #include "components/variations/variations_associated_data.h"
 #include "components/version_info/version_info.h"
@@ -38,19 +38,21 @@
 #if defined(OS_ANDROID)
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
-#endif  // OS_ANDROID
+#else
+#include "chrome/browser/ui/browser_list.h"
+#endif  // defined(OS_ANDROID)
 
 #if defined(OS_WIN)
 #include "base/win/registry.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/install_static/install_util.h"
-#include "components/crash/content/app/crash_export_thunks.h"
-#include "components/crash/content/app/crashpad.h"
+#include "components/crash/core/app/crash_export_thunks.h"
+#include "components/crash/core/app/crashpad.h"
 #endif  // OS_WIN
 
-#if defined(OS_CHROMEOS)
-#include "chrome/browser/chromeos/settings/stats_reporting_controller.h"
-#endif  // defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/ash/settings/stats_reporting_controller.h"
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 namespace metrics {
 
@@ -72,7 +74,7 @@ const char kRateParamName[] = "sampling_rate_per_mille";
 // Posts |GoogleUpdateSettings::StoreMetricsClientInfo| on blocking pool thread
 // because it needs access to IO and cannot work from UI thread.
 void PostStoreMetricsClientInfo(const metrics::ClientInfo& client_info) {
-  base::PostTaskWithTraits(
+  base::ThreadPool::PostTask(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
       base::BindOnce(&GoogleUpdateSettings::StoreMetricsClientInfo,
                      client_info));
@@ -89,42 +91,30 @@ void AppendSamplingTrialGroup(const std::string& group_name,
   trial->AppendGroup(group_name, rate);
 }
 
-// Only clients that were given an opt-out metrics-reporting consent flow are
-// eligible for sampling.
-bool IsClientEligibleForSampling(PrefService* local_state) {
-  return metrics::GetMetricsReportingDefaultState(local_state) ==
-         metrics::EnableMetricsDefault::OPT_OUT;
-}
-
 // Implementation of IsClientInSample() that takes a PrefService param.
 bool IsClientInSampleImpl(PrefService* local_state) {
-  // Only some clients are eligible for sampling. Clients that aren't eligible
-  // will always be considered "in sample". In this case, we don't want the
-  // feature state queried, because we don't want the field trial that controls
-  // sampling to be reported as active.
-  if (!IsClientEligibleForSampling(local_state))
-    return true;
-
+  // Test the MetricsReporting feature for all users to ensure that the trial
+  // is reported.
   return base::FeatureList::IsEnabled(
       metrics::internal::kMetricsReportingFeature);
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 // Callback to update the metrics reporting state when the Chrome OS metrics
 // reporting setting changes.
 void OnCrosMetricsReportingSettingChange() {
-  bool enable_metrics = chromeos::StatsReportingController::Get()->IsEnabled();
+  bool enable_metrics = ash::StatsReportingController::Get()->IsEnabled();
   ChangeMetricsReportingState(enable_metrics);
 }
 #endif
 
 // Returns the name of a key under HKEY_CURRENT_USER that can be used to store
 // backups of metrics data. Unused except on Windows.
-base::string16 GetRegistryBackupKey() {
+std::wstring GetRegistryBackupKey() {
 #if defined(OS_WIN)
   return install_static::GetRegistryPath().append(L"\\StabilityMetrics");
 #else
-  return base::string16();
+  return std::wstring();
 #endif
 }
 
@@ -174,8 +164,8 @@ void ChromeMetricsServicesManagerClient::CreateFallbackSamplingTrial(
   static const char kTrialName[] = "MetricsAndCrashSampling";
   scoped_refptr<base::FieldTrial> trial(
       base::FieldTrialList::FactoryGetFieldTrial(
-          kTrialName, 1000, "Default", base::FieldTrialList::kNoExpirationYear,
-          1, 1, base::FieldTrial::ONE_TIME_RANDOMIZED, nullptr));
+          kTrialName, 1000, "Default", base::FieldTrial::ONE_TIME_RANDOMIZED,
+          nullptr));
 
   // On all channels except stable, we sample out at a minimal rate to ensure
   // the code paths are exercised in the wild before hitting stable.
@@ -188,16 +178,17 @@ void ChromeMetricsServicesManagerClient::CreateFallbackSamplingTrial(
 
   // Like the trial name, the order that these two groups are added to the trial
   // must be kept in sync with the order that they appear in the server config.
+  // For future sanity purposes, the desired order is:
+  // OutOfReportingSample, InReportingSample
 
-  // 100 per-mille sampling rate group.
-  static const char kInSampleGroup[] = "InReportingSample";
-  AppendSamplingTrialGroup(kInSampleGroup, sampled_in_rate, trial.get());
-
-  // 900 per-mille sampled out.
   static const char kSampledOutGroup[] = "OutOfReportingSample";
   AppendSamplingTrialGroup(kSampledOutGroup, sampled_out_rate, trial.get());
 
-  // Setup the feature.
+  static const char kInSampleGroup[] = "InReportingSample";
+  AppendSamplingTrialGroup(kInSampleGroup, sampled_in_rate, trial.get());
+
+  // Setup the feature. This must be done after all groups are added since
+  // GetGroupNameWithoutActivation() will finalize the group choice.
   const std::string& group_name = trial->GetGroupNameWithoutActivation();
   feature_list->RegisterFieldTrialOverride(
       metrics::internal::kMetricsReportingFeature.name,
@@ -214,11 +205,6 @@ bool ChromeMetricsServicesManagerClient::IsClientInSample() {
 
 // static
 bool ChromeMetricsServicesManagerClient::GetSamplingRatePerMille(int* rate) {
-  // The population that is NOT eligible for sampling in considered "in sample",
-  // but does not have a defined sample rate.
-  if (!IsClientEligibleForSampling(g_browser_process->local_state()))
-    return false;
-
   std::string rate_str = variations::GetVariationParamValueByFeature(
       metrics::internal::kMetricsReportingFeature, kRateParamName);
   if (rate_str.empty())
@@ -230,11 +216,11 @@ bool ChromeMetricsServicesManagerClient::GetSamplingRatePerMille(int* rate) {
   return true;
 }
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 void ChromeMetricsServicesManagerClient::OnCrosSettingsCreated() {
-  reporting_setting_observer_ =
-      chromeos::StatsReportingController::Get()->AddObserver(
-          base::Bind(&OnCrosMetricsReportingSettingChange));
+  reporting_setting_subscription_ =
+      ash::StatsReportingController::Get()->AddObserver(
+          base::BindRepeating(&OnCrosMetricsReportingSettingChange));
   // Invoke the callback once initially to set the metrics reporting state.
   OnCrosMetricsReportingSettingChange();
 }
@@ -243,13 +229,6 @@ void ChromeMetricsServicesManagerClient::OnCrosSettingsCreated() {
 const metrics::EnabledStateProvider&
 ChromeMetricsServicesManagerClient::GetEnabledStateProviderForTesting() {
   return *enabled_state_provider_;
-}
-
-std::unique_ptr<rappor::RapporServiceImpl>
-ChromeMetricsServicesManagerClient::CreateRapporServiceImpl() {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  return std::make_unique<rappor::RapporServiceImpl>(
-      local_state_, base::Bind(&chrome::IsIncognitoSessionActive));
 }
 
 std::unique_ptr<variations::VariationsService>
@@ -274,8 +253,8 @@ ChromeMetricsServicesManagerClient::GetMetricsStateManager() {
   if (!metrics_state_manager_) {
     metrics_state_manager_ = metrics::MetricsStateManager::Create(
         local_state_, enabled_state_provider_.get(), GetRegistryBackupKey(),
-        base::Bind(&PostStoreMetricsClientInfo),
-        base::Bind(&GoogleUpdateSettings::LoadMetricsClientInfo));
+        base::BindRepeating(&PostStoreMetricsClientInfo),
+        base::BindRepeating(&GoogleUpdateSettings::LoadMetricsClientInfo));
   }
   return metrics_state_manager_.get();
 }
@@ -294,7 +273,7 @@ bool ChromeMetricsServicesManagerClient::IsMetricsConsentGiven() {
   return enabled_state_provider_->IsConsentGiven();
 }
 
-bool ChromeMetricsServicesManagerClient::IsIncognitoSessionActive() {
+bool ChromeMetricsServicesManagerClient::IsOffTheRecordSessionActive() {
 #if defined(OS_ANDROID)
   // This differs from TabModelList::IsOffTheRecordSessionActive in that it
   // does not ignore TabModels that have no open tabs, because it may be checked
@@ -302,9 +281,9 @@ bool ChromeMetricsServicesManagerClient::IsIncognitoSessionActive() {
   // conservative in case unused TabModels are not cleaned up, but it seems to
   // work correctly.
   // TODO(crbug/741888): Check if TabModelList's version can be updated safely.
-  for (TabModelList::const_iterator i = TabModelList::begin();
-       i != TabModelList::end(); i++) {
-    if ((*i)->IsOffTheRecord())
+  // TODO(crbug/1023759): This function should return true for Incognito CCTs.
+  for (const TabModel* model : TabModelList::models()) {
+    if (model->IsOffTheRecord())
       return true;
   }
 
@@ -312,7 +291,7 @@ bool ChromeMetricsServicesManagerClient::IsIncognitoSessionActive() {
 #else
   // Depending directly on BrowserList, since that is the implementation
   // that we get correct notifications for.
-  return BrowserList::IsIncognitoSessionActive();
+  return BrowserList::IsOffTheRecordBrowserActive();
 #endif
 }
 

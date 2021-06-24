@@ -5,7 +5,6 @@
 #include "gpu/ipc/service/image_transport_surface.h"
 
 #include "gpu/ipc/service/pass_through_image_transport_surface.h"
-#include "ui/gl/gl_surface_glx.h"
 #include "ui/gl/init/gl_factory.h"
 
 namespace gpu {
@@ -23,8 +22,10 @@ scoped_refptr<gl::GLSurface> ImageTransportSurface::CreateNativeSurface(
 #endif
   if (!surface) {
     surface = gl::init::CreateViewGLSurface(surface_handle);
-    if (gl::GetGLImplementation() == gl::kGLImplementationDesktopGL)
+    if (gl::GetGLImplementation() == gl::kGLImplementationDesktopGL ||
+        gl::GetGLImplementation() == gl::kGLImplementationEGLANGLE) {
       override_vsync_for_multi_window_swap = true;
+    }
   }
   if (!surface)
     return surface;

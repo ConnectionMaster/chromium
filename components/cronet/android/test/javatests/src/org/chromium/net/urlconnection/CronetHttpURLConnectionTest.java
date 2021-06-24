@@ -12,9 +12,12 @@ import static org.junit.Assert.fail;
 
 import static org.chromium.net.CronetTestRule.getContext;
 
+import android.net.TrafficStats;
 import android.os.Build;
 import android.os.Process;
-import android.support.test.filters.SmallTest;
+import android.support.test.runner.AndroidJUnit4;
+
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -23,7 +26,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.Log;
-import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Feature;
 import org.chromium.net.CronetEngine;
 import org.chromium.net.CronetException;
@@ -66,7 +68,7 @@ import java.util.regex.Pattern;
  * {@code OnlyRunCronetHttpURLConnection} only run Cronet's implementation.
  * See {@link CronetTestBase#runTest()} for details.
  */
-@RunWith(BaseJUnit4ClassRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class CronetHttpURLConnectionTest {
     private static final String TAG = CronetHttpURLConnectionTest.class.getSimpleName();
 
@@ -1396,6 +1398,15 @@ public class CronetHttpURLConnectionTest {
         urlConnection.disconnect();
         assertTrue(CronetTestUtil.nativeGetTaggedBytes(tag) > priorBytes);
 
+        // Test tagging with TrafficStats.
+        tag = 0x12348765;
+        priorBytes = CronetTestUtil.nativeGetTaggedBytes(tag);
+        urlConnection = (CronetHttpURLConnection) url.openConnection();
+        TrafficStats.setThreadStatsTag(tag);
+        assertEquals(200, urlConnection.getResponseCode());
+        urlConnection.disconnect();
+        assertTrue(CronetTestUtil.nativeGetTaggedBytes(tag) > priorBytes);
+
         // Test tagging with our UID.
         // NOTE(pauljensen): Explicitly setting the UID to the current UID isn't a particularly
         // thorough test of this API but at least provides coverage of the underlying code, and
@@ -1412,6 +1423,20 @@ public class CronetHttpURLConnectionTest {
         assertEquals(200, urlConnection.getResponseCode());
         urlConnection.disconnect();
         assertTrue(CronetTestUtil.nativeGetTaggedBytes(tag) > priorBytes);
+
+        // TrafficStats.getThreadStatsUid() which is required for this feature is added in API level
+        // 28.
+        // Note, currently this part won't run as CronetTestUtil.nativeCanGetTaggedBytes() will
+        // return false on P+.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            tag = 0;
+            priorBytes = CronetTestUtil.nativeGetTaggedBytes(tag);
+            urlConnection = (CronetHttpURLConnection) url.openConnection();
+            TrafficStats.setThreadStatsUid(Process.myUid());
+            assertEquals(200, urlConnection.getResponseCode());
+            urlConnection.disconnect();
+            assertTrue(CronetTestUtil.nativeGetTaggedBytes(tag) > priorBytes);
+        }
     }
 
     @Test

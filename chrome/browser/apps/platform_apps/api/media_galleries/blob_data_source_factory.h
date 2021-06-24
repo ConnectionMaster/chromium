@@ -8,9 +8,9 @@
 #include <memory>
 #include <string>
 
-#include "base/macros.h"
 #include "chrome/services/media_gallery_util/public/cpp/safe_media_metadata_parser.h"
 #include "chrome/services/media_gallery_util/public/mojom/media_parser.mojom.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
 
 namespace content {
 class BrowserContext;
@@ -26,19 +26,19 @@ class BlobDataSourceFactory
  public:
   BlobDataSourceFactory(content::BrowserContext* browser_context,
                         const std::string& blob_uuid);
+  BlobDataSourceFactory(const BlobDataSourceFactory&) = delete;
+  BlobDataSourceFactory& operator=(const BlobDataSourceFactory&) = delete;
   ~BlobDataSourceFactory() override;
 
  private:
   // SafeMediaMetadataParser::MediaDataSourceFactory implementation.
   std::unique_ptr<chrome::mojom::MediaDataSource> CreateMediaDataSource(
-      chrome::mojom::MediaDataSourcePtr* request,
+      mojo::PendingReceiver<chrome::mojom::MediaDataSource> receiver,
       MediaDataCallback media_data_callback) override;
 
   content::BrowserContext* browser_context_;
   std::string blob_uuid_;
   MediaDataCallback callback_;
-
-  DISALLOW_COPY_AND_ASSIGN(BlobDataSourceFactory);
 };
 
 }  // namespace api

@@ -13,7 +13,6 @@
 #include "base/bind.h"
 #include "base/files/file_path.h"
 #include "base/run_loop.h"
-#include "base/task/post_task.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/bookmarks/chrome_bookmark_client.h"
 #include "chrome/browser/bookmarks/managed_bookmark_service_factory.h"
@@ -33,7 +32,7 @@
 #include "components/sync_bookmarks/bookmark_sync_service.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/test/test_browser_thread_bundle.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -50,10 +49,7 @@ std::unique_ptr<KeyedService> BuildBookmarkModelWithoutLoad(
 
 void LoadBookmarkModel(Profile* profile,
                        bookmarks::BookmarkModel* bookmark_model) {
-  bookmark_model->Load(profile->GetPrefs(), profile->GetPath(),
-                       profile->GetIOTaskRunner(),
-                       base::CreateSingleThreadTaskRunnerWithTraits(
-                           {content::BrowserThread::UI}));
+  bookmark_model->Load(profile->GetPrefs(), profile->GetPath());
 }
 
 bookmarks::BookmarkModel* CreateBookmarkModelWithoutLoad(Profile* profile) {
@@ -64,8 +60,6 @@ bookmarks::BookmarkModel* CreateBookmarkModelWithoutLoad(Profile* profile) {
 
 class BookmarkStatHelper {
  public:
-  BookmarkStatHelper() : num_of_times_called_(0) {}
-
   void StatsCallback(profiles::ProfileCategoryStats stats) {
     if (stats.back().category == profiles::kProfileStatisticsBookmarks)
       ++num_of_times_called_;
@@ -74,15 +68,14 @@ class BookmarkStatHelper {
   int GetNumOfTimesCalled() { return num_of_times_called_; }
 
  private:
-  base::Closure quit_closure_;
-  int num_of_times_called_;
+  int num_of_times_called_ = 0;
 };
 }  // namespace
 
 class ProfileStatisticsTest : public testing::Test {
  public:
   ProfileStatisticsTest() : manager_(TestingBrowserProcess::GetGlobal()) {}
-  ~ProfileStatisticsTest() override {}
+  ~ProfileStatisticsTest() override = default;
 
  protected:
   void SetUp() override {
@@ -95,7 +88,7 @@ class ProfileStatisticsTest : public testing::Test {
   TestingProfileManager* manager() { return &manager_; }
 
  private:
-  content::TestBrowserThreadBundle thread_bundle_;
+  content::BrowserTaskEnvironment task_environment_;
   TestingProfileManager manager_;
 };
 
@@ -103,7 +96,7 @@ TEST_F(ProfileStatisticsTest, WaitOrCountBookmarks) {
   TestingProfile* profile = manager()->CreateTestingProfile("Test 1");
   ASSERT_TRUE(profile);
   // We need history, autofill and password services for the test to succeed.
-  ASSERT_TRUE(profile->CreateHistoryService(true, false));
+  ASSERT_TRUE(profile->CreateHistoryService());
   profile->CreateWebDataService();
   PasswordStoreFactory::GetInstance()->SetTestingFactory(
       profile,
@@ -122,8 +115,8 @@ TEST_F(ProfileStatisticsTest, WaitOrCountBookmarks) {
   ProfileStatisticsAggregator aggregator(
       profile, run_loop_aggregator_done.QuitClosure());
   aggregator.AddCallbackAndStartAggregator(
-      base::Bind(&BookmarkStatHelper::StatsCallback,
-                 base::Unretained(&bookmark_stat_helper)));
+      base::BindRepeating(&BookmarkStatHelper::StatsCallback,
+                          base::Unretained(&bookmark_stat_helper)));
 
   // Wait until ProfileStatisticsAggregator::WaitOrCountBookmarks is run.
   base::RunLoop run_loop1;

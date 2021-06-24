@@ -21,22 +21,13 @@ int NetworkDelegateImpl::OnBeforeStartTransaction(
   return OK;
 }
 
-void NetworkDelegateImpl::OnBeforeSendHeaders(
-    URLRequest* request,
-    const ProxyInfo& proxy_info,
-    const ProxyRetryInfoMap& proxy_retry_info,
-    HttpRequestHeaders* headers) {}
-
-void NetworkDelegateImpl::OnStartTransaction(
-    URLRequest* request,
-    const HttpRequestHeaders& headers) {}
-
 int NetworkDelegateImpl::OnHeadersReceived(
     URLRequest* request,
     CompletionOnceCallback callback,
     const HttpResponseHeaders* original_response_headers,
     scoped_refptr<HttpResponseHeaders>* override_response_headers,
-    GURL* allowed_unsafe_redirect_url) {
+    const IPEndPoint& endpoint,
+    absl::optional<GURL>* preserve_fragment_on_redirect_url) {
   return OK;
 }
 
@@ -46,12 +37,6 @@ void NetworkDelegateImpl::OnBeforeRedirect(URLRequest* request,
 void NetworkDelegateImpl::OnResponseStarted(URLRequest* request,
                                             int net_error) {}
 
-void NetworkDelegateImpl::OnNetworkBytesReceived(URLRequest* request,
-                                                 int64_t bytes_received) {}
-
-void NetworkDelegateImpl::OnNetworkBytesSent(URLRequest* request,
-                                             int64_t bytes_sent) {}
-
 void NetworkDelegateImpl::OnCompleted(URLRequest* request,
                                       bool started,
                                       int net_error) {}
@@ -60,20 +45,16 @@ void NetworkDelegateImpl::OnURLRequestDestroyed(URLRequest* request) {
 }
 
 void NetworkDelegateImpl::OnPACScriptError(int line_number,
-                                           const base::string16& error) {
-}
+                                           const std::u16string& error) {}
 
-NetworkDelegate::AuthRequiredResponse NetworkDelegateImpl::OnAuthRequired(
-    URLRequest* request,
-    const AuthChallengeInfo& auth_info,
-    AuthCallback callback,
-    AuthCredentials* credentials) {
-  return AUTH_REQUIRED_RESPONSE_NO_ACTION;
-}
-
-bool NetworkDelegateImpl::OnCanGetCookies(const URLRequest& request,
-                                          const CookieList& cookie_list,
-                                          bool allowed_from_caller) {
+bool NetworkDelegateImpl::OnAnnotateAndMoveUserBlockedCookies(
+    const URLRequest& request,
+    net::CookieAccessResultList& maybe_included_cookies,
+    net::CookieAccessResultList& excluded_cookies,
+    bool allowed_from_caller) {
+  if (!allowed_from_caller)
+    ExcludeAllCookies(CookieInclusionStatus::EXCLUDE_USER_PREFERENCES,
+                      maybe_included_cookies, excluded_cookies);
   return allowed_from_caller;
 }
 
@@ -84,16 +65,12 @@ bool NetworkDelegateImpl::OnCanSetCookie(const URLRequest& request,
   return allowed_from_caller;
 }
 
-bool NetworkDelegateImpl::OnCanAccessFile(
-    const URLRequest& request,
-    const base::FilePath& original_path,
-    const base::FilePath& absolute_path) const {
-  return false;
-}
-
 bool NetworkDelegateImpl::OnForcePrivacyMode(
     const GURL& url,
-    const GURL& site_for_cookies) const {
+    const SiteForCookies& site_for_cookies,
+    const absl::optional<url::Origin>& top_frame_origin,
+    CookieOptions::SamePartyCookieContextType same_party_cookie_context_type)
+    const {
   return false;
 }
 

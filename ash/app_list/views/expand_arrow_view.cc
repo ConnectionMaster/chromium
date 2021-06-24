@@ -4,17 +4,19 @@
 
 #include "ash/app_list/views/expand_arrow_view.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
 #include "ash/app_list/views/app_list_view.h"
 #include "ash/app_list/views/apps_container_view.h"
 #include "ash/app_list/views/contents_view.h"
+#include "ash/public/cpp/app_list/app_list_color_provider.h"
 #include "ash/public/cpp/app_list/app_list_config.h"
 #include "ash/public/cpp/app_list/vector_icons/vector_icons.h"
 #include "base/bind.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/threading/thread_task_runner_handle.h"
+#include "base/numerics/safe_conversions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/gfx/canvas.h"
@@ -22,11 +24,11 @@
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/animation/flood_fill_ink_drop_ripple.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/ink_drop_impl.h"
-#include "ui/views/animation/ink_drop_mask.h"
-#include "ui/views/animation/ink_drop_painted_layer_delegates.h"
+#include "ui/views/controls/highlight_path_generator.h"
 
-namespace app_list {
+namespace ash {
 
 namespace {
 
@@ -71,53 +73,98 @@ constexpr float kPulseMinOpacity = 0.f;
 constexpr float kPulseMaxOpacity = 0.3f;
 constexpr int kAnimationInitialWaitTimeInSec = 3;
 constexpr int kAnimationIntervalInSec = 10;
-constexpr int kCycleDurationInMs = 1000;
-constexpr int kCycleIntervalInMs = 500;
-constexpr int kPulseOpacityShowBeginTimeInMs = 100;
-constexpr int kPulseOpacityShowEndTimeInMs = 200;
-constexpr int kPulseOpacityHideBeginTimeInMs = 800;
-constexpr int kPulseOpacityHideEndTimeInMs = 1000;
-constexpr int kArrowMoveOutBeginTimeInMs = 100;
-constexpr int kArrowMoveOutEndTimeInMs = 500;
-constexpr int kArrowMoveInBeginTimeInMs = 500;
-constexpr int kArrowMoveInEndTimeInMs = 900;
+constexpr auto kCycleDuration = base::TimeDelta::FromMilliseconds(1000);
+constexpr auto kCycleInterval = base::TimeDelta::FromMilliseconds(500);
 
-constexpr SkColor kExpandArrowColor = SK_ColorWHITE;
-constexpr SkColor kPulseColor = SK_ColorWHITE;
-constexpr SkColor kBackgroundColor = SkColorSetARGB(0xF, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kInkDropRippleColor = SkColorSetARGB(0x14, 0xFF, 0xFF, 0xFF);
-
-constexpr SkColor kFocusRingColor = gfx::kGoogleBlue300;
 constexpr int kFocusRingWidth = 2;
+
+// THe bounds for the tap target of the expand arrow button.
+constexpr int kTapTargetWidth = 156;
+constexpr int kTapTargetHeight = 72;
+
+float GetCircleCenterYForAppListProgress(float progress) {
+  if (progress <= 1) {
+    return gfx::Tween::FloatValueBetween(progress, kCircleCenterClosedY,
+                                         kCircleCenterPeekingY);
+  }
+  return gfx::Tween::FloatValueBetween(std::min(1.0f, progress - 1),
+                                       kCircleCenterPeekingY,
+                                       kCircleCenterFullscreenY);
+}
+
+float GetArrowYForAppListProgress(float progress) {
+  if (progress <= 1) {
+    return gfx::Tween::FloatValueBetween(progress, kArrowClosedY,
+                                         kArrowPeekingY);
+  }
+  return gfx::Tween::FloatValueBetween(std::min(1.0f, progress - 1),
+                                       kArrowPeekingY, kArrowFullscreenY);
+}
+
+// Returns the location of the circle, relative to the view's local bounds.
+gfx::Rect GetCircleBounds() {
+  const gfx::Point circle_center(kTileWidth / 2, kCircleCenterPeekingY);
+  const gfx::Rect circle_bounds(
+      circle_center - gfx::Vector2d(kCircleRadius, kCircleRadius),
+      gfx::Size(2 * kCircleRadius, 2 * kCircleRadius));
+  return circle_bounds;
+}
+
+class ExpandArrowHighlightPathGenerator : public views::HighlightPathGenerator {
+ public:
+  ExpandArrowHighlightPathGenerator() = default;
+
+  ExpandArrowHighlightPathGenerator(const ExpandArrowHighlightPathGenerator&) =
+      delete;
+  ExpandArrowHighlightPathGenerator& operator=(
+      const ExpandArrowHighlightPathGenerator&) = delete;
+
+  // views::HighlightPathGenerator:
+  absl::optional<gfx::RRectF> GetRoundRect(const gfx::RectF& rect) override {
+    return gfx::RRectF(gfx::RectF(GetCircleBounds()), kInkDropRadius);
+  }
+};
 
 }  // namespace
 
 ExpandArrowView::ExpandArrowView(ContentsView* contents_view,
                                  AppListView* app_list_view)
-    : views::Button(this),
+    : views::Button(base::BindRepeating(&ExpandArrowView::OnButtonPressed,
+                                        base::Unretained(this))),
       contents_view_(contents_view),
-      app_list_view_(app_list_view),
-      weak_ptr_factory_(this) {
+      app_list_view_(app_list_view) {
   SetFocusBehavior(FocusBehavior::ALWAYS);
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
 
-  SetInkDropMode(InkDropMode::ON);
+  // ExpandArrowView draws its own focus, removing FocusRing prevents double
+  // focus.
+  // TODO(pbos): Replace ::OnPaint focus painting with FocusRing +
+  // HighlightPathGenerator usage.
+  SetInstallFocusRingOnFocus(false);
+  views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::ON);
+  views::HighlightPathGenerator::Install(
+      this, std::make_unique<ExpandArrowHighlightPathGenerator>());
+  views::InkDrop::UseInkDropWithoutAutoHighlight(views::InkDrop::Get(this),
+                                                 /*highlight_on_hover=*/false);
+  views::InkDrop::Get(this)->SetCreateRippleCallback(base::BindRepeating(
+      [](Button* host) -> std::unique_ptr<views::InkDropRipple> {
+        const AppListColorProvider* color_provider =
+            AppListColorProvider::Get();
+        return std::make_unique<views::FloodFillInkDropRipple>(
+            host->size(), host->GetLocalBounds().InsetsFrom(GetCircleBounds()),
+            views::InkDrop::Get(host)->GetInkDropCenterBasedOnLastEvent(),
+            color_provider->GetRippleAttributesBaseColor(),
+            color_provider->GetRippleAttributesInkDropOpacity());
+      },
+      this));
 
   SetAccessibleName(l10n_util::GetStringUTF16(IDS_APP_LIST_EXPAND_BUTTON));
 
   animation_ = std::make_unique<gfx::SlideAnimation>(this);
   animation_->SetTweenType(gfx::Tween::LINEAR);
-  animation_->SetSlideDuration(kCycleDurationInMs * 2 + kCycleIntervalInMs);
-  ResetHintingAnimation();
-  // When side shelf or tablet mode is enabled, the peeking launcher won't be
-  // shown, so the hint animation is unnecessary. Also, do not run the animation
-  // during test since we are not testing the animation and it might cause msan
-  // crash when spoken feedbacke is enabled (See https://crbug.com/926038).
-  if (!app_list_view_->is_side_shelf() && !app_list_view_->is_tablet_mode() &&
-      !AppListView::ShortAnimationsForTesting()) {
-    ScheduleHintingAnimation(true);
-  }
+  animation_->SetSlideDuration(kCycleDuration * 2 + kCycleInterval);
+  SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
 }
 
 ExpandArrowView::~ExpandArrowView() = default;
@@ -128,25 +175,17 @@ void ExpandArrowView::PaintButtonContents(gfx::Canvas* canvas) {
   gfx::PointF arrow_points[kPointCount];
   for (size_t i = 0; i < kPointCount; ++i)
     arrow_points[i] = kPeekingPoints[i];
-  SkColor circle_color = kBackgroundColor;
-  const float progress = app_list_view_->GetAppListTransitionProgress();
-  if (progress <= 1) {
-    // Currently transition progress is between closed and peeking state.
-    // Change the y positions of arrow and circle.
-    circle_center.set_y(gfx::Tween::FloatValueBetween(
-        progress, kCircleCenterClosedY, kCircleCenterPeekingY));
-    arrow_origin.set_y(
-        gfx::Tween::FloatValueBetween(progress, kArrowClosedY, kArrowPeekingY));
-  } else {
+  SkColor circle_color =
+      AppListColorProvider::Get()->GetExpandArrowIconBackgroundColor();
+  const float progress = app_list_view_->GetAppListTransitionProgress(
+      AppListView::kProgressFlagNone);
+  circle_center.set_y(GetCircleCenterYForAppListProgress(progress));
+  arrow_origin.set_y(GetArrowYForAppListProgress(progress));
+  // If transition progress is between peeking and fullscreen state, change
+  // the shape of the arrow and the opacity of the circle in addition to
+  // changing the circle and arrow position.
+  if (progress > 1) {
     const float peeking_to_full_progress = progress - 1;
-    // Currently transition progress is between peeking and fullscreen state.
-    // Change the y positions of arrow and circle. Also change the shape of
-    // the arrow and the opacity of the circle.
-    circle_center.set_y(gfx::Tween::FloatValueBetween(
-        peeking_to_full_progress, kCircleCenterPeekingY,
-        kCircleCenterFullscreenY));
-    arrow_origin.set_y(gfx::Tween::FloatValueBetween(
-        peeking_to_full_progress, kArrowPeekingY, kArrowFullscreenY));
     for (size_t i = 0; i < kPointCount; ++i) {
       arrow_points[i].set_y(gfx::Tween::FloatValueBetween(
           peeking_to_full_progress, kPeekingPoints[i].y(),
@@ -172,7 +211,7 @@ void ExpandArrowView::PaintButtonContents(gfx::Canvas* canvas) {
   if (HasFocus()) {
     cc::PaintFlags focus_ring_flags;
     focus_ring_flags.setAntiAlias(true);
-    focus_ring_flags.setColor(kFocusRingColor);
+    focus_ring_flags.setColor(AppListColorProvider::Get()->GetFocusRingColor());
     focus_ring_flags.setStyle(cc::PaintFlags::Style::kStroke_Style);
     focus_ring_flags.setStrokeWidth(kFocusRingWidth);
 
@@ -185,7 +224,8 @@ void ExpandArrowView::PaintButtonContents(gfx::Canvas* canvas) {
     cc::PaintFlags pulse_flags;
     pulse_flags.setStyle(cc::PaintFlags::kStroke_Style);
     pulse_flags.setColor(
-        SkColorSetA(kPulseColor, static_cast<U8CPU>(255 * pulse_opacity_)));
+        SkColorSetA(AppListColorProvider::Get()->GetExpandArrowIconBaseColor(),
+                    static_cast<U8CPU>(255 * pulse_opacity_)));
     pulse_flags.setAntiAlias(true);
     canvas->DrawCircle(circle_center, pulse_radius_, pulse_flags);
   }
@@ -203,7 +243,9 @@ void ExpandArrowView::PaintButtonContents(gfx::Canvas* canvas) {
 
   cc::PaintFlags arrow_flags;
   arrow_flags.setAntiAlias(true);
-  arrow_flags.setColor(kExpandArrowColor);
+
+  arrow_flags.setColor(
+      AppListColorProvider::Get()->GetExpandArrowIconBaseColor());
   arrow_flags.setStrokeWidth(kExpandArrowStrokeWidth);
   arrow_flags.setStrokeCap(cc::PaintFlags::Cap::kRound_Cap);
   arrow_flags.setStrokeJoin(cc::PaintFlags::Join::kRound_Join);
@@ -216,17 +258,10 @@ void ExpandArrowView::PaintButtonContents(gfx::Canvas* canvas) {
   canvas->DrawPath(arrow_path, arrow_flags);
 }
 
-void ExpandArrowView::ButtonPressed(views::Button* /*sender*/,
-                                    const ui::Event& /*event*/) {
-  button_pressed_ = true;
-  ResetHintingAnimation();
-  TransitToFullscreenAllAppsState();
-  GetInkDrop()->AnimateToState(views::InkDropState::ACTION_TRIGGERED);
-}
-
 gfx::Size ExpandArrowView::CalculatePreferredSize() const {
-  return gfx::Size(kTileWidth,
-                   AppListConfig::instance().expand_arrow_tile_height());
+  return gfx::Size(
+      kTileWidth,
+      app_list_view_->GetAppListConfig().expand_arrow_tile_height());
 }
 
 bool ExpandArrowView::OnKeyPressed(const ui::KeyEvent& event) {
@@ -246,87 +281,73 @@ void ExpandArrowView::OnBlur() {
   Button::OnBlur();
 }
 
-std::unique_ptr<views::InkDrop> ExpandArrowView::CreateInkDrop() {
-  std::unique_ptr<views::InkDropImpl> ink_drop =
-      Button::CreateDefaultInkDropImpl();
-  ink_drop->SetShowHighlightOnHover(false);
-  ink_drop->SetShowHighlightOnFocus(false);
-  ink_drop->SetAutoHighlightMode(views::InkDropImpl::AutoHighlightMode::NONE);
-  return std::move(ink_drop);
-}
-
-std::unique_ptr<views::InkDropMask> ExpandArrowView::CreateInkDropMask() const {
-  return std::make_unique<views::CircleInkDropMask>(
-      size(), gfx::Point(kTileWidth / 2, kCircleCenterPeekingY),
-      kInkDropRadius);
-}
-
-std::unique_ptr<views::InkDropRipple> ExpandArrowView::CreateInkDropRipple()
-    const {
-  gfx::Point center(kTileWidth / 2, kCircleCenterPeekingY);
-  gfx::Rect bounds(center.x() - kInkDropRadius, center.y() - kInkDropRadius,
-                   2 * kInkDropRadius, 2 * kInkDropRadius);
-  return std::make_unique<views::FloodFillInkDropRipple>(
-      size(), GetLocalBounds().InsetsFrom(bounds),
-      GetInkDropCenterBasedOnLastEvent(), kInkDropRippleColor, 1.0f);
+const char* ExpandArrowView::GetClassName() const {
+  return "ExpandArrowView";
 }
 
 void ExpandArrowView::AnimationProgressed(const gfx::Animation* animation) {
   // There are two cycles in one animation.
-  const int animation_duration = kCycleDurationInMs * 2 + kCycleIntervalInMs;
-  const int first_cycle_end_time = kCycleDurationInMs;
-  const int interval_end_time = kCycleDurationInMs + kCycleIntervalInMs;
-  const int second_cycle_end_time = kCycleDurationInMs * 2 + kCycleIntervalInMs;
-  int time_in_ms = animation->GetCurrentValue() * animation_duration;
+  constexpr auto kAnimationDuration = kCycleDuration * 2 + kCycleInterval;
+  constexpr auto kFirstCycleEndTime = kCycleDuration;
+  constexpr auto kIntervalEndTime = kCycleDuration + kCycleInterval;
+  constexpr auto kSecondCycleEndTime = kCycleDuration * 2 + kCycleInterval;
+  base::TimeDelta time = animation->GetCurrentValue() * kAnimationDuration;
 
-  if (time_in_ms > first_cycle_end_time && time_in_ms <= interval_end_time) {
+  if (time > kFirstCycleEndTime && time <= kIntervalEndTime) {
     // There's no animation in the interval between cycles.
     return;
-  } else if (time_in_ms > interval_end_time &&
-             time_in_ms <= second_cycle_end_time) {
+  }
+  if (time > kIntervalEndTime && time <= kSecondCycleEndTime) {
     // Convert to time in one single cycle.
-    time_in_ms -= interval_end_time;
+    time -= kIntervalEndTime;
   }
 
   // Update pulse opacity.
-  if (time_in_ms > kPulseOpacityShowBeginTimeInMs &&
-      time_in_ms <= kPulseOpacityShowEndTimeInMs) {
+  constexpr auto kPulseOpacityShowBeginTime =
+      base::TimeDelta::FromMilliseconds(100);
+  constexpr auto kPulseOpacityShowEndTime =
+      base::TimeDelta::FromMilliseconds(200);
+  constexpr auto kPulseOpacityHideBeginTime =
+      base::TimeDelta::FromMilliseconds(800);
+  constexpr auto kPulseOpacityHideEndTime =
+      base::TimeDelta::FromMilliseconds(1000);
+  if (time > kPulseOpacityShowBeginTime && time <= kPulseOpacityShowEndTime) {
     pulse_opacity_ =
         kPulseMinOpacity +
         (kPulseMaxOpacity - kPulseMinOpacity) *
-            (time_in_ms - kPulseOpacityShowBeginTimeInMs) /
-            (kPulseOpacityShowEndTimeInMs - kPulseOpacityShowBeginTimeInMs);
-  } else if (time_in_ms > kPulseOpacityHideBeginTimeInMs &&
-             time_in_ms <= kPulseOpacityHideEndTimeInMs) {
+            (time - kPulseOpacityShowBeginTime) /
+            (kPulseOpacityShowEndTime - kPulseOpacityShowBeginTime);
+  } else if (time > kPulseOpacityHideBeginTime &&
+             time <= kPulseOpacityHideEndTime) {
     pulse_opacity_ =
         kPulseMaxOpacity -
         (kPulseMaxOpacity - kPulseMinOpacity) *
-            (time_in_ms - kPulseOpacityHideBeginTimeInMs) /
-            (kPulseOpacityHideEndTimeInMs - kPulseOpacityHideBeginTimeInMs);
+            (time - kPulseOpacityHideBeginTime) /
+            (kPulseOpacityHideEndTime - kPulseOpacityHideBeginTime);
   }
 
   // Update pulse radius.
-  pulse_radius_ = static_cast<int>(
-      (kPulseMaxRadius - kPulseMinRadius) *
-      gfx::Tween::CalculateValue(
-          gfx::Tween::EASE_IN_OUT,
-          static_cast<double>(time_in_ms) / kCycleDurationInMs));
+  pulse_radius_ =
+      base::ClampRound((kPulseMaxRadius - kPulseMinRadius) *
+                       gfx::Tween::CalculateValue(gfx::Tween::EASE_IN_OUT,
+                                                  time / kCycleDuration));
 
   // Update y position offset of the arrow.
-  if (time_in_ms > kArrowMoveOutBeginTimeInMs &&
-      time_in_ms <= kArrowMoveOutEndTimeInMs) {
-    const double progress =
-        static_cast<double>(time_in_ms - kArrowMoveOutBeginTimeInMs) /
-        (kArrowMoveOutEndTimeInMs - kArrowMoveOutBeginTimeInMs);
-    arrow_y_offset_ = static_cast<int>(
+  constexpr auto kArrowMoveOutBeginTime =
+      base::TimeDelta::FromMilliseconds(100);
+  constexpr auto kArrowMoveOutEndTime = base::TimeDelta::FromMilliseconds(500);
+  constexpr auto kArrowMoveInBeginTime = base::TimeDelta::FromMilliseconds(500);
+  constexpr auto kArrowMoveInEndTime = base::TimeDelta::FromMilliseconds(900);
+  if (time > kArrowMoveOutBeginTime && time <= kArrowMoveOutEndTime) {
+    const double progress = (time - kArrowMoveOutBeginTime) /
+                            (kArrowMoveOutEndTime - kArrowMoveOutBeginTime);
+    arrow_y_offset_ = base::ClampRound(
         -kTotalArrowYOffset *
         gfx::Tween::CalculateValue(gfx::Tween::EASE_IN, progress));
-  } else if (time_in_ms > kArrowMoveInBeginTimeInMs &&
-             time_in_ms <= kArrowMoveInEndTimeInMs) {
-    const double progress =
-        static_cast<double>(time_in_ms - kArrowMoveInBeginTimeInMs) /
-        (kArrowMoveInEndTimeInMs - kArrowMoveInBeginTimeInMs);
-    arrow_y_offset_ = static_cast<int>(
+  } else if (time > kArrowMoveInBeginTime && time <= kArrowMoveInEndTime) {
+    const double progress = (time - kArrowMoveInBeginTime) /
+                            (kArrowMoveInEndTime - kArrowMoveInBeginTime);
+    arrow_y_offset_ = base::ClampRound(
         kTotalArrowYOffset *
         (1 - gfx::Tween::CalculateValue(gfx::Tween::EASE_OUT, progress)));
   }
@@ -343,24 +364,54 @@ void ExpandArrowView::AnimationEnded(const gfx::Animation* /*animation*/) {
     ScheduleHintingAnimation(false);
 }
 
+void ExpandArrowView::OnButtonPressed() {
+  button_pressed_ = true;
+  ResetHintingAnimation();
+  TransitToFullscreenAllAppsState();
+  views::InkDrop::Get(this)->GetInkDrop()->AnimateToState(
+      views::InkDropState::ACTION_TRIGGERED);
+}
+
 void ExpandArrowView::TransitToFullscreenAllAppsState() {
-  UMA_HISTOGRAM_ENUMERATION(kPageOpenedHistogram, ash::AppListState::kStateApps,
-                            ash::AppListState::kStateLast);
+  UMA_HISTOGRAM_ENUMERATION("Apps.AppListPageOpened", AppListState::kStateApps,
+                            AppListState::kStateLast);
   UMA_HISTOGRAM_ENUMERATION(kAppListPeekingToFullscreenHistogram, kExpandArrow,
                             kMaxPeekingToFullscreen);
-  contents_view_->SetActiveState(ash::AppListState::kStateApps);
-  app_list_view_->SetState(ash::mojom::AppListViewState::kFullscreenAllApps);
+  contents_view_->SetActiveState(AppListState::kStateApps);
+  app_list_view_->SetState(AppListViewState::kFullscreenAllApps);
+}
+
+void ExpandArrowView::MaybeEnableHintingAnimation(bool enabled) {
+  button_pressed_ = false;
+  ResetHintingAnimation();
+  // When side shelf or tablet mode is enabled, the peeking launcher won't be
+  // shown, so the hint animation is unnecessary. Also, do not run the animation
+  // during test since we are not testing the animation and it might cause msan
+  // crash when spoken feedback is enabled (See https://crbug.com/926038).
+  if (enabled && !app_list_view_->is_side_shelf() &&
+      !app_list_view_->is_tablet_mode() &&
+      !AppListView::ShortAnimationsForTesting()) {
+    ScheduleHintingAnimation(true);
+  } else {
+    hinting_animation_timer_.Stop();
+  }
+}
+
+float ExpandArrowView::CalculateOffsetFromCurrentAppListProgress(
+    double progress) const {
+  const float current_progress = app_list_view_->GetAppListTransitionProgress(
+      AppListView::kProgressFlagNone);
+  return GetCircleCenterYForAppListProgress(progress) -
+         GetCircleCenterYForAppListProgress(current_progress);
 }
 
 void ExpandArrowView::ScheduleHintingAnimation(bool is_first_time) {
   int delay_in_sec = kAnimationIntervalInSec;
   if (is_first_time)
     delay_in_sec = kAnimationInitialWaitTimeInSec;
-  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&ExpandArrowView::StartHintingAnimation,
-                     weak_ptr_factory_.GetWeakPtr()),
-      base::TimeDelta::FromSeconds(delay_in_sec));
+  hinting_animation_timer_.Start(FROM_HERE,
+                                 base::TimeDelta::FromSeconds(delay_in_sec),
+                                 this, &ExpandArrowView::StartHintingAnimation);
 }
 
 void ExpandArrowView::StartHintingAnimation() {
@@ -375,4 +426,17 @@ void ExpandArrowView::ResetHintingAnimation() {
   Layout();
 }
 
-}  // namespace app_list
+bool ExpandArrowView::DoesIntersectRect(const views::View* target,
+                                        const gfx::Rect& rect) const {
+  DCHECK_EQ(target, this);
+  gfx::Rect button_bounds = GetLocalBounds();
+  // Increase clickable area for the button from
+  // (kTileWidth x height) to
+  // (kTapTargetWidth x kTapTargetHeight).
+  const int horizontal_padding = (kTapTargetWidth - button_bounds.width()) / 2;
+  const int vertical_padding = (kTapTargetHeight - button_bounds.height()) / 2;
+  button_bounds.Inset(-horizontal_padding, -vertical_padding);
+  return button_bounds.Intersects(rect);
+}
+
+}  // namespace ash

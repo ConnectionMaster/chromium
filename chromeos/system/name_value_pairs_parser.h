@@ -8,9 +8,9 @@
 #include <map>
 #include <string>
 
+#include "base/component_export.h"
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
-#include "chromeos/chromeos_export.h"
 
 namespace base {
 class FilePath;
@@ -21,7 +21,7 @@ namespace system {
 
 // The parser is used to get machine info as name-value pairs. Defined here to
 // be accessible by tests.
-class CHROMEOS_EXPORT NameValuePairsParser {
+class COMPONENT_EXPORT(CHROMEOS_SYSTEM) NameValuePairsParser {
  public:
   typedef std::map<std::string, std::string> NameValueMap;
 
@@ -60,7 +60,8 @@ class CHROMEOS_EXPORT NameValuePairsParser {
   // be added to the map.
   bool ParseNameValuePairs(const std::string& in_string,
                            const std::string& eq,
-                           const std::string& delim);
+                           const std::string& delim,
+                           const std::string& debug_source);
 
   // This version allows for values which end with a comment beginning with
   // |comment_delim|.
@@ -70,7 +71,8 @@ class CHROMEOS_EXPORT NameValuePairsParser {
   bool ParseNameValuePairsWithComments(const std::string& in_string,
                                        const std::string& eq,
                                        const std::string& delim,
-                                       const std::string& comment_delim);
+                                       const std::string& comment_delim,
+                                       const std::string& debug_source);
 
   NameValueMap* map_;
 

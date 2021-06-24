@@ -7,9 +7,17 @@
 namespace chromeos {
 namespace switches {
 
-// Used in CryptohomeClient to determine which Google Privacy CA to use for
+// Used in AttestationClient to determine which Google Privacy CA to use for
 // attestation.
 const char kAttestationServer[] = "attestation-server";
+
+// Enables BIOD fake behavior. If the switch is set, fake biod D-Bus client is
+// initialized and BIOD events do not reach chrome.
+const char kBiodFake[] = "biod-fake";
+
+// Enables cros disks fake behavior. If the switch is set, fake cros disk D-Bus
+// client is initialized and USB events do not reach chrome.
+const char kCrosDisksFake[] = "cros-disks-fake";
 
 // Forces the stub implementation of D-Bus clients.
 const char kDbusStub[] = "dbus-stub";
@@ -34,6 +42,12 @@ const char kFakeOobeConfiguration[] = "fake-oobe-configuration-file";
 //  'interactive=3' - Interactive mode, connect/scan/etc requests take 3 secs
 const char kShillStub[] = "shill-stub";
 
+// Enables Hermes fake behavior. By default, no carrier profiles are setup.
+// If a value of "on" is passed for this switch, then hermes fakes are
+// initialized with a single installed carrier profile. Fake cellular service
+// corresponding to carrier profiles are also setup in Shill.
+const char kHermesFake[] = "hermes-fake";
+
 // Sends test messages on first call to RequestUpdate (stub only).
 const char kSmsTestMessages[] = "sms-test-messages";
 
@@ -41,6 +55,11 @@ const char kSmsTestMessages[] = "sms-test-messages";
 // mode when running in a Linux environment. The dev mode probing is done by
 // session manager.
 const char kSystemDevMode[] = "system-developer-mode";
+
+// Makes Chrome register the maximum dark suspend delay possible on Chrome OS
+// i.e. give the device the maximum amount of time to do its work in dark
+// resume as is allowed by the power manager.
+const char kRegisterMaxDarkSuspendDelay[] = "register-max-dark-suspend-delay";
 
 }  // namespace switches
 }  // namespace chromeos

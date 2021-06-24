@@ -4,27 +4,26 @@
 
 #include "remoting/host/host_details.h"
 
-#include "build/build_config.h"
-
-#if defined(OS_LINUX)
-#include "base/linux_util.h"
 #include "base/system/sys_info.h"
-#else
-#include "remoting/base/platform_details.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+#include "base/linux_util.h"
 #endif
 
 namespace remoting {
 
 // Get the host Operating System Name, removing the need to check for OS
-// definitions and keeps the keys used consistant.
+// definitions and keeps the keys used consistent.
 std::string GetHostOperatingSystemName() {
 #if defined(OS_WIN)
   return "Windows";
-#elif defined(OS_MACOSX)
+#elif defined(OS_APPLE)
   return "Mac";
-#elif defined(OS_CHROMEOS)
+#elif BUILDFLAG(IS_CHROMEOS_ASH)
   return "ChromeOS";
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
   return "Linux";
 #elif defined(OS_ANDROID)
   return "Android";
@@ -36,10 +35,10 @@ std::string GetHostOperatingSystemName() {
 // Get the host Operating System Version, removing the need to check for OS
 // definitions and keeps the format used consistent.
 std::string GetHostOperatingSystemVersion() {
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   return base::GetLinuxDistro();
 #else
-  return GetOperatingSystemVersionString();
+  return base::SysInfo::OperatingSystemVersion();
 #endif
 }
 

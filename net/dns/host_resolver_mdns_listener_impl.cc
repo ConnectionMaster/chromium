@@ -4,7 +4,8 @@
 
 #include "net/dns/host_resolver_mdns_listener_impl.h"
 
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/notreached.h"
 #include "net/base/host_port_pair.h"
 #include "net/dns/host_cache.h"
 #include "net/dns/host_resolver_mdns_task.h"
@@ -72,6 +73,8 @@ void HostResolverMdnsListenerImpl::OnRecordUpdate(
 
   switch (query_type_) {
     case DnsQueryType::UNSPECIFIED:
+    case DnsQueryType::INTEGRITY:
+    case DnsQueryType::HTTPS:
       NOTREACHED();
       break;
     case DnsQueryType::A:

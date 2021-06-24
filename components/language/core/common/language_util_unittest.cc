@@ -35,6 +35,10 @@ TEST_F(LanguageUtilTest, ToTranslateLanguageSynonym) {
   language::ToTranslateLanguageSynonym(&language);
   EXPECT_EQ("iw", language);
 
+  language = std::string("nb-NO");
+  language::ToTranslateLanguageSynonym(&language);
+  EXPECT_EQ("no", language);
+
   language = std::string("zh-JP");
   language::ToTranslateLanguageSynonym(&language);
   EXPECT_EQ("zh-JP", language);
@@ -49,7 +53,11 @@ TEST_F(LanguageUtilTest, ToTranslateLanguageSynonym) {
 TEST_F(LanguageUtilTest, ToChromeLanguageSynonym) {
   std::string language;
 
+  // Norwegian (no) and Norwegian Bokmal (nb) are both supported.
   language = std::string("no");
+  language::ToChromeLanguageSynonym(&language);
+  EXPECT_EQ("no", language);
+  language = std::string("nb");
   language::ToChromeLanguageSynonym(&language);
   EXPECT_EQ("nb", language);
 

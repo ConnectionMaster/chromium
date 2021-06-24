@@ -6,14 +6,14 @@
 #define REMOTING_HOST_FILE_TRANSFER_IPC_FILE_OPERATIONS_H_
 
 #include <cstdint>
-#include <string>
 #include <tuple>
+#include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "remoting/host/file_transfer/file_operations.h"
 #include "remoting/protocol/file_transfer_helpers.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace remoting {
 
@@ -34,7 +34,8 @@ class IpcFileOperations : public FileOperations {
     virtual void ReadChunk(std::uint64_t file_id, std::uint64_t size) = 0;
     virtual void WriteFile(std::uint64_t file_id,
                            const base::FilePath& filename) = 0;
-    virtual void WriteChunk(std::uint64_t file_id, std::string data) = 0;
+    virtual void WriteChunk(std::uint64_t file_id,
+                            std::vector<std::uint8_t> data) = 0;
     virtual void Close(std::uint64_t file_id) = 0;
     virtual void Cancel(std::uint64_t file_id) = 0;
   };
@@ -45,7 +46,8 @@ class IpcFileOperations : public FileOperations {
     using Result = protocol::FileTransferResult<Monostate>;
     using InfoResult =
         protocol::FileTransferResult<std::tuple<base::FilePath, uint64_t>>;
-    using DataResult = remoting::protocol::FileTransferResult<std::string>;
+    using DataResult =
+        remoting::protocol::FileTransferResult<std::vector<std::uint8_t>>;
 
     virtual ~ResultHandler() = default;
     virtual void OnResult(std::uint64_t file_id, Result result) = 0;
@@ -91,7 +93,7 @@ class IpcFileOperations : public FileOperations {
     // The associated RequestHandler.
     RequestHandler* request_handler;
 
-    base::WeakPtrFactory<SharedState> weak_ptr_factory;
+    base::WeakPtrFactory<SharedState> weak_ptr_factory{this};
 
    private:
     DISALLOW_COPY_AND_ASSIGN(SharedState);

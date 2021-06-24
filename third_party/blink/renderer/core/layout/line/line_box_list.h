@@ -29,10 +29,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_LINE_LINE_BOX_LIST_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_LINE_LINE_BOX_LIST_H_
 
+#include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/layout/api/hit_test_action.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -41,10 +41,10 @@ class HitTestLocation;
 class HitTestResult;
 class InlineFlowBox;
 class InlineTextBox;
-class LayoutPoint;
 class LayoutUnit;
 class LineLayoutBoxModel;
 class LineLayoutItem;
+struct PhysicalOffset;
 
 template <typename InlineBoxType>
 class InlineBoxList {
@@ -134,8 +134,8 @@ class InlineBoxList {
   // For block flows, each box represents the root inline box for a line in the
   // paragraph.
   // For inline flows, each box represents a portion of that inline.
-  InlineBoxType* first_;
-  InlineBoxType* last_;
+  InlineBoxType* first_ = nullptr;
+  InlineBoxType* last_ = nullptr;
 };
 
 extern template class CORE_EXTERN_TEMPLATE_EXPORT InlineBoxList<InlineFlowBox>;
@@ -154,23 +154,23 @@ class CORE_EXPORT LineBoxList : public InlineBoxList<InlineFlowBox> {
 
   bool HitTest(LineLayoutBoxModel,
                HitTestResult&,
-               const HitTestLocation& location_in_container,
-               const LayoutPoint& accumulated_offset,
+               const HitTestLocation&,
+               const PhysicalOffset& accumulated_offset,
                HitTestAction) const;
   bool AnyLineIntersectsRect(LineLayoutBoxModel,
                              const CullRect&,
-                             const LayoutPoint&) const;
+                             const PhysicalOffset&) const;
   bool LineIntersectsDirtyRect(LineLayoutBoxModel,
                                InlineFlowBox*,
                                const CullRect&,
-                               const LayoutPoint&) const;
+                               const PhysicalOffset&) const;
 
  private:
   bool RangeIntersectsRect(LineLayoutBoxModel,
                            LayoutUnit logical_top,
                            LayoutUnit logical_bottom,
                            const CullRect&,
-                           const LayoutPoint&) const;
+                           const PhysicalOffset&) const;
 };
 
 class CORE_EXPORT InlineTextBoxList : public InlineBoxList<InlineTextBox> {

@@ -4,11 +4,15 @@
 
 #include "components/autofill/core/common/form_field_data.h"
 
+#include <algorithm>
+#include <tuple>
+
 #include "base/pickle.h"
+#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_util.h"
+#include "components/autofill/core/common/logging/log_buffer.h"
 
 // TODO(crbug/897756): Clean up the (de)serialization code.
 
@@ -18,27 +22,54 @@ namespace {
 
 // Increment this anytime pickle format is modified as well as provide
 // deserialization routine from previous kFormFieldDataPickleVersion format.
-const int kFormFieldDataPickleVersion = 8;
+const int kFormFieldDataPickleVersion = 9;
 
-void AddVectorToPickle(std::vector<base::string16> strings,
-                       base::Pickle* pickle) {
-  pickle->WriteInt(static_cast<int>(strings.size()));
-  for (size_t i = 0; i < strings.size(); ++i) {
-    pickle->WriteString16(strings[i]);
-  }
+void WriteSelectOption(const SelectOption& option, base::Pickle* pickle) {
+  pickle->WriteString16(option.value);
+  pickle->WriteString16(option.content);
 }
 
-bool ReadStringVector(base::PickleIterator* iter,
-                      std::vector<base::string16>* strings) {
+bool ReadSelectOption(base::PickleIterator* iter, SelectOption* option) {
+  std::u16string value;
+  std::u16string content;
+  if (!iter->ReadString16(&value) || !iter->ReadString16(&content))
+    return false;
+  *option = {.value = value, .content = content};
+  return true;
+}
+
+void WriteSelectOptionVector(const std::vector<SelectOption>& options,
+                             base::Pickle* pickle) {
+  pickle->WriteInt(static_cast<int>(options.size()));
+  for (const SelectOption& option : options)
+    WriteSelectOption(option, pickle);
+}
+
+bool ReadSelectOptionVector(base::PickleIterator* iter,
+                            std::vector<SelectOption>* options) {
   int size;
   if (!iter->ReadInt(&size))
     return false;
 
-  base::string16 pickle_data;
+  for (int i = 0; i < size; i++) {
+    SelectOption pickle_data;
+    if (!ReadSelectOption(iter, &pickle_data))
+      return false;
+    options->push_back(pickle_data);
+  }
+  return true;
+}
+
+bool ReadStringVector(base::PickleIterator* iter,
+                      std::vector<std::u16string>* strings) {
+  int size;
+  if (!iter->ReadInt(&size))
+    return false;
+
+  std::u16string pickle_data;
   for (int i = 0; i < size; i++) {
     if (!iter->ReadString16(&pickle_data))
       return false;
-
     strings->push_back(pickle_data);
   }
   return true;
@@ -91,9 +122,25 @@ bool DeserializeSection7(base::PickleIterator* iter,
 
 bool DeserializeSection3(base::PickleIterator* iter,
                          FormFieldData* field_data) {
+  std::vector<std::u16string> option_values;
+  std::vector<std::u16string> option_contents;
+  if (!ReadAsInt(iter, &field_data->text_direction) ||
+      !ReadStringVector(iter, &option_values) ||
+      !ReadStringVector(iter, &option_contents) ||
+      option_values.size() != option_contents.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < option_values.size(); ++i) {
+    field_data->options.push_back({.value = std::move(option_values[i]),
+                                   .content = std::move(option_contents[i])});
+  }
+  return true;
+}
+
+bool DeserializeSection12(base::PickleIterator* iter,
+                          FormFieldData* field_data) {
   return ReadAsInt(iter, &field_data->text_direction) &&
-         ReadStringVector(iter, &field_data->option_values) &&
-         ReadStringVector(iter, &field_data->option_contents);
+         ReadSelectOptionVector(iter, &field_data->options);
 }
 
 bool DeserializeSection2(base::PickleIterator* iter,
@@ -126,187 +173,126 @@ bool DeserializeSection11(base::PickleIterator* iter,
   return iter->ReadString16(&field_data->name_attribute);
 }
 
-bool HaveSameLabel(const FormFieldData& field1, const FormFieldData& field2) {
-  if (field1.label == field2.label)
-    return true;
+// LabelInfo is used to implement that "a.label == b.label" can be weakened to
+// "a.label == b.label OR a certain feature is enabled and {a,b}.label_source !=
+// kLabelTag and a.label_source == b.label_source".
+// Beware of the StringPiece member and resulting lifetime issues. Deleted copy
+// and move ctors/operators to reduce risk potential.
+struct LabelInfo {
+  explicit LabelInfo(const FormFieldData& f)
+      : label(f.label), source(f.label_source) {}
+  LabelInfo(const LabelInfo&) = delete;
+  LabelInfo& operator=(const LabelInfo&) = delete;
+  LabelInfo(LabelInfo&&) = default;
+  LabelInfo& operator=(LabelInfo&&) = default;
 
-  // Assume the labels same if they come from same source but not LABEL tag
-  // when kAutofillSkipComparingInferredLabels is enabled.
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillSkipComparingInferredLabels)) {
-    return field1.label_source == field2.label_source &&
-           field1.label_source != FormFieldData::LABEL_TAG;
+  bool operator==(const LabelInfo& that) const {
+    if (label == that.label)
+      return true;
+
+    // Feature |kAutofillSkipComparingInferredLabels| weakens equivalence of
+    // labels: two labels are equivalent if they were inferred from the same
+    // type of tag other than a LABEL tag.
+    return base::FeatureList::IsEnabled(
+               features::kAutofillSkipComparingInferredLabels) &&
+           source != FormFieldData::LabelSource::kLabelTag &&
+           source == that.source;
   }
-  return false;
+
+  bool operator<(const LabelInfo& that) const { return label < that.label; }
+
+  base::StringPiece16 label;
+  FormFieldData::LabelSource source = FormFieldData::LabelSource::kLabelTag;
+};
+
+// CommonTuple(), SimilarityTuple(), DynamicIdentityTuple(), IdentityTuple()
+// return values should be used as temporaries only because they include a
+// StringPiece.
+
+auto CommonTuple(const FormFieldData& f) {
+  return std::tuple_cat(
+      std::make_tuple(LabelInfo(f)),
+      std::tie(f.name, f.name_attribute, f.id_attribute, f.form_control_type));
+}
+
+auto SimilarityTuple(const FormFieldData& f) {
+  return std::tuple_cat(CommonTuple(f),
+                        std::make_tuple(IsCheckable(f.check_status)));
+}
+
+auto DynamicIdentityTuple(const FormFieldData& f) {
+  return std::tuple_cat(CommonTuple(f), std::make_tuple(f.IsVisible()));
+}
+
+auto IdentityTuple(const FormFieldData& f) {
+  // |unique_renderer_id| uniquely identifies the field, if and only if it is
+  // set; the other members compared below (excluding label_source) together
+  // uniquely identify the field as well.
+  return std::tuple_cat(
+      SimilarityTuple(f),
+      std::tie(
+// TODO(crbug.com/896689): On iOS the unique_id member uniquely addresses
+// this field in the DOM.
+#if defined(OS_IOS)
+          f.unique_id,
+#endif
+          f.autocomplete_attribute, f.placeholder, f.max_length, f.css_classes,
+          f.is_focusable, f.should_autocomplete, f.role, f.text_direction));
 }
 
 }  // namespace
 
-FormFieldData::FormFieldData()
-    : max_length(0),
-      is_autofilled(false),
-      check_status(NOT_CHECKABLE),
-      is_focusable(true),
-      should_autocomplete(true),
-      role(ROLE_ATTRIBUTE_OTHER),
-      text_direction(base::i18n::UNKNOWN_DIRECTION),
-      properties_mask(0),
-      is_enabled(false),
-      is_readonly(false),
-      label_source(LabelSource::UNKNOWN) {}
+FormFieldData::FormFieldData() = default;
 
-FormFieldData::FormFieldData(const FormFieldData& other) = default;
+FormFieldData::FormFieldData(const FormFieldData&) = default;
 
-FormFieldData::~FormFieldData() {}
+FormFieldData& FormFieldData::operator=(const FormFieldData&) = default;
+
+FormFieldData::FormFieldData(FormFieldData&&) = default;
+
+FormFieldData& FormFieldData::operator=(FormFieldData&&) = default;
+
+FormFieldData::~FormFieldData() = default;
 
 bool FormFieldData::SameFieldAs(const FormFieldData& field) const {
-// TODO(crbug.com/896689): On iOS the unique_id member uniquely addresses
-// this field in the DOM.
-#if defined(OS_IOS)
-  if (unique_id != field.unique_id)
-    return false;
-#endif
-
-  // A FormFieldData stores a value, but the value is not part of the identity
-  // of the field, so we don't want to compare the values.
-  // Similarly, flags like is_enabled, which are only used for parsing but are
-  // not stored persistently, are not used for comparison.
-  // is_autofilled and section are also secondary properties of a field. Two
-  // fields could be the same, and have different sections, because the section
-  // is updated for one, but not for the other.
-  return name == field.name && id_attribute == field.id_attribute &&
-         name_attribute == field.name_attribute &&
-         form_control_type == field.form_control_type &&
-         autocomplete_attribute == field.autocomplete_attribute &&
-         placeholder == field.placeholder && max_length == field.max_length &&
-         css_classes == field.css_classes &&
-         // is_checked and is_autofilled counts as "value" since these change
-         // when we fill things in.
-         IsCheckable(check_status) == IsCheckable(field.check_status) &&
-         is_focusable == field.is_focusable &&
-         should_autocomplete == field.should_autocomplete &&
-         role == field.role && text_direction == field.text_direction &&
-         HaveSameLabel(*this, field);
-  // The option values/contents which are the list of items in the list
-  // of a drop-down are currently not considered part of the identity of
-  // a form element. This is debatable, since one might base heuristics
-  // on the types of elements that are available. Alternatively, one
-  // could imagine some forms that dynamically change the element
-  // contents (say, insert years starting from the current year) that
-  // should not be considered changes in the structure of the form.
+  return IdentityTuple(*this) == IdentityTuple(field);
 }
 
 bool FormFieldData::SimilarFieldAs(const FormFieldData& field) const {
-  return HaveSameLabel(*this, field) && name == field.name &&
-         id_attribute == field.id_attribute &&
-         name_attribute == field.name_attribute &&
-         form_control_type == field.form_control_type &&
-         IsCheckable(check_status) == IsCheckable(field.check_status);
+  return SimilarityTuple(*this) == SimilarityTuple(field);
 }
 
 bool FormFieldData::DynamicallySameFieldAs(const FormFieldData& field) const {
-  return name == field.name && id_attribute == field.id_attribute &&
-         name_attribute == field.name_attribute &&
-         HaveSameLabel(*this, field) && IsVisible() == field.IsVisible() &&
-         form_control_type == field.form_control_type;
+  return DynamicIdentityTuple(*this) == DynamicIdentityTuple(field);
+}
+
+bool FormFieldData::IdentityComparator::operator()(
+    const FormFieldData& a,
+    const FormFieldData& b) const {
+  return IdentityTuple(a) < IdentityTuple(b);
 }
 
 bool FormFieldData::IsTextInputElement() const {
   return form_control_type == "text" || form_control_type == "password" ||
          form_control_type == "search" || form_control_type == "tel" ||
-         form_control_type == "url" || form_control_type == "email";
+         form_control_type == "url" || form_control_type == "email" ||
+         form_control_type == "number";
 }
 
-bool FormFieldData::operator==(const FormFieldData& field) const {
-  return SameFieldAs(field) && unique_renderer_id == field.unique_renderer_id &&
-         is_autofilled == field.is_autofilled &&
-         check_status == field.check_status &&
-         option_values == field.option_values &&
-         option_contents == field.option_contents &&
-         properties_mask == field.properties_mask;
+bool FormFieldData::IsPasswordInputElement() const {
+  return form_control_type == "password";
 }
 
-bool FormFieldData::operator!=(const FormFieldData& field) const {
-  return !(*this == field);
+bool FormFieldData::DidUserType() const {
+  return properties_mask & kUserTyped;
 }
 
-bool FormFieldData::operator<(const FormFieldData& field) const {
-  // This does not use std::tie() as that generates more implicit variables
-  // than the max-vartrack-size for var-tracking-assignments when compiling
-  // for Android, producing build warnings. (See https://crbug.com/555171 for
-  // context.)
+bool FormFieldData::HadFocus() const {
+  return properties_mask & kHadFocus;
+}
 
-  // Like SameFieldAs this ignores the value.
-  if (label < field.label)
-    return true;
-  if (label > field.label)
-    return false;
-  if (name < field.name)
-    return true;
-  if (name > field.name)
-    return false;
-
-// TODO(crbug.com/896689): On iOS the unique_id member uniquely addresses
-// this field in the DOM.
-#if defined(OS_IOS)
-  if (unique_id < field.unique_id)
-    return true;
-  if (unique_id < field.unique_id)
-    return false;
-#endif
-
-  if (id_attribute < field.id_attribute)
-    return true;
-  if (id_attribute > field.id_attribute)
-    return false;
-  if (name_attribute < field.name_attribute)
-    return true;
-  if (name_attribute > field.name_attribute)
-    return false;
-  if (form_control_type < field.form_control_type)
-    return true;
-  if (form_control_type > field.form_control_type)
-    return false;
-  if (autocomplete_attribute < field.autocomplete_attribute)
-    return true;
-  if (autocomplete_attribute > field.autocomplete_attribute)
-    return false;
-  if (placeholder < field.placeholder)
-    return true;
-  if (placeholder > field.placeholder)
-    return false;
-  if (max_length < field.max_length)
-    return true;
-  if (max_length > field.max_length)
-    return false;
-  if (css_classes < field.css_classes)
-    return true;
-  if (css_classes > field.css_classes)
-    return false;
-  // Skip |is_checked| and |is_autofilled| as in SameFieldAs.
-  if (IsCheckable(check_status) < IsCheckable(field.check_status))
-    return true;
-  if (IsCheckable(check_status) > IsCheckable(field.check_status))
-    return false;
-  if (is_focusable < field.is_focusable)
-    return true;
-  if (is_focusable > field.is_focusable)
-    return false;
-  if (should_autocomplete < field.should_autocomplete)
-    return true;
-  if (should_autocomplete > field.should_autocomplete)
-    return false;
-  if (role < field.role)
-    return true;
-  if (role > field.role)
-    return false;
-  if (text_direction < field.text_direction)
-    return true;
-  if (text_direction > field.text_direction)
-    return false;
-  // See SameFieldAs above for why we don't check option_values/contents and
-  // flags like is_enabled.
-  return false;
+bool FormFieldData::WasAutofilled() const {
+  return properties_mask & kAutofilled;
 }
 
 void SerializeFormFieldData(const FormFieldData& field_data,
@@ -319,13 +305,12 @@ void SerializeFormFieldData(const FormFieldData& field_data,
   pickle->WriteString(field_data.autocomplete_attribute);
   pickle->WriteUInt64(field_data.max_length);
   pickle->WriteBool(field_data.is_autofilled);
-  pickle->WriteInt(field_data.check_status);
+  pickle->WriteInt(static_cast<int>(field_data.check_status));
   pickle->WriteBool(field_data.is_focusable);
   pickle->WriteBool(field_data.should_autocomplete);
-  pickle->WriteInt(field_data.role);
+  pickle->WriteInt(static_cast<int>(field_data.role));
   pickle->WriteInt(field_data.text_direction);
-  AddVectorToPickle(field_data.option_values, pickle);
-  AddVectorToPickle(field_data.option_contents, pickle);
+  WriteSelectOptionVector(field_data.options, pickle);
   pickle->WriteString16(field_data.placeholder);
   pickle->WriteString16(field_data.css_classes);
   pickle->WriteUInt32(field_data.properties_mask);
@@ -446,6 +431,22 @@ bool DeserializeFormFieldData(base::PickleIterator* iter,
       }
       break;
     }
+    case 9: {
+      if (!DeserializeSection1(iter, &temp_form_field_data) ||
+          !DeserializeSection6(iter, &temp_form_field_data) ||
+          !DeserializeSection7(iter, &temp_form_field_data) ||
+          !DeserializeSection2(iter, &temp_form_field_data) ||
+          !DeserializeSection12(iter, &temp_form_field_data) ||
+          !DeserializeSection4(iter, &temp_form_field_data) ||
+          !DeserializeSection8(iter, &temp_form_field_data) ||
+          !DeserializeSection9(iter, &temp_form_field_data) ||
+          !DeserializeSection10(iter, &temp_form_field_data) ||
+          !DeserializeSection11(iter, &temp_form_field_data)) {
+        LOG(ERROR) << "Could not deserialize FormFieldData from pickle";
+        return false;
+      }
+      break;
+    }
     default: {
       LOG(ERROR) << "Unknown FormFieldData pickle version " << version;
       return false;
@@ -456,57 +457,54 @@ bool DeserializeFormFieldData(base::PickleIterator* iter,
 }
 
 std::ostream& operator<<(std::ostream& os, const FormFieldData& field) {
-  const char* check_status_str = nullptr;
-  switch (field.check_status) {
-    case FormFieldData::CheckStatus::NOT_CHECKABLE:
-      check_status_str = "NOT_CHECKABLE";
-      break;
-    case FormFieldData::CheckStatus::CHECKABLE_BUT_UNCHECKED:
-      check_status_str = "CHECKABLE_BUT_UNCHECKED";
-      break;
-    case FormFieldData::CheckStatus::CHECKED:
-      check_status_str = "CHECKED";
-      break;
-    default:
-      NOTREACHED();
-      check_status_str = "<invalid>";
-  }
-
-  const char* role_str = nullptr;
-  switch (field.role) {
-    case FormFieldData::RoleAttribute::ROLE_ATTRIBUTE_PRESENTATION:
-      role_str = "ROLE_ATTRIBUTE_PRESENTATION";
-      break;
-    case FormFieldData::RoleAttribute::ROLE_ATTRIBUTE_OTHER:
-      role_str = "ROLE_ATTRIBUTE_OTHER";
-      break;
-    default:
-      NOTREACHED();
-      role_str = "<invalid>";
-  }
-
-  return os << "label='" << base::UTF16ToUTF8(field.label) << "' "
-            << "name='" << base::UTF16ToUTF8(field.name) << "' "
-            << "id_attribute='" << base::UTF16ToUTF8(field.id_attribute) << "' "
-            << "name_attribute='" << base::UTF16ToUTF8(field.name_attribute)
-            << "' "
-            << "value='" << base::UTF16ToUTF8(field.value) << "' "
+  return os << "label='" << field.label << "' "
+            << "unique_Id=" << field.global_id() << " "
+            << "origin='" << field.origin.Serialize() << "' "
+            << "name='" << field.name << "' "
+            << "id_attribute='" << field.id_attribute << "' "
+            << "name_attribute='" << field.name_attribute << "' "
+            << "value='" << field.value << "' "
             << "control='" << field.form_control_type << "' "
             << "autocomplete='" << field.autocomplete_attribute << "' "
             << "placeholder='" << field.placeholder << "' "
             << "max_length=" << field.max_length << " "
             << "css_classes='" << field.css_classes << "' "
             << "autofilled=" << field.is_autofilled << " "
-            << "check_status=" << check_status_str << " "
+            << "check_status=" << field.check_status << " "
             << "is_focusable=" << field.is_focusable << " "
             << "should_autocomplete=" << field.should_autocomplete << " "
-            << "role=" << role_str << " "
+            << "role=" << field.role << " "
             << "text_direction=" << field.text_direction << " "
             << "is_enabled=" << field.is_enabled << " "
             << "is_readonly=" << field.is_readonly << " "
-            << "typed_value=" << field.typed_value << " "
+            << "user_input=" << field.user_input << " "
             << "properties_mask=" << field.properties_mask << " "
-            << "label_source=" << field.label_source;
+            << "label_source=" << field.label_source << " "
+            << "bounds=" << field.bounds.ToString();
+}
+
+LogBuffer& operator<<(LogBuffer& buffer, const FormFieldData& field) {
+  buffer << Tag{"table"};
+  buffer << Tr{} << "Name:" << field.name;
+  buffer << Tr{} << "Unique id:" << field.global_id();
+  buffer << Tr{} << "Origin:" << field.origin.Serialize();
+  buffer << Tr{} << "Name attribute:" << field.name_attribute;
+  buffer << Tr{} << "Id attribute:" << field.id_attribute;
+  constexpr size_t kMaxLabelSize = 100;
+  const std::u16string truncated_label =
+      field.label.substr(0, std::min(field.label.length(), kMaxLabelSize));
+  buffer << Tr{} << "Label:" << truncated_label;
+  buffer << Tr{} << "Form control type:" << field.form_control_type;
+  buffer << Tr{} << "Autocomplete attribute:" << field.autocomplete_attribute;
+  buffer << Tr{} << "Aria label:" << field.aria_label;
+  buffer << Tr{} << "Aria description:" << field.aria_description;
+  buffer << Tr{} << "Section:" << field.section;
+  buffer << Tr{} << "Is focusable:" << field.is_focusable;
+  buffer << Tr{} << "Is enabled:" << field.is_enabled;
+  buffer << Tr{} << "Is readonly:" << field.is_readonly;
+  buffer << Tr{} << "Is empty:" << (field.value.empty() ? "Yes" : "No");
+  buffer << CTag{"table"};
+  return buffer;
 }
 
 }  // namespace autofill

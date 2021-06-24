@@ -31,15 +31,18 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_CANVAS2D_CANVAS_PATH_H_
 
 #include "third_party/blink/renderer/modules/modules_export.h"
+#include "third_party/blink/renderer/platform/bindings/no_alloc_direct_call_host.h"
 #include "third_party/blink/renderer/platform/graphics/path.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
 class ExceptionState;
+class V8UnionDOMPointOrUnrestrictedDouble;
 
-class MODULES_EXPORT CanvasPath {
+class MODULES_EXPORT CanvasPath : public NoAllocDirectCallHost {
   DISALLOW_NEW();
 
  public:
@@ -84,10 +87,18 @@ class MODULES_EXPORT CanvasPath {
             double double_y,
             double double_width,
             double double_height);
+  void roundRect(
+      double double_x,
+      double double_y,
+      double double_width,
+      double double_height,
+      const HeapVector<Member<V8UnionDOMPointOrUnrestrictedDouble>>& radii,
+      ExceptionState& exception_state);
 
   virtual bool IsTransformInvertible() const { return true; }
-  virtual AffineTransform Transform() const {
-    return AffineTransform(1, 0, 0, 1, 0, 0);
+  virtual TransformationMatrix GetTransform() const {
+    // This will be the identity matrix
+    return TransformationMatrix();
   }
 
  protected:
@@ -95,6 +106,7 @@ class MODULES_EXPORT CanvasPath {
   CanvasPath(const Path& path) : path_(path) { path_.SetIsVolatile(true); }
   Path path_;
 };
+
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_CANVAS2D_CANVAS_PATH_H_

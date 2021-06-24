@@ -4,13 +4,14 @@
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
-#include "base/message_loop/message_loop.h"
-#include "base/stl_util.h"
+#include "base/cxx17_backports.h"
+#include "base/message_loop/message_pump_type.h"
+#include "base/task/single_thread_task_executor.h"
 #include "components/exo/wayland/clients/client_base.h"
 #include "components/exo/wayland/clients/client_helper.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkSurface.h"
-#include "third_party/skia/include/gpu/GrContext.h"
+#include "third_party/skia/include/gpu/GrDirectContext.h"
 #include "ui/gl/gl_bindings.h"
 
 namespace exo {
@@ -61,8 +62,10 @@ void SubSurfaceClient::Run(const ClientBase::InitParams& params) {
 
   constexpr int32_t kSubsurfaceWidth = 128;
   constexpr int32_t kSubsurfaceHeight = 128;
-  auto subbuffer = CreateBuffer(gfx::Size(kSubsurfaceWidth, kSubsurfaceHeight),
-                                params.drm_format, params.bo_usage);
+  auto subbuffer =
+      CreateBuffer(gfx::Size(kSubsurfaceWidth, kSubsurfaceHeight),
+                   params.drm_format, params.bo_usage,
+                   /*add_buffer_listener=*/!params.use_release_fences);
   if (!subbuffer) {
     LOG(ERROR) << "Failed to create subbuffer";
     return;
@@ -97,7 +100,7 @@ void SubSurfaceClient::Run(const ClientBase::InitParams& params) {
       canvas->drawIRect(rect, paint);
       canvas->restore();
       if (gr_context_) {
-        gr_context_->flush();
+        gr_context_->flushAndSubmit();
         glFinish();
       }
       wl_surface_damage(child_surface.get(), 0, 0, kSubsurfaceWidth,
@@ -113,7 +116,7 @@ void SubSurfaceClient::Run(const ClientBase::InitParams& params) {
       static const SkColor kColors[] = {SK_ColorRED, SK_ColorBLACK};
       canvas->clear(kColors[frame_count % base::size(kColors)]);
       if (gr_context_) {
-        gr_context_->flush();
+        gr_context_->flushAndSubmit();
         glFinish();
       }
       wl_surface_set_buffer_scale(surface_.get(), scale_);
@@ -154,7 +157,7 @@ int main(int argc, char* argv[]) {
   if (!params.FromCommandLine(*command_line))
     return 1;
 
-  base::MessageLoopForUI message_loop;
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
   exo::wayland::clients::SubSurfaceClient client;
   client.Run(params);
   return 1;

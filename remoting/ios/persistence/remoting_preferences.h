@@ -11,9 +11,11 @@
 
 typedef NSString* RemotingFlag NS_STRING_ENUM;
 extern RemotingFlag const RemotingFlagUseWebRTC;
+extern RemotingFlag const RemotingFlagLastSeenNotificationMessageId;
+extern RemotingFlag const RemotingFlagNotificationUiState;
 
 // |RemotingPreferences| is the centralized place to ask for information about
-// defaults and prefrences.
+// defaults and preferences.
 @interface RemotingPreferences : NSObject
 
 - (HostSettings*)settingsForHost:(NSString*)hostId;

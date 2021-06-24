@@ -13,8 +13,9 @@
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "base/time/default_clock.h"
+#include "components/feed/core/shared_prefs/pref_names.h"
 #include "components/ntp_snippets/category_info.h"
 #include "components/ntp_snippets/category_rankers/constant_category_ranker.h"
 #include "components/ntp_snippets/category_rankers/fake_category_ranker.h"
@@ -22,7 +23,6 @@
 #include "components/ntp_snippets/category_status.h"
 #include "components/ntp_snippets/content_suggestion.h"
 #include "components/ntp_snippets/content_suggestions_provider.h"
-#include "components/ntp_snippets/logger.h"
 #include "components/ntp_snippets/mock_content_suggestions_provider.h"
 #include "components/ntp_snippets/remote/remote_suggestions_provider_impl.h"
 #include "components/ntp_snippets/user_classifier.h"
@@ -146,6 +146,7 @@ class ContentSuggestionsServiceTest : public testing::Test {
     ContentSuggestionsService::RegisterProfilePrefs(pref_service_->registry());
     RemoteSuggestionsProviderImpl::RegisterProfilePrefs(
         pref_service_->registry());
+    feed::prefs::RegisterFeedSharedProfilePrefs(pref_service_->registry());
     UserClassifier::RegisterProfilePrefs(pref_service_->registry());
   }
 
@@ -161,7 +162,7 @@ class ContentSuggestionsServiceTest : public testing::Test {
         enabled, /*identity_manager=*/nullptr, /*history_service=*/nullptr,
         /*large_icon_service=*/nullptr, pref_service_.get(),
         std::move(category_ranker_), std::move(user_classifier),
-        /*scheduler=*/nullptr, /*debug_logger=*/std::make_unique<Logger>());
+        /*scheduler=*/nullptr);
   }
 
   void ResetService() {
@@ -260,7 +261,7 @@ TEST_F(ContentSuggestionsServiceTest, ShouldRedirectFetchSuggestionImage) {
 
 TEST_F(ContentSuggestionsServiceTest,
        ShouldCallbackEmptyImageForUnavailableProvider) {
-  base::test::ScopedTaskEnvironment scoped_task_environment;
+  base::test::SingleThreadTaskEnvironment task_environment;
 
   base::RunLoop run_loop;
   // Assuming there will never be a category with the id below.
@@ -352,7 +353,7 @@ TEST_F(ContentSuggestionsServiceTest,
        ShouldNotReturnCategoryInfoForNonexistentCategory) {
   Category category =
       Category::FromKnownCategory(KnownCategories::READING_LIST);
-  base::Optional<CategoryInfo> result = service()->GetCategoryInfo(category);
+  absl::optional<CategoryInfo> result = service()->GetCategoryInfo(category);
   EXPECT_FALSE(result.has_value());
 }
 
@@ -362,7 +363,7 @@ TEST_F(ContentSuggestionsServiceTest, ShouldReturnCategoryInfo) {
   MockContentSuggestionsProvider* provider =
       MakeRegisteredMockProvider(category);
   provider->FireCategoryStatusChangedWithCurrentStatus(category);
-  base::Optional<CategoryInfo> result = service()->GetCategoryInfo(category);
+  absl::optional<CategoryInfo> result = service()->GetCategoryInfo(category);
   ASSERT_TRUE(result.has_value());
   CategoryInfo expected = provider->GetCategoryInfo(category);
   const CategoryInfo& actual = result.value();
@@ -476,7 +477,7 @@ TEST_F(ContentSuggestionsServiceTest,
   base::Time begin = base::Time::FromTimeT(123),
              end = base::Time::FromTimeT(456);
   EXPECT_CALL(*raw_mock_ranker, ClearHistory(begin, end));
-  base::Callback<bool(const GURL& url)> filter;
+  base::RepeatingCallback<bool(const GURL& url)> filter;
   service()->ClearHistory(begin, end, filter);
 }
 

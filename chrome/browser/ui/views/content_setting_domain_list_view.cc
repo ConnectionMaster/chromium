@@ -7,15 +7,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/views/bulleted_label_list_view.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/canvas.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 
 ContentSettingDomainListView::ContentSettingDomainListView(
-    const base::string16& title,
+    const std::u16string& title,
     const std::set<std::string>& domains) {
-  SetLayoutManager(
-      std::make_unique<views::BoxLayout>(views::BoxLayout::kVertical));
+  SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical));
 
   auto title_label = std::make_unique<views::Label>(title);
   title_label->SetMultiLine(true);
@@ -27,3 +28,6 @@ ContentSettingDomainListView::ContentSettingDomainListView(
     list_view->AddLabel(base::UTF8ToUTF16(domain));
   AddChildView(list_view.release());
 }
+
+BEGIN_METADATA(ContentSettingDomainListView, views::View)
+END_METADATA

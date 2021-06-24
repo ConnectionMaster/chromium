@@ -4,25 +4,38 @@
 
 #include "ash/shelf/shelf_button.h"
 
-#include "ash/public/cpp/ash_constants.h"
-#include "ash/shelf/ink_drop_button_listener.h"
-#include "ash/shelf/shelf_constants.h"
-#include "ash/shelf/shelf_view.h"
+#include "ash/constants/ash_constants.h"
+#include "ash/public/cpp/shelf_config.h"
+#include "ash/shelf/shelf.h"
+#include "ash/shelf/shelf_button_delegate.h"
+#include "ash/style/default_color_constants.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/ink_drop_impl.h"
 
 namespace ash {
 
-ShelfButton::ShelfButton(ShelfView* shelf_view)
-    : Button(nullptr), shelf_view_(shelf_view), listener_(shelf_view) {
-  DCHECK(shelf_view_);
-  set_hide_ink_drop_when_showing_context_menu(false);
-  set_ink_drop_base_color(kShelfInkDropBaseColor);
-  set_ink_drop_visible_opacity(kShelfInkDropVisibleOpacity);
-  SetFocusBehavior(FocusBehavior::ACCESSIBLE_ONLY);
-  SetInkDropMode(InkDropMode::ON_NO_GESTURE_HANDLER);
+ShelfButton::ShelfButton(Shelf* shelf,
+                         ShelfButtonDelegate* shelf_button_delegate)
+    : Button(Button::PressedCallback()),
+      shelf_(shelf),
+      shelf_button_delegate_(shelf_button_delegate) {
+  DCHECK(shelf_button_delegate_);
+  SetHideInkDropWhenShowingContextMenu(false);
+  const AshColorProvider::RippleAttributes ripple_attributes =
+      AshColorProvider::Get()->GetRippleAttributes();
+  views::InkDrop::Get(this)->SetBaseColor(ripple_attributes.base_color);
+  views::InkDrop::Get(this)->SetVisibleOpacity(
+      ripple_attributes.inkdrop_opacity);
+  SetFocusBehavior(FocusBehavior::ALWAYS);
+  views::InkDrop::Get(this)->SetMode(
+      views::InkDropHost::InkDropMode::ON_NO_GESTURE_HANDLER);
   SetFocusPainter(views::Painter::CreateSolidFocusPainter(
-      kShelfFocusBorderColor, kFocusBorderThickness, gfx::InsetsF()));
+      ShelfConfig::Get()->shelf_focus_border_color(), kFocusBorderThickness,
+      gfx::InsetsF()));
+  views::InkDrop::UseInkDropForSquareRipple(views::InkDrop::Get(this),
+                                            /*highlight_on_hover=*/false);
 }
 
 ShelfButton::~ShelfButton() = default;
@@ -34,74 +47,40 @@ const char* ShelfButton::GetClassName() const {
   return "ash/ShelfButton";
 }
 
-bool ShelfButton::OnMousePressed(const ui::MouseEvent& event) {
-  Button::OnMousePressed(event);
-  shelf_view_->PointerPressedOnButton(this, ShelfView::MOUSE, event);
-  return true;
-}
-
-void ShelfButton::OnMouseReleased(const ui::MouseEvent& event) {
-  Button::OnMouseReleased(event);
-  // PointerReleasedOnButton deletes the ShelfAppButton when user drags a pinned
-  // running app from shelf.
-  shelf_view_->PointerReleasedOnButton(this, ShelfView::MOUSE, false);
-  // WARNING: we may have been deleted.
-}
-
-void ShelfButton::OnMouseCaptureLost() {
-  shelf_view_->PointerReleasedOnButton(this, ShelfView::MOUSE, true);
-  Button::OnMouseCaptureLost();
-}
-
-bool ShelfButton::OnMouseDragged(const ui::MouseEvent& event) {
-  Button::OnMouseDragged(event);
-  shelf_view_->PointerDraggedOnButton(this, ShelfView::MOUSE, event);
-  return true;
+gfx::Rect ShelfButton::GetAnchorBoundsInScreen() const {
+  gfx::Rect bounds = Button::GetAnchorBoundsInScreen();
+  // Padding used to position bubbles offset from the shelf. Note that this
+  // includes Shelf tooltip.
+  constexpr int kAnchorOffset = 6;
+  bounds.Inset(gfx::Insets(-kAnchorOffset));
+  return bounds;
 }
 
 void ShelfButton::AboutToRequestFocusFromTabTraversal(bool reverse) {
-  shelf_view_->OnShelfButtonAboutToRequestFocusFromTabTraversal(this, reverse);
+  shelf_button_delegate_->OnShelfButtonAboutToRequestFocusFromTabTraversal(
+      this, reverse);
 }
 
 // Do not remove this function to avoid unnecessary ChromeVox announcement
 // triggered by Button::GetAccessibleNodeData. (See https://crbug.com/932200)
 void ShelfButton::GetAccessibleNodeData(ui::AXNodeData* node_data) {
   node_data->role = ax::mojom::Role::kButton;
-  const base::string16 title = shelf_view_->GetTitleForView(this);
-  node_data->SetName(title.empty() ? GetAccessibleName() : title);
-}
-
-void ShelfButton::OnFocus() {
-  shelf_view_->set_focused_button(this);
-  Button::OnFocus();
-}
-
-void ShelfButton::OnBlur() {
-  shelf_view_->set_focused_button(nullptr);
-  Button::OnBlur();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // views::Button
 
 void ShelfButton::NotifyClick(const ui::Event& event) {
+  // Pressing a shelf button in the auto-hide shelf should not do anything.
+  // The event can still be received by the auto-hide shelf since we reserved
+  // a portion of the auto-hide shelf within the screen bounds.
+  if (!shelf_->IsVisible())
+    return;
+
   Button::NotifyClick(event);
-  if (listener_)
-    listener_->ButtonPressed(this, event, GetInkDrop());
-}
-
-bool ShelfButton::ShouldEnterPushedState(const ui::Event& event) {
-  if (!shelf_view_->ShouldEventActivateButton(this, event))
-    return false;
-
-  return Button::ShouldEnterPushedState(event);
-}
-
-std::unique_ptr<views::InkDrop> ShelfButton::CreateInkDrop() {
-  std::unique_ptr<views::InkDropImpl> ink_drop =
-      Button::CreateDefaultInkDropImpl();
-  ink_drop->SetShowHighlightOnHover(false);
-  return std::move(ink_drop);
+  if (shelf_button_delegate_)
+    shelf_button_delegate_->ButtonPressed(
+        /*sender=*/this, event, views::InkDrop::Get(this)->GetInkDrop());
 }
 
 }  // namespace ash

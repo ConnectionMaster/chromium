@@ -10,40 +10,18 @@
 #include "ash/login/ui/lock_screen.h"
 #include "ash/login/ui/login_test_utils.h"
 #include "ash/public/cpp/shell_window_ids.h"
-#include "ash/public/interfaces/tray_action.mojom.h"
+#include "ash/public/mojom/tray_action.mojom.h"
 #include "ash/session/test_session_controller_client.h"
 #include "ash/shell.h"
-#include "ash/wallpaper/wallpaper_controller.h"
-#include "base/bind.h"
+#include "ash/wallpaper/wallpaper_controller_impl.h"
 #include "base/strings/strcat.h"
-#include "services/ws/public/cpp/property_type_converters.h"
-#include "services/ws/public/mojom/window_manager.mojom.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 
 namespace ash {
 
-// A WidgetDelegate which ensures that |initially_focused| gets focus.
-class LoginTestBase::WidgetDelegate : public views::WidgetDelegate {
- public:
-  explicit WidgetDelegate(views::View* content) : content_(content) {}
-  ~WidgetDelegate() override = default;
-
-  // views::WidgetDelegate:
-  void DeleteDelegate() override { delete this; }
-  views::View* GetInitiallyFocusedView() override { return content_; }
-  views::Widget* GetWidget() override { return content_->GetWidget(); }
-  const views::Widget* GetWidget() const override {
-    return content_->GetWidget();
-  }
-
- private:
-  views::View* content_;
-
-  DISALLOW_COPY_AND_ASSIGN(WidgetDelegate);
-};
-
-LoginTestBase::LoginTestBase() = default;
+LoginTestBase::LoginTestBase()
+    : AshTestBase(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
 LoginTestBase::~LoginTestBase() = default;
 
@@ -52,14 +30,9 @@ void LoginTestBase::ShowLockScreen() {
       session_manager::SessionState::LOCKED);
   // The lock screen can't be shown without a wallpaper.
   Shell::Get()->wallpaper_controller()->ShowDefaultWallpaperForTesting();
-
-  base::Optional<bool> result;
-  Shell::Get()->login_screen_controller()->ShowLockScreen(base::BindOnce(
-      [](base::Optional<bool>* result, bool did_show) { *result = did_show; },
-      &result));
+  Shell::Get()->login_screen_controller()->ShowLockScreen();
+  // Allow focus to reach the appropriate View.
   base::RunLoop().RunUntilIdle();
-  ASSERT_TRUE(result.has_value());
-  ASSERT_EQ(*result, true);
 }
 
 void LoginTestBase::ShowLoginScreen() {
@@ -67,14 +40,9 @@ void LoginTestBase::ShowLoginScreen() {
       session_manager::SessionState::LOGIN_PRIMARY);
   // The login screen can't be shown without a wallpaper.
   Shell::Get()->wallpaper_controller()->ShowDefaultWallpaperForTesting();
-
-  base::Optional<bool> result;
-  Shell::Get()->login_screen_controller()->ShowLoginScreen(base::BindOnce(
-      [](base::Optional<bool>* result, bool did_show) { *result = did_show; },
-      &result));
+  Shell::Get()->login_screen_controller()->ShowLoginScreen();
+  // Allow focus to reach the appropriate View.
   base::RunLoop().RunUntilIdle();
-  ASSERT_TRUE(result.has_value());
-  ASSERT_EQ(*result, true);
 }
 
 void LoginTestBase::SetWidget(std::unique_ptr<views::Widget> widget) {
@@ -88,7 +56,10 @@ std::unique_ptr<views::Widget> LoginTestBase::CreateWidgetWithContent(
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params.bounds = gfx::Rect(0, 0, 800, 800);
-  params.delegate = new WidgetDelegate(content);
+
+  params.delegate = new views::WidgetDelegate();
+  params.delegate->SetInitiallyFocusedView(content);
+  params.delegate->SetOwnedByWidget(true);
 
   // Set the widget to the lock screen container, since a test may change the
   // session state to locked, which will hide all widgets not associated with
@@ -97,7 +68,7 @@ std::unique_ptr<views::Widget> LoginTestBase::CreateWidgetWithContent(
                                       kShellWindowId_LockScreenContainer);
 
   auto new_widget = std::make_unique<views::Widget>();
-  new_widget->Init(params);
+  new_widget->Init(std::move(params));
   new_widget->SetContentsView(content);
   new_widget->Show();
   return new_widget;
@@ -111,7 +82,7 @@ void LoginTestBase::SetUserCount(size_t count) {
 
   users_.erase(users_.begin() + count, users_.end());
   // Notify any listeners that the user count has changed.
-  DataDispatcher()->NotifyUsers(users_);
+  DataDispatcher()->SetUserList(users_);
 }
 
 void LoginTestBase::AddUsers(size_t num_users) {
@@ -122,12 +93,12 @@ void LoginTestBase::AddUsers(size_t num_users) {
   }
 
   // Notify any listeners that the user count has changed.
-  DataDispatcher()->NotifyUsers(users_);
+  DataDispatcher()->SetUserList(users_);
 }
 
 void LoginTestBase::AddUserByEmail(const std::string& email) {
   users_.push_back(CreateUser(email));
-  DataDispatcher()->NotifyUsers(users_);
+  DataDispatcher()->SetUserList(users_);
 }
 
 void LoginTestBase::AddPublicAccountUsers(size_t num_public_accounts) {
@@ -138,7 +109,7 @@ void LoginTestBase::AddPublicAccountUsers(size_t num_public_accounts) {
   }
 
   // Notify any listeners that the user count has changed.
-  DataDispatcher()->NotifyUsers(users_);
+  DataDispatcher()->SetUserList(users_);
 }
 
 void LoginTestBase::AddChildUsers(size_t num_users) {
@@ -149,12 +120,21 @@ void LoginTestBase::AddChildUsers(size_t num_users) {
   }
 
   // Notify any listeners that the user count has changed.
-  DataDispatcher()->NotifyUsers(users_);
+  DataDispatcher()->SetUserList(users_);
+}
+
+void LoginTestBase::RemoveUser(const AccountId& account_id) {
+  for (auto it = users().cbegin(); it != users().cend(); ++it)
+    if (it->basic_user_info.account_id == account_id) {
+      users().erase(it);
+      DataDispatcher()->SetUserList(users());
+      return;
+    }
+  ADD_FAILURE() << "User not found: " << account_id.Serialize();
 }
 
 LoginDataDispatcher* LoginTestBase::DataDispatcher() {
-  return LockScreen::HasInstance() ? LockScreen::Get()->data_dispatcher()
-                                   : &data_dispatcher_;
+  return Shell::Get()->login_screen_controller()->data_dispatcher();
 }
 
 void LoginTestBase::TearDown() {

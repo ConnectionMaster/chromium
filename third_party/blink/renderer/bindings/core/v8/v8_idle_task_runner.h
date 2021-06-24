@@ -32,7 +32,6 @@
 #include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "gin/public/v8_idle_task_runner.h"
-#include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
@@ -52,7 +51,7 @@ class V8IdleTaskRunner : public gin::V8IdleTaskRunner {
     scheduler_->PostIdleTask(
         FROM_HERE,
         WTF::Bind(
-            [](std::unique_ptr<v8::IdleTask> task, TimeTicks deadline) {
+            [](std::unique_ptr<v8::IdleTask> task, base::TimeTicks deadline) {
               task->Run(deadline.since_origin().InSecondsF());
             },
             std::move(task)));
@@ -66,4 +65,4 @@ class V8IdleTaskRunner : public gin::V8IdleTaskRunner {
 
 }  // namespace blink
 
-#endif  // V8Initializer_h
+#endif  // THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_V8_IDLE_TASK_RUNNER_H_

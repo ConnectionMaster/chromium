@@ -13,6 +13,8 @@
 #import "ios/chrome/browser/ui/popup_menu/public/popup_menu_ui_constants.h"
 #import "ios/chrome/browser/ui/table_view/chrome_table_view_styler.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/pointer_interaction_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -27,6 +29,10 @@ const CGFloat kScrollIndicatorVerticalInsets = 11;
 @interface PopupMenuTableViewController ()
 // Whether the -viewDidAppear: callback has been called.
 @property(nonatomic, assign) BOOL viewDidAppear;
+// Tracks reusable cells in memory, which has an upper limit. This is used to
+// ensure that pointer interaction is added only once to a cell.
+@property(nonatomic, strong)
+    NSHashTable<UITableViewCell*>* cellsInMemory API_AVAILABLE(ios(13.4));
 @end
 
 @implementation PopupMenuTableViewController
@@ -38,8 +44,14 @@ const CGFloat kScrollIndicatorVerticalInsets = 11;
 @synthesize viewDidAppear = _viewDidAppear;
 
 - (instancetype)init {
-  return [super initWithTableViewStyle:UITableViewStyleGrouped
-                           appBarStyle:ChromeTableViewControllerStyleNoAppBar];
+  self = [super initWithStyle:UITableViewStyleGrouped];
+  if (self) {
+    if (@available(iOS 13.4, *)) {
+        self.cellsInMemory =
+            [NSHashTable<UITableViewCell*> weakObjectsHashTable];
+    }
+  }
+  return self;
 }
 
 - (void)selectRowAtPoint:(CGPoint)point {
@@ -111,6 +123,7 @@ const CGFloat kScrollIndicatorVerticalInsets = 11;
     }
   }
   [self.tableView reloadData];
+  self.preferredContentSize = [self calculatePreferredContentSize];
 }
 
 - (void)itemsHaveChanged:(NSArray<TableViewItem<PopupMenuItem>*>*)items {
@@ -121,6 +134,7 @@ const CGFloat kScrollIndicatorVerticalInsets = 11;
 
 - (void)viewDidLoad {
   self.styler.tableViewBackgroundColor = nil;
+  self.styler.cellBackgroundColor = [UIColor colorNamed:kBackgroundColor];
   [super viewDidLoad];
   self.tableView.contentInset = UIEdgeInsetsMake(kPopupMenuVerticalInsets, 0,
                                                  kPopupMenuVerticalInsets, 0);
@@ -147,7 +161,13 @@ const CGFloat kScrollIndicatorVerticalInsets = 11;
   }
 }
 
-- (CGSize)preferredContentSize {
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+
+  self.preferredContentSize = [self calculatePreferredContentSize];
+}
+
+- (CGSize)calculatePreferredContentSize {
   CGFloat width = 0;
   CGFloat height = 0;
   for (NSInteger section = 0; section < [self.tableViewModel numberOfSections];
@@ -192,6 +212,21 @@ const CGFloat kScrollIndicatorVerticalInsets = 11;
   TableViewItem<PopupMenuItem>* item =
       [self.tableViewModel itemAtIndexPath:indexPath];
   return [item cellSizeForWidth:self.view.bounds.size.width].height;
+}
+
+#pragma mark - UITableViewDataSource
+
+- (UITableViewCell*)tableView:(UITableView*)tableView
+        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  UITableViewCell* cell = [super tableView:tableView
+                     cellForRowAtIndexPath:indexPath];
+  if (@available(iOS 13.4, *)) {
+      if (![self.cellsInMemory containsObject:cell]) {
+        [cell addInteraction:[[ViewPointerInteraction alloc] init]];
+        [self.cellsInMemory addObject:cell];
+      }
+  }
+  return cell;
 }
 
 #pragma mark - Private

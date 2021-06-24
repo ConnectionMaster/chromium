@@ -6,53 +6,84 @@
  * @fileoverview 'settings-search-engine-dialog' is a component for adding
  * or editing a search engine entry.
  */
-Polymer({
-  is: 'settings-search-engine-dialog',
+import 'chrome://resources/cr_elements/cr_button/cr_button.m.js';
+import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.m.js';
+import 'chrome://resources/cr_elements/cr_input/cr_input.m.js';
 
-  behaviors: [WebUIListenerBehavior],
+import {WebUIListenerBehavior, WebUIListenerBehaviorInterface} from 'chrome://resources/js/web_ui_listener_behavior.m.js';
+import {html, mixinBehaviors, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-  properties: {
+import {loadTimeData} from '../i18n_setup.js';
+
+import {SearchEngine, SearchEnginesBrowserProxy, SearchEnginesBrowserProxyImpl, SearchEnginesInfo} from './search_engines_browser_proxy.js';
+
+
+/**
+ * @constructor
+ * @extends {PolymerElement}
+ * @implements {WebUIListenerBehaviorInterface}
+ */
+const SettingsSearchEngineDialogElementBase =
+    mixinBehaviors([WebUIListenerBehavior], PolymerElement);
+
+/** @polymer */
+class SettingsSearchEngineDialogElement extends
+    SettingsSearchEngineDialogElementBase {
+  static get is() {
+    return 'settings-search-engine-dialog';
+  }
+
+  static get template() {
+    return html`{__html_template__}`;
+  }
+
+  static get properties() {
+    return {
+      /**
+       * The search engine to be edited. If not populated a new search engine
+       * should be added.
+       * @type {?SearchEngine}
+       */
+      model: Object,
+
+      /** @private {string} */
+      searchEngine_: String,
+
+      /** @private {string} */
+      keyword_: String,
+
+      /** @private {string} */
+      queryUrl_: String,
+
+      /** @private {string} */
+      dialogTitle_: String,
+
+      /** @private {string} */
+      actionButtonText_: String,
+
+    };
+  }
+
+  /** @override */
+  constructor() {
+    super();
+
+    /** @private {SearchEnginesBrowserProxy} */
+    this.browserProxy_ = SearchEnginesBrowserProxyImpl.getInstance();
+
     /**
-     * The search engine to be edited. If not populated a new search engine
-     * should be added.
-     * @type {?SearchEngine}
+     * The |modelIndex| to use when a new search engine is added. Must match
+     * with kNewSearchEngineIndex constant specified at
+     * chrome/browser/ui/webui/settings/search_engines_handler.cc
+     * @type {number}
      */
-    model: Object,
-
-    /** @private {string} */
-    searchEngine_: String,
-
-    /** @private {string} */
-    keyword_: String,
-
-    /** @private {string} */
-    queryUrl_: String,
-
-    /** @private {string} */
-    dialogTitle_: String,
-
-    /** @private {string} */
-    actionButtonText_: String,
-  },
-
-  /** @private {settings.SearchEnginesBrowserProxy} */
-  browserProxy_: null,
-
-  /**
-   * The |modelIndex| to use when a new search engine is added. Must match with
-   * kNewSearchEngineIndex constant specified at
-   * chrome/browser/ui/webui/settings/search_engines_handler.cc
-   * @type {number}
-   */
-  DEFAULT_MODEL_INDEX: -1,
+    this.DEFAULT_MODEL_INDEX = -1;
+  }
 
   /** @override */
-  created: function() {
-    this.browserProxy_ = settings.SearchEnginesBrowserProxyImpl.getInstance();
-  },
+  ready() {
+    super.ready();
 
-  /** @override */
-  ready: function() {
     if (this.model) {
       this.dialogTitle_ =
           loadTimeData.getString('searchEnginesEditSearchEngine');
@@ -74,25 +105,28 @@ Polymer({
 
     this.addWebUIListener(
         'search-engines-changed', this.enginesChanged_.bind(this));
-  },
+  }
 
   /** @override */
-  attached: function() {
-    this.async(this.updateActionButtonState_.bind(this));
+  connectedCallback() {
+    super.connectedCallback();
+
+    window.setTimeout(this.updateActionButtonState_.bind(this), 0);
     this.browserProxy_.searchEngineEditStarted(
         this.model ? this.model.modelIndex : this.DEFAULT_MODEL_INDEX);
     this.$.dialog.showModal();
-  },
+  }
 
   /**
    * @param {!SearchEnginesInfo} searchEnginesInfo
    * @private
    */
-  enginesChanged_: function(searchEnginesInfo) {
+  enginesChanged_(searchEnginesInfo) {
     if (this.model) {
-      const engineWasRemoved = ['defaults', 'others', 'extensions'].every(
-          engineType =>
-              searchEnginesInfo[engineType].every(e => e.id != this.model.id));
+      const engineWasRemoved =
+          ['defaults', 'actives', 'others', 'extensions'].every(
+              engineType => searchEnginesInfo[engineType].every(
+                  e => e.id !== this.model.id));
       if (engineWasRemoved) {
         this.cancel_();
         return;
@@ -101,28 +135,28 @@ Polymer({
 
     [this.$.searchEngine, this.$.keyword, this.$.queryUrl].forEach(
         element => this.validateElement_(element));
-  },
+  }
 
   /** @private */
-  cancel_: function() {
-    this.$.dialog.cancel();
-  },
+  cancel_() {
+    /** @type {!CrDialogElement} */ (this.$.dialog).cancel();
+  }
 
   /** @private */
-  onActionButtonTap_: function() {
+  onActionButtonTap_() {
     this.browserProxy_.searchEngineEditCompleted(
         this.searchEngine_, this.keyword_, this.queryUrl_);
     this.$.dialog.close();
-  },
+  }
 
   /**
    * @param {!Element} inputElement
    * @private
    */
-  validateElement_: function(inputElement) {
+  validateElement_(inputElement) {
     // If element is empty, disable the action button, but don't show the red
     // invalid message.
-    if (inputElement.value == '') {
+    if (inputElement.value === '') {
       inputElement.invalid = false;
       this.updateActionButtonState_();
       return;
@@ -134,24 +168,27 @@ Polymer({
           inputElement.invalid = !isValid;
           this.updateActionButtonState_();
         });
-  },
+  }
 
   /**
    * @param {!Event} event
    * @private
    */
-  validate_: function(event) {
+  validate_(event) {
     const inputElement = /** @type {!Element} */ (event.target);
     this.validateElement_(inputElement);
-  },
+  }
 
   /** @private */
-  updateActionButtonState_: function() {
+  updateActionButtonState_() {
     const allValid = [
       this.$.searchEngine, this.$.keyword, this.$.queryUrl
     ].every(function(inputElement) {
       return !inputElement.invalid && inputElement.value.length > 0;
     });
     this.$.actionButton.disabled = !allValid;
-  },
-});
+  }
+}
+
+customElements.define(
+    SettingsSearchEngineDialogElement.is, SettingsSearchEngineDialogElement);

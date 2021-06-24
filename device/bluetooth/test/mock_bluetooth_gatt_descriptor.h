@@ -14,7 +14,7 @@
 #include "base/macros.h"
 #include "device/bluetooth/bluetooth_remote_gatt_characteristic.h"
 #include "device/bluetooth/bluetooth_remote_gatt_descriptor.h"
-#include "device/bluetooth/bluetooth_uuid.h"
+#include "device/bluetooth/public/cpp/bluetooth_uuid.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace device {
@@ -27,23 +27,28 @@ class MockBluetoothGattDescriptor : public BluetoothRemoteGattDescriptor {
       MockBluetoothGattCharacteristic* characteristic,
       const std::string& identifier,
       const BluetoothUUID& uuid,
-      bool is_local,
       BluetoothRemoteGattCharacteristic::Permissions permissions);
   ~MockBluetoothGattDescriptor() override;
 
   MOCK_CONST_METHOD0(GetIdentifier, std::string());
   MOCK_CONST_METHOD0(GetUUID, BluetoothUUID());
-  MOCK_CONST_METHOD0(IsLocal, bool());
   MOCK_CONST_METHOD0(GetValue, const std::vector<uint8_t>&());
   MOCK_CONST_METHOD0(GetCharacteristic, BluetoothRemoteGattCharacteristic*());
   MOCK_CONST_METHOD0(GetPermissions,
                      BluetoothRemoteGattCharacteristic::Permissions());
-  MOCK_METHOD2(ReadRemoteDescriptor,
-               void(const ValueCallback&, const ErrorCallback&));
-  MOCK_METHOD3(WriteRemoteDescriptor,
+  void ReadRemoteDescriptor(ValueCallback c) override {
+    ReadRemoteDescriptor_(c);
+  }
+  MOCK_METHOD1(ReadRemoteDescriptor_, void(ValueCallback&));
+  void WriteRemoteDescriptor(const std::vector<uint8_t>& v,
+                             base::OnceClosure c,
+                             ErrorCallback ec) override {
+    WriteRemoteDescriptor_(v, c, ec);
+  }
+  MOCK_METHOD3(WriteRemoteDescriptor_,
                void(const std::vector<uint8_t>&,
-                    const base::Closure&,
-                    const ErrorCallback&));
+                    base::OnceClosure&,
+                    ErrorCallback&));
 
  private:
   DISALLOW_COPY_AND_ASSIGN(MockBluetoothGattDescriptor);

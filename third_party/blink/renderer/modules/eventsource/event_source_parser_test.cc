@@ -35,10 +35,8 @@ struct EventOrReconnectionTimeSetting {
   const uint64_t reconnection_time;
 };
 
-class Client : public GarbageCollectedFinalized<Client>,
+class Client : public GarbageCollected<Client>,
                public EventSourceParser::Client {
-  USING_GARBAGE_COLLECTED_MIXIN(Client);
-
  public:
   ~Client() override = default;
   const Vector<EventOrReconnectionTimeSetting>& Events() const {
@@ -57,10 +55,8 @@ class Client : public GarbageCollectedFinalized<Client>,
   Vector<EventOrReconnectionTimeSetting> events_;
 };
 
-class StoppingClient : public GarbageCollectedFinalized<StoppingClient>,
+class StoppingClient : public GarbageCollected<StoppingClient>,
                        public EventSourceParser::Client {
-  USING_GARBAGE_COLLECTED_MIXIN(StoppingClient);
-
  public:
   ~StoppingClient() override = default;
   const Vector<EventOrReconnectionTimeSetting>& Events() const {
@@ -77,7 +73,7 @@ class StoppingClient : public GarbageCollectedFinalized<StoppingClient>,
     events_.push_back(EventOrReconnectionTimeSetting(reconnection_time));
   }
 
-  void Trace(blink::Visitor* visitor) override {
+  void Trace(Visitor* visitor) const override {
     visitor->Trace(parser_);
     EventSourceParser::Client::Trace(visitor);
   }

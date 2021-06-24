@@ -7,8 +7,6 @@
 
 #include <stdint.h>
 
-#include <memory>
-
 #include "base/compiler_specific.h"
 #include "base/containers/circular_deque.h"
 #include "base/macros.h"
@@ -20,7 +18,7 @@
 #include "ppapi/host/host_message_context.h"
 #include "ppapi/shared_impl/media_stream_audio_track_shared.h"
 #include "third_party/blink/public/platform/modules/mediastream/web_media_stream_audio_sink.h"
-#include "third_party/blink/public/platform/web_media_stream_track.h"
+#include "third_party/blink/public/platform/modules/mediastream/web_media_stream_track.h"
 
 namespace base {
 class SingleThreadTaskRunner;
@@ -136,7 +134,7 @@ class PepperMediaStreamAudioTrackHost : public PepperMediaStreamTrackHostBase {
     // Pending |Configure()| reply context.
     ppapi::host::ReplyMessageContext pending_configure_reply_;
 
-    base::WeakPtrFactory<AudioSink> weak_factory_;
+    base::WeakPtrFactory<AudioSink> weak_factory_{this};
 
     DISALLOW_COPY_AND_ASSIGN(AudioSink);
   };

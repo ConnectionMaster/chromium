@@ -7,8 +7,10 @@
 
 #include <memory>
 
+#include "ash/wm/splitview/split_view_controller.h"
 #include "ash/wm/window_state.h"
 #include "base/macros.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace ash {
 class TabletModeWindowManager;
@@ -17,10 +19,10 @@ class TabletModeWindowManager;
 // states to minimized and maximized. If a window cannot be maximized it will be
 // set to normal. If a window cannot fill the entire workspace it will be
 // centered within the workspace.
-class TabletModeWindowState : public wm::WindowState::State {
+class TabletModeWindowState : public WindowState::State {
  public:
   // Called when the window position might need to be updated.
-  static void UpdateWindowPosition(wm::WindowState* window_state, bool animate);
+  static void UpdateWindowPosition(WindowState* window_state, bool animate);
 
   // The |window|'s state object will be modified to use this new window mode
   // state handler. |snap| is for carrying over a snapped state from clamshell
@@ -41,50 +43,58 @@ class TabletModeWindowState : public wm::WindowState::State {
   void set_ignore_wm_events(bool ignore) { ignore_wm_events_ = ignore; }
 
   // Leaves the tablet mode by reverting to previous state object.
-  void LeaveTabletMode(wm::WindowState* window_state, bool was_in_overview);
+  void LeaveTabletMode(WindowState* window_state, bool was_in_overview);
 
   // WindowState::State overrides:
-  void OnWMEvent(wm::WindowState* window_state,
-                 const wm::WMEvent* event) override;
+  void OnWMEvent(WindowState* window_state, const WMEvent* event) override;
 
-  mojom::WindowStateType GetType() const override;
-  void AttachState(wm::WindowState* window_state,
-                   wm::WindowState::State* previous_state) override;
-  void DetachState(wm::WindowState* window_state) override;
+  chromeos::WindowStateType GetType() const override;
+  void AttachState(WindowState* window_state,
+                   WindowState::State* previous_state) override;
+  void DetachState(WindowState* window_state) override;
 
-  wm::WindowState::State* old_state() { return old_state_.get(); }
+  gfx::Rect old_window_bounds_in_screen() const {
+    return old_window_bounds_in_screen_;
+  }
+  WindowState::State* old_state() { return old_state_.get(); }
 
  private:
   // Updates the window to |new_state_type| and resulting bounds:
   // Either full screen, maximized centered or minimized. If the state does not
   // change, only the bounds will be changed. If |animate| is set, the bound
   // change get animated.
-  void UpdateWindow(wm::WindowState* window_state,
-                    mojom::WindowStateType new_state_type,
+  void UpdateWindow(WindowState* window_state,
+                    chromeos::WindowStateType new_state_type,
                     bool animate);
 
   // Depending on the capabilities of the window we either return
-  // |WindowStateType::MAXIMIZED| or |WindowStateType::NORMAL|.
-  mojom::WindowStateType GetMaximizedOrCenteredWindowType(
-      wm::WindowState* window_state);
+  // |WindowStateType::kMaximized| or |WindowStateType::kNormal|.
+  chromeos::WindowStateType GetMaximizedOrCenteredWindowType(
+      WindowState* window_state);
 
-  // If |target_state| is LEFT/RIGHT_SNAPPED and the window can be snapped,
-  // returns |target_state|. Otherwise depending on the capabilities of the
-  // window either returns |WindowStateType::MAXIMIZED| or
-  // |WindowStateType::NORMAL|.
-  mojom::WindowStateType GetSnappedWindowStateType(
-      wm::WindowState* window_state,
-      mojom::WindowStateType target_state);
+  // If |target_state| is PRIMARY/SECONDARY_SNAPPED and the window can be
+  // snapped, returns |target_state|. Otherwise depending on the capabilities
+  // of the window either returns |WindowStateType::kMaximized| or
+  // |WindowStateType::kNormal|.
+  chromeos::WindowStateType GetSnappedWindowStateType(
+      WindowState* window_state,
+      chromeos::WindowStateType target_state);
 
   // Updates the bounds to the maximum possible bounds according to the current
   // window state. If |animated| is set we animate the change.
-  void UpdateBounds(wm::WindowState* window_state, bool animated);
+  void UpdateBounds(WindowState* window_state, bool animated);
 
-  // True if |window| is the top window in BuildWindowForCycleList.
-  bool IsTopWindow(aura::Window* window);
+  // Handles Alt+[ if |snap_position| is |SplitViewController::LEFT|; handles
+  // Alt+] if |snap_position| is |SplitViewController::RIGHT|.
+  void CycleTabletSnap(WindowState* window_state,
+                       SplitViewController::SnapPosition snap_position);
 
-  // The original state object of the window.
-  std::unique_ptr<wm::WindowState::State> old_state_;
+  // Snap the window in tablet split view if it can be snapped.
+  void DoTabletSnap(WindowState* window_state, WMEventType snap_event_type);
+
+  // The original bounds and state object of the window.
+  gfx::Rect old_window_bounds_in_screen_;
+  std::unique_ptr<WindowState::State> old_state_;
 
   // The window whose WindowState owns this instance.
   aura::Window* window_;
@@ -95,7 +105,7 @@ class TabletModeWindowState : public wm::WindowState::State {
   // The state type to be established in AttachState(), unless
   // previous_state->GetType() is MAXIMIZED, MINIMIZED, FULLSCREEN, PINNED, or
   // TRUSTED_PINNED.
-  mojom::WindowStateType state_type_on_attach_;
+  chromeos::WindowStateType state_type_on_attach_;
 
   // Whether to animate in case of a bounds update when switching to
   // |state_type_on_attach_|.
@@ -103,7 +113,7 @@ class TabletModeWindowState : public wm::WindowState::State {
 
   // The current state type. Due to the nature of this state, this can only be
   // WM_STATE_TYPE{NORMAL, MINIMIZED, MAXIMIZED}.
-  mojom::WindowStateType current_state_type_;
+  chromeos::WindowStateType current_state_type_;
 
   // If true, the state will not process events.
   bool ignore_wm_events_ = false;

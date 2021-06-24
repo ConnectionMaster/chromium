@@ -26,15 +26,8 @@ void StubOfflinePageModel::SavePage(
 void StubOfflinePageModel::AddPage(const OfflinePageItem& page,
                                    AddPageCallback callback) {}
 void StubOfflinePageModel::MarkPageAccessed(int64_t offline_id) {}
-void StubOfflinePageModel::DeletePagesByOfflineId(
-    const std::vector<int64_t>& offline_ids,
-    DeletePageCallback callback) {}
-void StubOfflinePageModel::DeletePagesByClientIds(
-    const std::vector<ClientId>& client_ids,
-    DeletePageCallback callback) {}
-void StubOfflinePageModel::DeletePagesByClientIdsAndOrigin(
-    const std::vector<ClientId>& client_ids,
-    const std::string& origin,
+void StubOfflinePageModel::DeletePagesWithCriteria(
+    const PageCriteria& criteria,
     DeletePageCallback callback) {}
 void StubOfflinePageModel::DeleteCachedPagesByURLPredicate(
     const UrlPredicate& predicate,
@@ -61,9 +54,8 @@ void StubOfflinePageModel::GetVisualsAvailability(
     base::OnceCallback<void(VisualsAvailability)> callback) {}
 void StubOfflinePageModel::PublishInternalArchive(
     const OfflinePageItem& offline_page,
-    std::unique_ptr<OfflinePageArchiver> archiver,
     PublishPageCallback publish_done_callback) {}
-const base::FilePath& StubOfflinePageModel::GetInternalArchiveDirectory(
+const base::FilePath& StubOfflinePageModel::GetArchiveDirectory(
     const std::string& name_space) const {
   return archive_directory_;
 }
@@ -72,9 +64,6 @@ bool StubOfflinePageModel::IsArchiveInInternalDir(
   return archive_directory_.IsParent(file_path);
 }
 
-ClientPolicyController* StubOfflinePageModel::GetPolicyController() {
-  return &policy_controller_;
-}
 OfflineEventLogger* StubOfflinePageModel::GetLogger() {
   return nullptr;
 }

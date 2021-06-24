@@ -4,10 +4,15 @@
 
 #include "chrome/browser/supervised_user/supervised_user_features.h"
 
+#include "base/feature_list.h"
+
 namespace supervised_users {
 
-const base::Feature kSupervisedUserInitiatedExtensionInstall{
-    "SupervisedUserInitiatedExtensionInstall",
-    base::FEATURE_DISABLED_BY_DEFAULT};
+const base::Feature kEduCoexistenceFlowV2{"EduCoexistenceV2",
+                                          base::FEATURE_ENABLED_BY_DEFAULT};
 
+bool IsEduCoexistenceFlowV2Enabled() {
+  return base::FeatureList::IsEnabled(kEduCoexistenceFlowV2);
 }
+
+}  // namespace supervised_users

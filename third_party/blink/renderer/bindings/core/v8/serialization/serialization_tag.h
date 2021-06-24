@@ -43,18 +43,22 @@ enum SerializationTag {
                           // transferred MojoHandle.
   kBlobTag = 'b',  // uuid:WebCoreString, type:WebCoreString, size:uint64_t ->
                    // Blob (ref)
-  kBlobIndexTag = 'i',      // index:int32_t -> Blob (ref)
-  kFileTag = 'f',           // file:RawFile -> File (ref)
-  kFileIndexTag = 'e',      // index:int32_t -> File (ref)
-  kDOMFileSystemTag = 'd',  // type:int32_t, name:WebCoreString,
-                            // uuid:WebCoreString -> FileSystem (ref)
+  kBlobIndexTag = 'i',             // index:int32_t -> Blob (ref)
+  kFileTag = 'f',                  // file:RawFile -> File (ref)
+  kFileIndexTag = 'e',             // index:int32_t -> File (ref)
+  kDOMFileSystemTag = 'd',         // type:int32_t, name:WebCoreString,
+                                   // uuid:WebCoreString -> FileSystem (ref)
+  kFileSystemFileHandleTag = 'n',  // name:WebCoreString, index:uint32_t
+                                   // -> FileSystemFileHandle (ref)
+  kFileSystemDirectoryHandleTag = 'N',  // name:WebCoreString, index:uint32_t ->
+                                        // FileSystemDirectoryHandle (ref)
   kFileListTag =
       'l',  // length:uint32_t, files:RawFile[length] -> FileList (ref)
   kFileListIndexTag =
       'L',  // length:uint32_t, files:int32_t[length] -> FileList (ref)
   kImageDataTag = '#',    // tags terminated by ImageSerializationTag::kEnd (see
                           // SerializedColorParams.h), width:uint32_t,
-                          // height:uint32_t, pixelDataLength:uint32_t,
+                          // height:uint32_t, pixelDataLength:uint64_t,
                           // data:byte[pixelDataLength]
                           // -> ImageData (ref)
   kImageBitmapTag = 'g',  // tags terminated by ImageSerializationTag::kEnd (see
@@ -64,7 +68,8 @@ enum SerializationTag {
                           // -> ImageBitmap (ref)
   kImageBitmapTransferTag =
       'G',  // index:uint32_t -> ImageBitmap. For ImageBitmap transfer
-  kOffscreenCanvasTransferTag = 'H',  // index, width, height, id:uint32_t ->
+  kOffscreenCanvasTransferTag = 'H',  // index, width, height, id,
+                                      // filter_quality::uint32_t ->
                                       // OffscreenCanvas. For OffscreenCanvas
                                       // transfer
   kReadableStreamTransferTag = 'r',   // index:uint32_t
@@ -96,18 +101,23 @@ enum SerializationTag {
   //                     namedCurve:uint32_t
   kRTCCertificateTag = 'k',  // length:uint32_t, pemPrivateKey:WebCoreString,
                              // pemCertificate:WebCoreString
-  kDetectedBarcodeTag =
-      'B',  // raw_value:WebCoreString, bounding_box:DOMRectReadOnly,
-            // format:String, corner_points:Point2D[length] ->
-            // DetectedBarcode (ref)
-  kDetectedFaceTag =
-      'F',  // raw_value:WebCoreString, bounding_box:DOMRectReadOnly,
-            // corner_points:Point2D[length] -> DetectedText (ref)
-  kDetectedTextTag = 't',  // bounding_box:DOMRectReadOnly,
-                           // landmarks:Landmark[length] -> DetectedFace (ref)
+  kRTCEncodedAudioFrameTag = 'A',  // uint32_t -> transferred audio frame ID
+  kRTCEncodedVideoFrameTag = 'V',  // uint32_t -> transferred video frame ID
+
+  kAudioDataTag = 'a',   // uint32_t -> transferred audio data
+  kVideoFrameTag = 'v',  // uint32_t -> transferred video frame ID
+
+  // The following tags were used by the Shape Detection API implementation
+  // between M71 and M81. During these milestones, the API was always behind
+  // a flag. Usage was removed in https://crrev.com/c/2040378.
+  kDeprecatedDetectedBarcodeTag = 'B',
+  kDeprecatedDetectedFaceTag = 'F',
+  kDeprecatedDetectedTextTag = 't',
+
+  kDOMExceptionTag = 'x',  // name:String,message:String,stack:String
   kVersionTag = 0xFF       // version:uint32_t -> Uses this as the file version.
 };
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SERIALIZATION_SERIALIZATION_TAG_H_

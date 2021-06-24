@@ -18,6 +18,7 @@
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/memory_dump_request_args.h"
 #include "base/trace_event/process_memory_dump.h"
+#include "build/chromeos_buildflags.h"
 #include "net/base/http_user_agent_settings.h"
 #include "net/cookies/cookie_store.h"
 #include "net/dns/host_resolver.h"
@@ -28,11 +29,10 @@
 
 namespace net {
 
-URLRequestContext::URLRequestContext(bool allow_copy)
+URLRequestContext::URLRequestContext()
     : net_log_(nullptr),
       host_resolver_(nullptr),
       cert_verifier_(nullptr),
-      channel_id_service_(nullptr),
       http_auth_handler_factory_(nullptr),
       proxy_resolution_service_(nullptr),
       proxy_delegate_(nullptr),
@@ -42,11 +42,12 @@ URLRequestContext::URLRequestContext(bool allow_copy)
       http_user_agent_settings_(nullptr),
       cookie_store_(nullptr),
       transport_security_state_(nullptr),
-      cert_transparency_verifier_(nullptr),
       ct_policy_enforcer_(nullptr),
+      sct_auditing_delegate_(nullptr),
       http_transaction_factory_(nullptr),
       job_factory_(nullptr),
       throttler_manager_(nullptr),
+      quic_context_(nullptr),
       network_quality_estimator_(nullptr),
 #if BUILDFLAG(ENABLE_REPORTING)
       reporting_service_(nullptr),
@@ -55,8 +56,8 @@ URLRequestContext::URLRequestContext(bool allow_copy)
       url_requests_(std::make_unique<std::set<const URLRequest*>>()),
       enable_brotli_(false),
       check_cleartext_permitted_(false),
-      name_("unknown"),
-      allow_copy_(allow_copy) {
+      require_network_isolation_key_(false),
+      name_("unknown") {
   base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
       this, "URLRequestContext", base::ThreadTaskRunnerHandle::Get());
 }
@@ -90,20 +91,24 @@ const HttpNetworkSession::Context* URLRequestContext::GetNetworkSessionContext()
   return &network_session->context();
 }
 
+// TODO(crbug.com/1052397): Revisit once build flag switch of lacros-chrome is
+// complete.
+#if !defined(OS_WIN) && !(defined(OS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS))
 std::unique_ptr<URLRequest> URLRequestContext::CreateRequest(
     const GURL& url,
     RequestPriority priority,
     URLRequest::Delegate* delegate) const {
   return CreateRequest(url, priority, delegate, MISSING_TRAFFIC_ANNOTATION);
 }
+#endif
 
 std::unique_ptr<URLRequest> URLRequestContext::CreateRequest(
     const GURL& url,
     RequestPriority priority,
     URLRequest::Delegate* delegate,
     NetworkTrafficAnnotationTag traffic_annotation) const {
-  return base::WrapUnique(new URLRequest(
-      url, priority, delegate, this, network_delegate_, traffic_annotation));
+  return base::WrapUnique(
+      new URLRequest(url, priority, delegate, this, traffic_annotation));
 }
 
 void URLRequestContext::set_cookie_store(CookieStore* cookie_store) {
@@ -149,39 +154,6 @@ bool URLRequestContext::OnMemoryDump(
     cookie_store_->DumpMemoryStats(pmd, dump->absolute_name());
   }
   return true;
-}
-
-void URLRequestContext::CopyFrom(const URLRequestContext* other) {
-  // Copy disallowed in cases known to not currently need it. New copying should
-  // not be added as CopyFrom is fundamentally broken.
-  DCHECK(allow_copy_ && other->allow_copy_);
-
-  // Copy URLRequestContext parameters.
-  set_net_log(other->net_log_);
-  set_host_resolver(other->host_resolver_);
-  set_cert_verifier(other->cert_verifier_);
-  set_channel_id_service(other->channel_id_service_);
-  set_http_auth_handler_factory(other->http_auth_handler_factory_);
-  set_proxy_resolution_service(other->proxy_resolution_service_);
-  set_proxy_delegate(other->proxy_delegate_);
-  set_ssl_config_service(other->ssl_config_service_);
-  set_network_delegate(other->network_delegate_);
-  set_http_server_properties(other->http_server_properties_);
-  set_cookie_store(other->cookie_store_);
-  set_transport_security_state(other->transport_security_state_);
-  set_cert_transparency_verifier(other->cert_transparency_verifier_);
-  set_ct_policy_enforcer(other->ct_policy_enforcer_);
-  set_http_transaction_factory(other->http_transaction_factory_);
-  set_job_factory(other->job_factory_);
-  set_throttler_manager(other->throttler_manager_);
-  set_http_user_agent_settings(other->http_user_agent_settings_);
-  set_network_quality_estimator(other->network_quality_estimator_);
-#if BUILDFLAG(ENABLE_REPORTING)
-  set_reporting_service(other->reporting_service_);
-  set_network_error_logging_service(other->network_error_logging_service_);
-#endif  // BUILDFLAG(ENABLE_REPORTING)
-  set_enable_brotli(other->enable_brotli_);
-  set_check_cleartext_permitted(other->check_cleartext_permitted_);
 }
 
 }  // namespace net

@@ -4,17 +4,20 @@
 
 package org.chromium.chrome.browser.omaha;
 
-import android.annotation.TargetApi;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.os.Build;
+import android.net.Uri;
 import android.os.Environment;
 import android.os.StatFs;
-import android.support.annotation.IntDef;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
 import android.text.TextUtils;
+
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 
 import com.google.android.gms.common.GooglePlayServicesUtil;
 
@@ -26,16 +29,18 @@ import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.VisibleForTesting;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.AsyncTask;
 import org.chromium.base.task.AsyncTask.Status;
 import org.chromium.base.task.PostTask;
-import org.chromium.chrome.browser.ChromeActivity;
+import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.omaha.inline.InlineUpdateController;
 import org.chromium.chrome.browser.omaha.inline.InlineUpdateControllerFactory;
-import org.chromium.chrome.browser.preferences.ChromePreferenceManager;
-import org.chromium.chrome.browser.util.ConversionUtils;
+import org.chromium.chrome.browser.omaha.metrics.UpdateSuccessMetrics;
+import org.chromium.chrome.browser.omaha.metrics.UpdateSuccessMetrics.UpdateType;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.SharedPreferencesManager;
+import org.chromium.components.browser_ui.util.ConversionUtils;
 import org.chromium.content_public.browser.UiThreadTaskTraits;
 
 import java.io.File;
@@ -53,13 +58,15 @@ public class UpdateStatusProvider implements ActivityStateListener {
      * Possible sources of user interaction regarding updates.
      * Treat this as append only as it is used by UMA.
      */
-    @IntDef({UpdateInteractionSource.FROM_MENU, UpdateInteractionSource.FROM_INFOBAR})
+    @IntDef({UpdateInteractionSource.FROM_MENU, UpdateInteractionSource.FROM_INFOBAR,
+            UpdateInteractionSource.FROM_NOTIFICATION})
     @Retention(RetentionPolicy.SOURCE)
     public @interface UpdateInteractionSource {
         int FROM_MENU = 0;
         int FROM_INFOBAR = 1;
+        int FROM_NOTIFICATION = 2;
 
-        int NUM_ENTRIES = 2;
+        int NUM_ENTRIES = 3;
     }
 
     /**
@@ -119,7 +126,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
          */
         private boolean mIsInlineSimulated;
 
-        UpdateStatus() {}
+        public UpdateStatus() {}
 
         UpdateStatus(UpdateStatus other) {
             updateState = other.updateState;
@@ -135,6 +142,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
 
     private final InlineUpdateController mInlineController;
     private final UpdateQuery mOmahaQuery;
+    private final UpdateSuccessMetrics mMetrics;
     private @Nullable UpdateStatus mStatus;
 
     /** Whether or not we've recorded the initial update status yet. */
@@ -159,7 +167,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
         mObservers.addObserver(observer);
 
         if (mStatus != null) {
-            PostTask.postTask(UiThreadTaskTraits.DEFAULT, () -> observer.onResult(mStatus));
+            PostTask.postTask(UiThreadTaskTraits.DEFAULT, observer.bind(mStatus));
         } else {
             if (mOmahaQuery.getStatus() == Status.PENDING) {
                 mOmahaQuery.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
@@ -194,8 +202,8 @@ public class UpdateStatusProvider implements ActivityStateListener {
             return;
         }
 
-        ChromePreferenceManager.getInstance().writeString(
-                ChromePreferenceManager.LATEST_UNSUPPORTED_VERSION, currentlyUsedVersion);
+        SharedPreferencesManager.getInstance().writeString(
+                ChromePreferenceKeys.LATEST_UNSUPPORTED_VERSION, currentlyUsedVersion);
         mStatus.latestUnsupportedVersion = currentlyUsedVersion;
         pingObservers();
     }
@@ -209,6 +217,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
         if (mStatus == null || mStatus.updateState != UpdateState.INLINE_UPDATE_AVAILABLE) return;
         RecordHistogram.recordEnumeratedHistogram(
                 "GoogleUpdate.Inline.UI.Start.Source", source, UpdateInteractionSource.NUM_ENTRIES);
+        mMetrics.startUpdate(UpdateType.INLINE, source);
         mInlineController.startUpdate(activity);
     }
 
@@ -220,6 +229,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
         if (mStatus == null || mStatus.updateState != UpdateState.INLINE_UPDATE_AVAILABLE) return;
         RecordHistogram.recordEnumeratedHistogram(
                 "GoogleUpdate.Inline.UI.Retry.Source", source, UpdateInteractionSource.NUM_ENTRIES);
+        mMetrics.startUpdate(UpdateType.INLINE, source);
         mInlineController.startUpdate(activity);
     }
 
@@ -229,6 +239,31 @@ public class UpdateStatusProvider implements ActivityStateListener {
         RecordHistogram.recordEnumeratedHistogram("GoogleUpdate.Inline.UI.Install.Source", source,
                 UpdateInteractionSource.NUM_ENTRIES);
         mInlineController.completeUpdate();
+    }
+
+    /**
+     * Starts the intent update process, if possible
+     * @param context An {@link Context} that will be used to fire off the update intent.
+     * @param source  The source of the action (the UI that caused it).
+     * @param newTask Whether or not to make the intent a new task.
+     * @return        Whether or not the update intent was sent and had a valid handler.
+     */
+    public boolean startIntentUpdate(
+            Context context, @UpdateInteractionSource int source, boolean newTask) {
+        if (mStatus == null || mStatus.updateState != UpdateState.UPDATE_AVAILABLE) return false;
+        if (TextUtils.isEmpty(mStatus.updateUrl)) return false;
+
+        try {
+            mMetrics.startUpdate(UpdateType.INTENT, source);
+
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(mStatus.updateUrl));
+            if (newTask) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+        } catch (ActivityNotFoundException e) {
+            return false;
+        }
+
+        return true;
     }
 
     // ApplicationStateListener implementation.
@@ -250,6 +285,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
     private UpdateStatusProvider() {
         mInlineController = InlineUpdateControllerFactory.create(this::resolveStatus);
         mOmahaQuery = new UpdateQuery(this::resolveStatus);
+        mMetrics = new UpdateSuccessMetrics();
 
         // Note that as a singleton this class never unregisters.
         ApplicationStatus.registerStateListenerForAllActivities(this);
@@ -290,6 +326,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
         if (!mRecordedInitialStatus) {
             RecordHistogram.recordEnumeratedHistogram(
                     "GoogleUpdate.StartUp.State", mStatus.updateState, UpdateState.NUM_ENTRIES);
+            mMetrics.analyzeFirstStatus(mStatus);
             mRecordedInitialStatus = true;
         }
 
@@ -369,8 +406,8 @@ public class UpdateStatusProvider implements ActivityStateListener {
                     break;
                 case UpdateState.UNSUPPORTED_OS_VERSION:
                     status.latestUnsupportedVersion =
-                            ChromePreferenceManager.getInstance().readString(
-                                    ChromePreferenceManager.LATEST_UNSUPPORTED_VERSION, null);
+                            SharedPreferencesManager.getInstance().readString(
+                                    ChromePreferenceKeys.LATEST_UNSUPPORTED_VERSION, null);
                     break;
             }
 
@@ -381,7 +418,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
             UpdateStatus status = new UpdateStatus();
 
             if (VersionNumberGetter.isNewerVersionAvailable(context)) {
-                status.updateUrl = MarketURLGetter.getMarketUrl(context);
+                status.updateUrl = MarketURLGetter.getMarketUrl();
                 status.latestVersion =
                         VersionNumberGetter.getInstance().getLatestKnownVersion(context);
 
@@ -390,12 +427,12 @@ public class UpdateStatusProvider implements ActivityStateListener {
                 status.updateState =
                         allowedToUpdate ? UpdateState.UPDATE_AVAILABLE : UpdateState.NONE;
 
-                ChromePreferenceManager.getInstance().removeKey(
-                        ChromePreferenceManager.LATEST_UNSUPPORTED_VERSION);
+                SharedPreferencesManager.getInstance().removeKey(
+                        ChromePreferenceKeys.LATEST_UNSUPPORTED_VERSION);
             } else if (!VersionNumberGetter.isCurrentOsVersionSupported()) {
                 status.updateState = UpdateState.UNSUPPORTED_OS_VERSION;
-                status.latestUnsupportedVersion = ChromePreferenceManager.getInstance().readString(
-                        ChromePreferenceManager.LATEST_UNSUPPORTED_VERSION, null);
+                status.latestUnsupportedVersion = SharedPreferencesManager.getInstance().readString(
+                        ChromePreferenceKeys.LATEST_UNSUPPORTED_VERSION, null);
             } else {
                 status.updateState = UpdateState.NONE;
             }
@@ -408,14 +445,7 @@ public class UpdateStatusProvider implements ActivityStateListener {
 
             File path = Environment.getDataDirectory();
             StatFs statFs = new StatFs(path.getAbsolutePath());
-            long size;
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR2) {
-                size = getSize(statFs);
-            } else {
-                size = getSizeUpdatedApi(statFs);
-            }
-            RecordHistogram.recordLinearCountHistogram(
-                    "GoogleUpdate.InfoBar.InternalStorageSizeAvailable", (int) size, 1, 200, 100);
+            long size = getSize(statFs);
             RecordHistogram.recordLinearCountHistogram(
                     "GoogleUpdate.InfoBar.DeviceFreeSpace", (int) size, 1, 1000, 50);
 
@@ -435,16 +465,8 @@ public class UpdateStatusProvider implements ActivityStateListener {
             return true;
         }
 
-        @TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR2)
-        private long getSizeUpdatedApi(StatFs statFs) {
-            return ConversionUtils.bytesToMegabytes(statFs.getAvailableBytes());
-        }
-
-        @SuppressWarnings("deprecation")
         private long getSize(StatFs statFs) {
-            int blockSize = statFs.getBlockSize();
-            int availableBlocks = statFs.getAvailableBlocks();
-            return ConversionUtils.bytesToMegabytes(blockSize * availableBlocks);
+            return ConversionUtils.bytesToMegabytes(statFs.getAvailableBytes());
         }
     }
 }

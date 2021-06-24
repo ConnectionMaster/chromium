@@ -10,9 +10,8 @@
 #include <string>
 #include <vector>
 
-#include "base/logging.h"
-#include "base/optional.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "components/cloud_devices/common/description_items.h"
 
 // Defines printer options, CDD and CJT items.
@@ -29,6 +28,15 @@ typedef SelectionCapability<SelectVendorCapabilityOption,
     SelectVendorCapability;
 
 typedef std::string ContentType;
+
+struct Copies {
+  // Default requested number of copies.
+  int32_t default_value = 1;
+
+  // Maximum number of copies supported, sourced from
+  // PrinterSemanticCapsAndDefaults.copies_max.
+  int32_t max_value = 1;
+};
 
 enum class DocumentSheetBack {
   NORMAL,
@@ -143,6 +151,7 @@ class TypedValueVendorCapability {
 class VendorCapability {
  public:
   enum class Type {
+    NONE,
     RANGE,
     SELECT,
     TYPED_VALUE,
@@ -171,14 +180,18 @@ class VendorCapability {
   void SaveTo(base::Value* dict) const;
 
  private:
+  void InternalCleanup();
+
   Type type_;
   std::string id_;
   std::string display_name_;
 
-  // If the CDD is valid, exactly one of the capabilities has non-nullopt value.
-  base::Optional<RangeVendorCapability> range_capability_;
-  base::Optional<SelectVendorCapability> select_capability_;
-  base::Optional<TypedValueVendorCapability> typed_value_capability_;
+  // If the CDD is valid, exactly one of the capabilities has a value.
+  union {
+    RangeVendorCapability range_capability_;
+    SelectVendorCapability select_capability_;
+    TypedValueVendorCapability typed_value_capability_;
+  };
 
   DISALLOW_COPY_AND_ASSIGN(VendorCapability);
 };
@@ -490,9 +503,10 @@ class MarginsTraits;
 class DpiTraits;
 class FitToPageTraits;
 class MediaTraits;
-class CopiesTraits;
 class PageRangeTraits;
 class CollateTraits;
+class CopiesCapabilityTraits;
+class CopiesTicketItemTraits;
 
 typedef ListCapability<ContentType, ContentTypeTraits> ContentTypesCapability;
 typedef ValueCapability<PwgRasterConfig, PwgRasterConfigTraits>
@@ -507,7 +521,7 @@ typedef SelectionCapability<Margins, MarginsTraits> MarginsCapability;
 typedef SelectionCapability<Dpi, DpiTraits> DpiCapability;
 typedef SelectionCapability<FitToPageType, FitToPageTraits> FitToPageCapability;
 typedef SelectionCapability<Media, MediaTraits> MediaCapability;
-typedef EmptyCapability<class CopiesTraits> CopiesCapability;
+typedef ValueCapability<Copies, class CopiesCapabilityTraits> CopiesCapability;
 typedef EmptyCapability<class PageRangeTraits> PageRangeCapability;
 typedef BooleanCapability<class CollateTraits> CollateCapability;
 typedef BooleanCapability<class ReverseTraits> ReverseCapability;
@@ -526,7 +540,7 @@ typedef TicketItem<Margins, MarginsTraits> MarginsTicketItem;
 typedef TicketItem<Dpi, DpiTraits> DpiTicketItem;
 typedef TicketItem<FitToPageType, FitToPageTraits> FitToPageTicketItem;
 typedef TicketItem<Media, MediaTraits> MediaTicketItem;
-typedef TicketItem<int32_t, CopiesTraits> CopiesTicketItem;
+typedef TicketItem<int32_t, CopiesTicketItemTraits> CopiesTicketItem;
 typedef TicketItem<PageRange, PageRangeTraits> PageRangeTicketItem;
 typedef TicketItem<bool, CollateTraits> CollateTicketItem;
 typedef TicketItem<bool, ReverseTraits> ReverseTicketItem;

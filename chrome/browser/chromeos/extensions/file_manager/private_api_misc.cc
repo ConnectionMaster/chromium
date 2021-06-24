@@ -5,39 +5,42 @@
 #include "chrome/browser/chromeos/extensions/file_manager/private_api_misc.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
-#include <algorithm>
-#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
 
-#include "base/base64.h"
+#include "ash/public/cpp/multi_user_window_manager.h"
+#include "ash/public/cpp/tablet_mode.h"
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/files/file_path.h"
 #include "base/i18n/encoding_detection.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/ash/crostini/crostini_export_import.h"
+#include "chrome/browser/ash/crostini/crostini_features.h"
+#include "chrome/browser/ash/crostini/crostini_package_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/file_system_util.h"
+#include "chrome/browser/ash/file_manager/fileapi_util.h"
+#include "chrome/browser/ash/file_system_provider/mount_path_util.h"
+#include "chrome/browser/ash/file_system_provider/service.h"
+#include "chrome/browser/ash/guest_os/guest_os_share_path.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/crostini/crostini_package_service.h"
-#include "chrome/browser/chromeos/crostini/crostini_share_path.h"
-#include "chrome/browser/chromeos/crostini/crostini_util.h"
-#include "chrome/browser/chromeos/drive/drive_integration_service.h"
-#include "chrome/browser/chromeos/drive/file_system_util.h"
 #include "chrome/browser/chromeos/extensions/file_manager/private_api_util.h"
-#include "chrome/browser/chromeos/file_manager/fileapi_util.h"
 #include "chrome/browser/chromeos/file_manager/path_util.h"
 #include "chrome/browser/chromeos/file_manager/volume_manager.h"
-#include "chrome/browser/chromeos/file_system_provider/mount_path_util.h"
-#include "chrome/browser/chromeos/file_system_provider/service.h"
 #include "chrome/browser/chromeos/fileapi/recent_file.h"
 #include "chrome/browser/chromeos/fileapi/recent_model.h"
-#include "chrome/browser/chromeos/profiles/profile_helper.h"
-#include "chrome/browser/chromeos/settings/cros_settings.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/extensions/devtools_util.h"
+#include "chrome/browser/file_util_service.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
@@ -45,31 +48,33 @@
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
-#include "chrome/browser/ui/ash/multi_user/multi_user_window_manager_client.h"
+#include "chrome/browser/ui/ash/multi_user/multi_user_window_manager_helper.h"
 #include "chrome/browser/ui/chrome_pages.h"
+#include "chrome/browser/ui/settings_window_manager_chromeos.h"
+#include "chrome/browser/ui/webui/settings/chromeos/constants/routes_util.h"
 #include "chrome/common/extensions/api/file_manager_private_internal.h"
 #include "chrome/common/extensions/api/manifest_types.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/services/file_util/public/cpp/zip_file_creator.h"
 #include "chromeos/settings/timezone_settings.h"
 #include "components/account_id/account_id.h"
+#include "components/arc/arc_prefs.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/drive/event_logger.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "components/zoom/page_zoom.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/page_zoom.h"
-#include "content/public/common/service_manager_connection.h"
 #include "extensions/browser/api/file_handlers/mime_util.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "google_apis/drive/auth_service.h"
-#include "net/base/hex_utils.h"
-#include "services/identity/public/cpp/identity_manager.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "storage/common/fileapi/file_system_types.h"
-#include "storage/common/fileapi/file_system_util.h"
+#include "storage/common/file_system/file_system_types.h"
+#include "storage/common/file_system/file_system_util.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "url/gurl.h"
 
@@ -87,7 +92,7 @@ constexpr base::TimeDelta kMountCrostiniVerySlowOperationThreshold =
     base::TimeDelta::FromSeconds(30);
 
 // Obtains the current app window.
-AppWindow* GetCurrentAppWindow(UIThreadExtensionFunction* function) {
+AppWindow* GetCurrentAppWindow(ExtensionFunction* function) {
   content::WebContents* const contents = function->GetSenderWebContents();
   return contents
              ? AppWindowRegistry::Get(function->browser_context())
@@ -133,7 +138,7 @@ std::vector<ProfileInfo> GetLoggedInProfileInfoList() {
 bool ConvertURLsToProvidedInfo(
     const scoped_refptr<storage::FileSystemContext>& file_system_context,
     const std::vector<std::string>& urls,
-    chromeos::file_system_provider::ProvidedFileSystemInterface** file_system,
+    ash::file_system_provider::ProvidedFileSystemInterface** file_system,
     std::vector<base::FilePath>* paths,
     std::string* error) {
   DCHECK(file_system);
@@ -145,11 +150,11 @@ bool ConvertURLsToProvidedInfo(
   }
 
   *file_system = nullptr;
-  for (const auto url : urls) {
+  for (const auto& url : urls) {
     const storage::FileSystemURL file_system_url(
         file_system_context->CrackURL(GURL(url)));
 
-    chromeos::file_system_provider::util::FileSystemURLParser parser(
+    ash::file_system_provider::util::FileSystemURLParser parser(
         file_system_url);
     if (!parser.Parse()) {
       *error = "Related provided file system not found.";
@@ -185,12 +190,16 @@ bool IsAllowedSource(storage::FileSystemType type,
       return true;
 
     case api::file_manager_private::SOURCE_RESTRICTION_NATIVE_SOURCE:
-      return type == storage::kFileSystemTypeNativeLocal;
-
-    case api::file_manager_private::SOURCE_RESTRICTION_NATIVE_OR_DRIVE_SOURCE:
-      return type == storage::kFileSystemTypeNativeLocal ||
-             type == storage::kFileSystemTypeDrive;
+      return type == storage::kFileSystemTypeLocal;
   }
+}
+
+std::string Redact(const std::string& s) {
+  return LOG_IS_ON(INFO) ? base::StrCat({"'", s, "'"}) : "(redacted)";
+}
+
+std::string Redact(const base::FilePath& path) {
+  return Redact(path.value());
 }
 
 }  // namespace
@@ -228,8 +237,12 @@ FileManagerPrivateGetPreferencesFunction::Run() {
   result.timezone =
       base::UTF16ToUTF8(chromeos::system::TimezoneSettings::GetInstance()
                             ->GetCurrentTimezoneID());
+  result.arc_enabled = service->GetBoolean(arc::prefs::kArcEnabled);
+  result.arc_removable_media_access_enabled =
+      service->GetBoolean(arc::prefs::kArcHasAccessToRemovableMedia);
 
-  return RespondNow(OneArgument(result.ToValue()));
+  return RespondNow(
+      OneArgument(base::Value::FromUniquePtrValue(result.ToValue())));
 }
 
 ExtensionFunction::ResponseAction
@@ -241,12 +254,27 @@ FileManagerPrivateSetPreferencesFunction::Run() {
   Profile* profile = Profile::FromBrowserContext(browser_context());
   PrefService* const service = profile->GetPrefs();
 
-  if (params->change_info.cellular_disabled)
+  if (params->change_info.cellular_disabled) {
     service->SetBoolean(drive::prefs::kDisableDriveOverCellular,
                         *params->change_info.cellular_disabled);
+  }
+  if (params->change_info.arc_enabled) {
+    service->SetBoolean(arc::prefs::kArcEnabled,
+                        *params->change_info.arc_enabled);
+  }
+  if (params->change_info.arc_removable_media_access_enabled) {
+    service->SetBoolean(
+        arc::prefs::kArcHasAccessToRemovableMedia,
+        *params->change_info.arc_removable_media_access_enabled);
+  }
 
   return RespondNow(NoArguments());
 }
+
+// Collection of active ZipFileCreator objects, indexed by ZIP file path.
+using ZipCreators =
+    std::unordered_map<base::FilePath, scoped_refptr<ZipFileCreator>>;
+static base::NoDestructor<ZipCreators> zip_creators;
 
 FileManagerPrivateInternalZipSelectionFunction::
     FileManagerPrivateInternalZipSelectionFunction() = default;
@@ -260,63 +288,128 @@ FileManagerPrivateInternalZipSelectionFunction::Run() {
   const std::unique_ptr<Params> params(Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params);
 
-  // First param is the parent directory URL.
+  Profile* const profile = Profile::FromBrowserContext(browser_context());
+
+  // Convert parent directory URL to absolute path.
   if (params->parent_url.empty())
-    return RespondNow(Error("Empty parent URL."));
+    return RespondNow(Error("Empty parent URL"));
 
-  const ChromeExtensionFunctionDetails chrome_details(this);
-  base::FilePath src_dir = file_manager::util::GetLocalPathFromURL(
-      render_frame_host(), chrome_details.GetProfile(),
-      GURL(params->parent_url));
-  if (src_dir.empty())
-    return RespondNow(Error("Invalid source dir."));
+  const base::FilePath parent_dir = file_manager::util::GetLocalPathFromURL(
+      render_frame_host(), profile, GURL(params->parent_url));
+  if (parent_dir.empty())
+    return RespondNow(
+        Error(base::StrCat({"Cannot convert parent URL ",
+                            Redact(params->parent_url), " to absolute path"})));
 
-  // Second param is the list of selected file URLs to be zipped.
+  // Convert source file URLs to relative paths.
   if (params->urls.empty())
-    return RespondNow(Error("No files selected to be zipped."));
+    return RespondNow(Error("No input files"));
 
-  std::vector<base::FilePath> files;
-  for (size_t i = 0; i < params->urls.size(); ++i) {
-    base::FilePath path = file_manager::util::GetLocalPathFromURL(
-        render_frame_host(), chrome_details.GetProfile(),
-        GURL(params->urls[i]));
-    if (path.empty())
-      return RespondNow(Error("Invalid selected file path."));
-    files.push_back(path);
-  }
+  std::vector<base::FilePath> src_files;
+  src_files.reserve(params->urls.size());
 
-  // Third param is the name of the output zip file.
-  if (params->dest_name.empty())
-    return RespondNow(Error("Empty output file name."));
+  for (const std::string& url : params->urls) {
+    // Convert input URL to absolute path.
+    const base::FilePath absolute_path =
+        file_manager::util::GetLocalPathFromURL(render_frame_host(), profile,
+                                                GURL(url));
+    if (absolute_path.empty())
+      return RespondNow(Error(base::StrCat(
+          {"Cannot convert URL ", Redact(url), " to absolute file path"})));
 
-  // Check if the dir path is under Drive mount point.
-  // TODO(hshi): support create zip file on Drive (crbug.com/158690).
-  if (drive::util::IsUnderDriveMountPoint(src_dir))
-    return RespondNow(Error("Unable to zip Drive files."));
-
-  base::FilePath dest_file = src_dir.Append(params->dest_name);
-  std::vector<base::FilePath> src_relative_paths;
-  for (size_t i = 0; i != files.size(); ++i) {
-    const base::FilePath& file_path = files[i];
-
-    // Obtain the relative path of |file_path| under |src_dir|.
+    // Convert absolute path to relative path under |parent_dir|.
     base::FilePath relative_path;
-    if (!src_dir.AppendRelativePath(file_path, &relative_path))
-      return RespondNow(Error("Invalid selected file path."));
-    src_relative_paths.push_back(relative_path);
+    if (!parent_dir.AppendRelativePath(absolute_path, &relative_path))
+      return RespondNow(
+          Error(base::StrCat({"Input file ", Redact(absolute_path),
+                              " is not in directory ", Redact(parent_dir)})));
+
+    src_files.push_back(std::move(relative_path));
   }
 
-  (new ZipFileCreator(
-       base::Bind(&FileManagerPrivateInternalZipSelectionFunction::OnZipDone,
-                  this),
-       src_dir, src_relative_paths, dest_file))
-      ->Start(
-          content::ServiceManagerConnection::GetForProcess()->GetConnector());
+  // Convert destination filename to absolute path.
+  if (params->dest_name.empty())
+    return RespondNow(Error("Empty destination file name"));
+
+  const base::FilePath dest_file = parent_dir.Append(params->dest_name);
+
+  VLOG(0) << "Creating ZIP archive " << Redact(dest_file) << " with "
+          << src_files.size() << " items...";
+
+  // Create a ZipFileCreator.
+  scoped_refptr<ZipFileCreator>& creator = (*zip_creators)[dest_file];
+  DCHECK(!creator);
+  creator = base::MakeRefCounted<ZipFileCreator>(
+      base::BindOnce(&FileManagerPrivateInternalZipSelectionFunction::OnZipDone,
+                     this, dest_file),
+      parent_dir, src_files, dest_file);
+
+  // Start the ZipFileCreator.
+  creator->Start(LaunchFileUtilService());
+
   return RespondLater();
 }
 
-void FileManagerPrivateInternalZipSelectionFunction::OnZipDone(bool success) {
-  Respond(OneArgument(std::make_unique<base::Value>(success)));
+void FileManagerPrivateInternalZipSelectionFunction::OnZipDone(
+    const base::FilePath& dest_file,
+    bool success) {
+  if (success) {
+    VLOG(0) << "Created ZIP archive " << Redact(dest_file);
+  } else {
+    LOG(ERROR) << "Cannot create ZIP archive " << Redact(dest_file);
+  }
+
+  Respond(OneArgument(base::Value(success)));
+
+  // Remove the matching ZipFileCreator from the list of active ones.
+  const size_t n = zip_creators->erase(dest_file);
+  DCHECK_GT(n, 0);
+}
+
+FileManagerPrivateInternalCancelZipFunction::
+    FileManagerPrivateInternalCancelZipFunction() = default;
+
+FileManagerPrivateInternalCancelZipFunction::
+    ~FileManagerPrivateInternalCancelZipFunction() = default;
+
+ExtensionFunction::ResponseAction
+FileManagerPrivateInternalCancelZipFunction::Run() {
+  using extensions::api::file_manager_private_internal::CancelZip::Params;
+  const std::unique_ptr<Params> params(Params::Create(*args_));
+  EXTENSION_FUNCTION_VALIDATE(params);
+
+  Profile* const profile = Profile::FromBrowserContext(browser_context());
+
+  // Convert parent directory URL to absolute path.
+  if (params->parent_url.empty())
+    return RespondNow(Error("Empty parent URL"));
+
+  const base::FilePath parent_dir = file_manager::util::GetLocalPathFromURL(
+      render_frame_host(), profile, GURL(params->parent_url));
+  if (parent_dir.empty())
+    return RespondNow(
+        Error(base::StrCat({"Cannot convert parent URL ",
+                            Redact(params->parent_url), " to absolute path"})));
+
+  // Convert destination filename to absolute path.
+  if (params->dest_name.empty())
+    return RespondNow(Error("Empty destination file name"));
+
+  const base::FilePath dest_file = parent_dir.Append(params->dest_name);
+
+  // Retrieve matching ZipFileCreator from the collection of active ones.
+  const auto it = zip_creators->find(dest_file);
+  if (it == zip_creators->end())
+    return RespondNow(Error(base::StrCat(
+        {"No ZIP operation currently running for ", Redact(dest_file)})));
+
+  ZipFileCreator* const creator = it->second.get();
+  DCHECK(creator);
+
+  // Tell the ZipFileCreator to stop.
+  creator->Stop();
+
+  return RespondNow(NoArguments());
 }
 
 ExtensionFunction::ResponseAction FileManagerPrivateZoomFunction::Run() {
@@ -344,8 +437,7 @@ ExtensionFunction::ResponseAction FileManagerPrivateZoomFunction::Run() {
 }
 
 FileManagerPrivateRequestWebStoreAccessTokenFunction::
-    FileManagerPrivateRequestWebStoreAccessTokenFunction()
-    : chrome_details_(this) {}
+    FileManagerPrivateRequestWebStoreAccessTokenFunction() = default;
 
 FileManagerPrivateRequestWebStoreAccessTokenFunction::
     ~FileManagerPrivateRequestWebStoreAccessTokenFunction() = default;
@@ -355,12 +447,12 @@ FileManagerPrivateRequestWebStoreAccessTokenFunction::Run() {
   std::vector<std::string> scopes;
   scopes.emplace_back(kCWSScope);
 
-  identity::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(chrome_details_.GetProfile());
+  Profile* const profile = Profile::FromBrowserContext(browser_context());
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
 
   if (!identity_manager) {
-    drive::EventLogger* logger =
-        file_manager::util::GetLogger(chrome_details_.GetProfile());
+    drive::EventLogger* logger = file_manager::util::GetLogger(profile);
     if (logger) {
       logger->Log(logging::LOG_ERROR,
                   "CWS Access token fetch failed. IdentityManager can't "
@@ -369,15 +461,17 @@ FileManagerPrivateRequestWebStoreAccessTokenFunction::Run() {
     return RespondNow(Error("Unable to fetch token."));
   }
 
+  // "Unconsented" because this class doesn't care about browser sync consent.
   auth_service_ = std::make_unique<google_apis::AuthService>(
-      identity_manager, identity_manager->GetPrimaryAccountId(),
+      identity_manager,
+      identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
       g_browser_process->system_network_context_manager()
           ->GetSharedURLLoaderFactory(),
       scopes);
-  auth_service_->StartAuthentication(base::Bind(
-      &FileManagerPrivateRequestWebStoreAccessTokenFunction::
-          OnAccessTokenFetched,
-      this));
+  auth_service_->StartAuthentication(
+      base::BindOnce(&FileManagerPrivateRequestWebStoreAccessTokenFunction::
+                         OnAccessTokenFetched,
+                     this));
 
   return RespondLater();
 }
@@ -385,15 +479,15 @@ FileManagerPrivateRequestWebStoreAccessTokenFunction::Run() {
 void FileManagerPrivateRequestWebStoreAccessTokenFunction::OnAccessTokenFetched(
     google_apis::DriveApiErrorCode code,
     const std::string& access_token) {
-  drive::EventLogger* logger =
-      file_manager::util::GetLogger(chrome_details_.GetProfile());
+  drive::EventLogger* logger = file_manager::util::GetLogger(
+      Profile::FromBrowserContext(browser_context()));
 
   if (code == google_apis::HTTP_SUCCESS) {
     DCHECK(auth_service_->HasAccessToken());
     DCHECK(access_token == auth_service_->access_token());
     if (logger)
       logger->Log(logging::LOG_INFO, "CWS OAuth token fetch succeeded.");
-    Respond(OneArgument(std::make_unique<base::Value>(access_token)));
+    Respond(OneArgument(base::Value(access_token)));
   } else {
     if (logger) {
       logger->Log(logging::LOG_ERROR,
@@ -409,15 +503,14 @@ ExtensionFunction::ResponseAction FileManagerPrivateGetProfilesFunction::Run() {
 
   // Obtains the display profile ID.
   AppWindow* const app_window = GetCurrentAppWindow(this);
-  MultiUserWindowManagerClient* const window_manager_client =
-      MultiUserWindowManagerClient::GetInstance();
+  ash::MultiUserWindowManager* const window_manager =
+      MultiUserWindowManagerHelper::GetWindowManager();
   const AccountId current_profile_id = multi_user_util::GetAccountIdFromProfile(
       Profile::FromBrowserContext(browser_context()));
   const AccountId display_profile_id =
-      window_manager_client && app_window
-          ? window_manager_client->GetUserPresentingWindow(
-                app_window->GetNativeWindow())
-          : EmptyAccountId();
+      window_manager && app_window ? window_manager->GetUserPresentingWindow(
+                                         app_window->GetNativeWindow())
+                                   : EmptyAccountId();
 
   return RespondNow(
       ArgumentList(api::file_manager_private::GetProfiles::Results::Create(
@@ -467,8 +560,13 @@ FileManagerPrivateOpenSettingsSubpageFunction::Run() {
   const std::unique_ptr<Params> params(Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params);
 
-  chrome::ShowSettingsSubPageForProfile(ProfileManager::GetActiveUserProfile(),
-                                        params->sub_page);
+  Profile* profile = ProfileManager::GetActiveUserProfile();
+  if (chromeos::settings::IsOSSettingsSubPage(params->sub_page)) {
+    chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
+        profile, params->sub_page);
+  } else {
+    chrome::ShowSettingsSubPageForProfile(profile, params->sub_page);
+  }
   return RespondNow(NoArguments());
 }
 
@@ -485,47 +583,38 @@ FileManagerPrivateInternalGetMimeTypeFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(params);
 
   // Convert file url to local path.
-  const ChromeExtensionFunctionDetails chrome_details(this);
+  Profile* const profile = Profile::FromBrowserContext(browser_context());
   const scoped_refptr<storage::FileSystemContext> file_system_context =
       file_manager::util::GetFileSystemContextForRenderFrameHost(
-          chrome_details.GetProfile(), render_frame_host());
+          profile, render_frame_host());
 
   storage::FileSystemURL file_system_url(
       file_system_context->CrackURL(GURL(params->url)));
 
   app_file_handler_util::GetMimeTypeForLocalPath(
-      chrome_details.GetProfile(), file_system_url.path(),
-      base::Bind(&FileManagerPrivateInternalGetMimeTypeFunction::OnGetMimeType,
-                 this));
+      profile, file_system_url.path(),
+      base::BindOnce(
+          &FileManagerPrivateInternalGetMimeTypeFunction::OnGetMimeType, this));
 
   return RespondLater();
 }
 
 void FileManagerPrivateInternalGetMimeTypeFunction::OnGetMimeType(
     const std::string& mimeType) {
-  Respond(OneArgument(std::make_unique<base::Value>(mimeType)));
+  Respond(OneArgument(base::Value(mimeType)));
 }
 
-ExtensionFunction::ResponseAction
-FileManagerPrivateIsPiexLoaderEnabledFunction::Run() {
-#if defined(OFFICIAL_BUILD)
-  return RespondNow(OneArgument(std::make_unique<base::Value>(true)));
-#else
-  return RespondNow(OneArgument(std::make_unique<base::Value>(false)));
-#endif
-}
-
-FileManagerPrivateGetProvidersFunction::FileManagerPrivateGetProvidersFunction()
-    : chrome_details_(this) {}
+FileManagerPrivateGetProvidersFunction::
+    FileManagerPrivateGetProvidersFunction() = default;
 
 ExtensionFunction::ResponseAction
 FileManagerPrivateGetProvidersFunction::Run() {
-  using chromeos::file_system_provider::Capabilities;
-  using chromeos::file_system_provider::IconSet;
-  using chromeos::file_system_provider::ProviderId;
-  using chromeos::file_system_provider::ProviderInterface;
-  using chromeos::file_system_provider::Service;
-  const Service* const service = Service::Get(chrome_details_.GetProfile());
+  using ash::file_system_provider::Capabilities;
+  using ash::file_system_provider::IconSet;
+  using ash::file_system_provider::ProviderId;
+  using ash::file_system_provider::ProviderInterface;
+  using ash::file_system_provider::Service;
+  const Service* const service = Service::Get(browser_context());
 
   using api::file_manager_private::Provider;
   std::vector<Provider> result;
@@ -545,16 +634,13 @@ FileManagerPrivateGetProvidersFunction::Run() {
     result_item.multiple_mounts = capabilities.multiple_mounts;
     switch (capabilities.source) {
       case SOURCE_FILE:
-        result_item.source =
-            api::manifest_types::FILE_SYSTEM_PROVIDER_SOURCE_FILE;
+        result_item.source = api::file_manager_private::PROVIDER_SOURCE_FILE;
         break;
       case SOURCE_DEVICE:
-        result_item.source =
-            api::manifest_types::FILE_SYSTEM_PROVIDER_SOURCE_DEVICE;
+        result_item.source = api::file_manager_private::PROVIDER_SOURCE_DEVICE;
         break;
       case SOURCE_NETWORK:
-        result_item.source =
-            api::manifest_types::FILE_SYSTEM_PROVIDER_SOURCE_NETWORK;
+        result_item.source = api::file_manager_private::PROVIDER_SOURCE_NETWORK;
         break;
     }
     result.push_back(std::move(result_item));
@@ -565,9 +651,7 @@ FileManagerPrivateGetProvidersFunction::Run() {
 }
 
 FileManagerPrivateAddProvidedFileSystemFunction::
-    FileManagerPrivateAddProvidedFileSystemFunction()
-    : chrome_details_(this) {
-}
+    FileManagerPrivateAddProvidedFileSystemFunction() = default;
 
 ExtensionFunction::ResponseAction
 FileManagerPrivateAddProvidedFileSystemFunction::Run() {
@@ -575,10 +659,10 @@ FileManagerPrivateAddProvidedFileSystemFunction::Run() {
   const std::unique_ptr<Params> params(Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params);
 
-  using chromeos::file_system_provider::Service;
-  using chromeos::file_system_provider::ProvidingExtensionInfo;
-  using chromeos::file_system_provider::ProviderId;
-  Service* const service = Service::Get(chrome_details_.GetProfile());
+  using ash::file_system_provider::ProviderId;
+  using ash::file_system_provider::ProvidingExtensionInfo;
+  using ash::file_system_provider::Service;
+  Service* const service = Service::Get(browser_context());
 
   if (!service->RequestMount(ProviderId::FromString(params->provider_id)))
     return RespondNow(Error("Failed to request a new mount."));
@@ -587,9 +671,7 @@ FileManagerPrivateAddProvidedFileSystemFunction::Run() {
 }
 
 FileManagerPrivateConfigureVolumeFunction::
-    FileManagerPrivateConfigureVolumeFunction()
-    : chrome_details_(this) {
-}
+    FileManagerPrivateConfigureVolumeFunction() = default;
 
 ExtensionFunction::ResponseAction
 FileManagerPrivateConfigureVolumeFunction::Run() {
@@ -600,7 +682,7 @@ FileManagerPrivateConfigureVolumeFunction::Run() {
   using file_manager::VolumeManager;
   using file_manager::Volume;
   VolumeManager* const volume_manager =
-      VolumeManager::Get(chrome_details_.GetProfile());
+      VolumeManager::Get(Profile::FromBrowserContext(browser_context()));
   base::WeakPtr<Volume> volume =
       volume_manager->FindVolumeById(params->volume_id);
   if (!volume.get())
@@ -610,11 +692,11 @@ FileManagerPrivateConfigureVolumeFunction::Run() {
 
   switch (volume->type()) {
     case file_manager::VOLUME_TYPE_PROVIDED: {
-      using chromeos::file_system_provider::Service;
-      Service* const service = Service::Get(chrome_details_.GetProfile());
+      using ash::file_system_provider::Service;
+      Service* const service = Service::Get(browser_context());
       DCHECK(service);
 
-      using chromeos::file_system_provider::ProvidedFileSystemInterface;
+      using ash::file_system_provider::ProvidedFileSystemInterface;
       ProvidedFileSystemInterface* const file_system =
           service->GetProvidedFileSystem(volume->provider_id(),
                                          volume->file_system_id());
@@ -656,9 +738,9 @@ FileManagerPrivateMountCrostiniFunction::Run() {
   // files into Linux files should still work.
   Profile* profile =
       Profile::FromBrowserContext(browser_context())->GetOriginalProfile();
-  DCHECK(crostini::IsCrostiniEnabled(profile));
+  DCHECK(crostini::CrostiniFeatures::Get()->IsEnabled(profile));
   crostini::CrostiniManager::GetForProfile(profile)->RestartCrostini(
-      crostini::kCrostiniDefaultVmName, crostini::kCrostiniDefaultContainerName,
+      crostini::ContainerId::GetDefault(),
       base::BindOnce(&FileManagerPrivateMountCrostiniFunction::RestartCallback,
                      this));
   return RespondLater();
@@ -671,7 +753,60 @@ void FileManagerPrivateMountCrostiniFunction::RestartCallback(
         base::StringPrintf("Error mounting crostini container: %d", result)));
     return;
   }
+  // Use OriginalProfile since using crostini in incognito such as saving
+  // files into Linux files should still work.
+  Profile* profile =
+      Profile::FromBrowserContext(browser_context())->GetOriginalProfile();
+  DCHECK(crostini::CrostiniFeatures::Get()->IsEnabled(profile));
+  crostini::CrostiniManager::GetForProfile(profile)->MountCrostiniFiles(
+      crostini::ContainerId::GetDefault(),
+      base::BindOnce(&FileManagerPrivateMountCrostiniFunction::MountCallback,
+                     this),
+      false);
+}
+
+void FileManagerPrivateMountCrostiniFunction::MountCallback(
+    crostini::CrostiniResult result) {
+  if (result != crostini::CrostiniResult::SUCCESS) {
+    Respond(Error(
+        base::StringPrintf("Error mounting crostini container: %d", result)));
+    return;
+  }
   Respond(NoArguments());
+}
+
+FileManagerPrivateInternalImportCrostiniImageFunction::
+    FileManagerPrivateInternalImportCrostiniImageFunction() = default;
+
+FileManagerPrivateInternalImportCrostiniImageFunction::
+    ~FileManagerPrivateInternalImportCrostiniImageFunction() = default;
+
+ExtensionFunction::ResponseAction
+FileManagerPrivateInternalImportCrostiniImageFunction::Run() {
+  using extensions::api::file_manager_private_internal::ImportCrostiniImage::
+      Params;
+
+  const auto params = Params::Create(*args_);
+  EXTENSION_FUNCTION_VALIDATE(params);
+
+  Profile* profile = Profile::FromBrowserContext(browser_context());
+  const scoped_refptr<storage::FileSystemContext> file_system_context =
+      file_manager::util::GetFileSystemContextForRenderFrameHost(
+          profile, render_frame_host());
+
+  base::FilePath path = file_system_context->CrackURL(GURL(params->url)).path();
+
+  crostini::CrostiniExportImport::GetForProfile(profile)->ImportContainer(
+      crostini::ContainerId::GetDefault(), path,
+      base::BindOnce(
+          [](base::FilePath path, crostini::CrostiniResult result) {
+            if (result != crostini::CrostiniResult::SUCCESS) {
+              LOG(ERROR) << "Error importing crostini image " << Redact(path)
+                         << ": " << (int)result;
+            }
+          },
+          path));
+  return RespondNow(NoArguments());
 }
 
 ExtensionFunction::ResponseAction
@@ -692,7 +827,7 @@ FileManagerPrivateInternalSharePathsWithCrostiniFunction::Run() {
     paths.emplace_back(cracked.path());
   }
 
-  crostini::CrostiniSharePath::GetForProfile(profile)->SharePaths(
+  guest_os::GuestOsSharePath::GetForProfile(profile)->SharePaths(
       params->vm_name, std::move(paths), params->persist,
       base::BindOnce(&FileManagerPrivateInternalSharePathsWithCrostiniFunction::
                          SharePathsCallback,
@@ -702,7 +837,7 @@ FileManagerPrivateInternalSharePathsWithCrostiniFunction::Run() {
 }
 
 void FileManagerPrivateInternalSharePathsWithCrostiniFunction::
-    SharePathsCallback(bool success, std::string failure_reason) {
+    SharePathsCallback(bool success, const std::string& failure_reason) {
   Respond(success ? NoArguments() : Error(failure_reason));
 }
 
@@ -719,7 +854,7 @@ FileManagerPrivateInternalUnsharePathWithCrostiniFunction::Run() {
           profile, render_frame_host());
   storage::FileSystemURL cracked =
       file_system_context->CrackURL(GURL(params->url));
-  crostini::CrostiniSharePath::GetForProfile(profile)->UnsharePath(
+  guest_os::GuestOsSharePath::GetForProfile(profile)->UnsharePath(
       params->vm_name, cracked.path(), /*unpersist=*/true,
       base::BindOnce(
           &FileManagerPrivateInternalUnsharePathWithCrostiniFunction::
@@ -730,7 +865,7 @@ FileManagerPrivateInternalUnsharePathWithCrostiniFunction::Run() {
 }
 
 void FileManagerPrivateInternalUnsharePathWithCrostiniFunction::
-    UnsharePathCallback(bool success, std::string failure_reason) {
+    UnsharePathCallback(bool success, const std::string& failure_reason) {
   Respond(success ? NoArguments() : Error(failure_reason));
 }
 
@@ -740,14 +875,19 @@ FileManagerPrivateInternalGetCrostiniSharedPathsFunction::Run() {
       Params;
   const std::unique_ptr<Params> params(Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params);
+  // TODO(crbug.com/1057591): Unexpected crashes in
+  // GuestOsSharePath::GetPersistedSharedPaths with null profile_.
+  CHECK(browser_context());
   Profile* profile = Profile::FromBrowserContext(browser_context());
+  CHECK(profile);
 
-  auto* crostini_share_path =
-      crostini::CrostiniSharePath::GetForProfile(profile);
+  auto* guest_os_share_path =
+      guest_os::GuestOsSharePath::GetForProfile(profile);
+  CHECK(guest_os_share_path);
   bool first_for_session = params->observe_first_for_session &&
-                           crostini_share_path->GetAndSetFirstForSession();
+                           guest_os_share_path->GetAndSetFirstForSession();
   auto shared_paths =
-      crostini_share_path->GetPersistedSharedPaths(params->vm_name);
+      guest_os_share_path->GetPersistedSharedPaths(params->vm_name);
   auto entries = std::make_unique<base::ListValue>();
   for (const base::FilePath& path : shared_paths) {
     std::string mount_name;
@@ -756,26 +896,25 @@ FileManagerPrivateInternalGetCrostiniSharedPathsFunction::Run() {
     if (!file_manager::util::ExtractMountNameFileSystemNameFullPath(
             path, &mount_name, &file_system_name, &full_path)) {
       LOG(ERROR) << "Error extracting mount name and path from "
-                 << path.value();
+                 << Redact(path);
       continue;
     }
     auto entry = std::make_unique<base::DictionaryValue>();
     entry->SetString(
         "fileSystemRoot",
-        storage::GetExternalFileSystemRootURIString(
-            extensions::Extension::GetBaseURLFromExtensionId(extension_id()),
-            mount_name));
+        storage::GetExternalFileSystemRootURIString(source_url(), mount_name));
     entry->SetString("fileSystemName", file_system_name);
     entry->SetString("fileFullPath", full_path);
     // All shared paths should be directories.  Even if this is not true,
     // it is fine for foreground/js/crostini.js class to think so. We
     // verify that the paths are in fact valid directories before calling
-    // seneschal/9p in CrostiniSharePath::CallSeneschalSharePath().
+    // seneschal/9p in GuestOsSharePath::CallSeneschalSharePath().
     entry->SetBoolean("fileIsDirectory", true);
     entries->Append(std::move(entry));
   }
-  return RespondNow(TwoArguments(
-      std::move(entries), std::make_unique<base::Value>(first_for_session)));
+  return RespondNow(
+      TwoArguments(base::Value::FromUniquePtrValue(std::move(entries)),
+                   base::Value(first_for_session)));
 }
 
 ExtensionFunction::ResponseAction
@@ -789,15 +928,9 @@ FileManagerPrivateInternalGetLinuxPackageInfoFunction::Run() {
       file_manager::util::GetFileSystemContextForRenderFrameHost(
           profile, render_frame_host());
 
-  base::FilePath path;
-  if (!file_manager::util::ConvertFileSystemURLToPathInsideCrostini(
-          profile, file_system_context->CrackURL(GURL(params->url)), &path)) {
-    return RespondNow(Error("Invalid url: " + params->url));
-  }
-
   crostini::CrostiniPackageService::GetForProfile(profile)->GetLinuxPackageInfo(
-      crostini::kCrostiniDefaultVmName, crostini::kCrostiniDefaultContainerName,
-      path.value(),
+      crostini::ContainerId::GetDefault(),
+      file_system_context->CrackURL(GURL(params->url)),
       base::BindOnce(&FileManagerPrivateInternalGetLinuxPackageInfoFunction::
                          OnGetLinuxPackageInfo,
                      this));
@@ -835,18 +968,14 @@ FileManagerPrivateInternalInstallLinuxPackageFunction::Run() {
       file_manager::util::GetFileSystemContextForRenderFrameHost(
           profile, render_frame_host());
 
-  base::FilePath path;
-  if (!file_manager::util::ConvertFileSystemURLToPathInsideCrostini(
-          profile, file_system_context->CrackURL(GURL(params->url)), &path)) {
-    return RespondNow(Error("Invalid url: " + params->url));
-  }
-
-  crostini::CrostiniPackageService::GetForProfile(profile)->InstallLinuxPackage(
-      crostini::kCrostiniDefaultVmName, crostini::kCrostiniDefaultContainerName,
-      path.value(),
-      base::BindOnce(&FileManagerPrivateInternalInstallLinuxPackageFunction::
-                         OnInstallLinuxPackage,
-                     this));
+  crostini::CrostiniPackageService::GetForProfile(profile)
+      ->QueueInstallLinuxPackage(
+          crostini::ContainerId::GetDefault(),
+          file_system_context->CrackURL(GURL(params->url)),
+          base::BindOnce(
+              &FileManagerPrivateInternalInstallLinuxPackageFunction::
+                  OnInstallLinuxPackage,
+              this));
   return RespondLater();
 }
 
@@ -874,8 +1003,7 @@ void FileManagerPrivateInternalInstallLinuxPackageFunction::
 }
 
 FileManagerPrivateInternalGetCustomActionsFunction::
-    FileManagerPrivateInternalGetCustomActionsFunction()
-    : chrome_details_(this) {}
+    FileManagerPrivateInternalGetCustomActionsFunction() = default;
 
 ExtensionFunction::ResponseAction
 FileManagerPrivateInternalGetCustomActionsFunction::Run() {
@@ -886,11 +1014,10 @@ FileManagerPrivateInternalGetCustomActionsFunction::Run() {
 
   const scoped_refptr<storage::FileSystemContext> file_system_context =
       file_manager::util::GetFileSystemContextForRenderFrameHost(
-          chrome_details_.GetProfile(), render_frame_host());
+          Profile::FromBrowserContext(browser_context()), render_frame_host());
 
   std::vector<base::FilePath> paths;
-  chromeos::file_system_provider::ProvidedFileSystemInterface* file_system =
-      nullptr;
+  ash::file_system_provider::ProvidedFileSystemInterface* file_system = nullptr;
   std::string error;
 
   if (!ConvertURLsToProvidedInfo(file_system_context, params->urls,
@@ -901,14 +1028,14 @@ FileManagerPrivateInternalGetCustomActionsFunction::Run() {
   DCHECK(file_system);
   file_system->GetActions(
       paths,
-      base::Bind(
+      base::BindOnce(
           &FileManagerPrivateInternalGetCustomActionsFunction::OnCompleted,
           this));
   return RespondLater();
 }
 
 void FileManagerPrivateInternalGetCustomActionsFunction::OnCompleted(
-    const chromeos::file_system_provider::Actions& actions,
+    const ash::file_system_provider::Actions& actions,
     base::File::Error result) {
   if (result != base::File::FILE_OK) {
     Respond(Error("Failed to fetch actions."));
@@ -930,8 +1057,7 @@ void FileManagerPrivateInternalGetCustomActionsFunction::OnCompleted(
 }
 
 FileManagerPrivateInternalExecuteCustomActionFunction::
-    FileManagerPrivateInternalExecuteCustomActionFunction()
-    : chrome_details_(this) {}
+    FileManagerPrivateInternalExecuteCustomActionFunction() = default;
 
 ExtensionFunction::ResponseAction
 FileManagerPrivateInternalExecuteCustomActionFunction::Run() {
@@ -942,11 +1068,10 @@ FileManagerPrivateInternalExecuteCustomActionFunction::Run() {
 
   const scoped_refptr<storage::FileSystemContext> file_system_context =
       file_manager::util::GetFileSystemContextForRenderFrameHost(
-          chrome_details_.GetProfile(), render_frame_host());
+          Profile::FromBrowserContext(browser_context()), render_frame_host());
 
   std::vector<base::FilePath> paths;
-  chromeos::file_system_provider::ProvidedFileSystemInterface* file_system =
-      nullptr;
+  ash::file_system_provider::ProvidedFileSystemInterface* file_system = nullptr;
   std::string error;
 
   if (!ConvertURLsToProvidedInfo(file_system_context, params->urls,
@@ -974,8 +1099,7 @@ void FileManagerPrivateInternalExecuteCustomActionFunction::OnCompleted(
 }
 
 FileManagerPrivateInternalGetRecentFilesFunction::
-    FileManagerPrivateInternalGetRecentFilesFunction()
-    : chrome_details_(this) {}
+    FileManagerPrivateInternalGetRecentFilesFunction() = default;
 
 ExtensionFunction::ResponseAction
 FileManagerPrivateInternalGetRecentFilesFunction::Run() {
@@ -983,16 +1107,34 @@ FileManagerPrivateInternalGetRecentFilesFunction::Run() {
   const std::unique_ptr<Params> params(Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params);
 
+  Profile* const profile = Profile::FromBrowserContext(browser_context());
   const scoped_refptr<storage::FileSystemContext> file_system_context =
       file_manager::util::GetFileSystemContextForRenderFrameHost(
-          chrome_details_.GetProfile(), render_frame_host());
+          profile, render_frame_host());
 
-  chromeos::RecentModel* model =
-      chromeos::RecentModel::GetForProfile(chrome_details_.GetProfile());
+  chromeos::RecentModel* model = chromeos::RecentModel::GetForProfile(profile);
+
+  chromeos::RecentModel::FileType file_type;
+  switch (params->file_type) {
+    case api::file_manager_private::RECENT_FILE_TYPE_ALL:
+      file_type = chromeos::RecentModel::FileType::kAll;
+      break;
+    case api::file_manager_private::RECENT_FILE_TYPE_AUDIO:
+      file_type = chromeos::RecentModel::FileType::kAudio;
+      break;
+    case api::file_manager_private::RECENT_FILE_TYPE_IMAGE:
+      file_type = chromeos::RecentModel::FileType::kImage;
+      break;
+    case api::file_manager_private::RECENT_FILE_TYPE_VIDEO:
+      file_type = chromeos::RecentModel::FileType::kVideo;
+      break;
+    default:
+      NOTREACHED();
+      return RespondNow(Error("Unknown recent file type is specified."));
+  }
 
   model->GetRecentFiles(
-      file_system_context.get(),
-      Extension::GetBaseURLFromExtensionId(extension_id()),
+      file_system_context.get(), source_url(), file_type,
       base::BindOnce(
           &FileManagerPrivateInternalGetRecentFilesFunction::OnGetRecentFiles,
           this, params->restriction));
@@ -1002,6 +1144,7 @@ FileManagerPrivateInternalGetRecentFilesFunction::Run() {
 void FileManagerPrivateInternalGetRecentFilesFunction::OnGetRecentFiles(
     api::file_manager_private::SourceRestriction restriction,
     const std::vector<chromeos::RecentFile>& files) {
+  Profile* profile = Profile::FromBrowserContext(browser_context());
   file_manager::util::FileDefinitionList file_definition_list;
   for (const auto& file : files) {
     // Filter out files from non-allowed sources.
@@ -1016,14 +1159,16 @@ void FileManagerPrivateInternalGetRecentFilesFunction::OnGetRecentFiles(
     // Recent file system only lists regular files, not directories.
     file_definition.is_directory = false;
     if (file_manager::util::ConvertAbsoluteFilePathToRelativeFileSystemPath(
-            chrome_details_.GetProfile(), extension_id(), file.url().path(),
+            profile, source_url(), file.url().path(),
             &file_definition.virtual_path)) {
       file_definition_list.emplace_back(std::move(file_definition));
     }
   }
 
   file_manager::util::ConvertFileDefinitionListToEntryDefinitionList(
-      chrome_details_.GetProfile(), extension_id(),
+      file_manager::util::GetFileSystemContextForSourceURL(profile,
+                                                           source_url()),
+      url::Origin::Create(source_url().GetOrigin()),
       file_definition_list,  // Safe, since copied internally.
       base::BindOnce(&FileManagerPrivateInternalGetRecentFilesFunction::
                          OnConvertFileDefinitionListToEntryDefinitionList,
@@ -1036,8 +1181,9 @@ void FileManagerPrivateInternalGetRecentFilesFunction::
             entry_definition_list) {
   DCHECK(entry_definition_list);
 
-  Respond(OneArgument(file_manager::util::ConvertEntryDefinitionListToListValue(
-      *entry_definition_list)));
+  Respond(OneArgument(base::Value::FromUniquePtrValue(
+      file_manager::util::ConvertEntryDefinitionListToListValue(
+          *entry_definition_list))));
 }
 
 ExtensionFunction::ResponseAction
@@ -1046,11 +1192,21 @@ FileManagerPrivateDetectCharacterEncodingFunction::Run() {
   const std::unique_ptr<Params> params(Params::Create(*args_));
   EXTENSION_FUNCTION_VALIDATE(params);
 
-  std::string input = net::HexDecode(params->bytes);
+  std::string input;
+  if (!base::HexStringToString(params->bytes, &input))
+    input.clear();
+
   std::string encoding;
   bool success = base::DetectEncoding(input, &encoding);
+  return RespondNow(
+      OneArgument(base::Value(success ? std::move(encoding) : std::string())));
+}
+
+ExtensionFunction::ResponseAction
+FileManagerPrivateIsTabletModeEnabledFunction::Run() {
+  ash::TabletMode* tablet_mode = ash::TabletMode::Get();
   return RespondNow(OneArgument(
-      std::make_unique<base::Value>(success ? encoding : std::string())));
+      base::Value(tablet_mode ? tablet_mode->InTabletMode() : false)));
 }
 
 }  // namespace extensions

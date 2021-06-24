@@ -10,6 +10,7 @@
 #include "base/macros.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/sync/base/model_type.h"
+#include "components/sync/driver/sync_user_settings.h"
 
 namespace syncer {
 class SyncService;
@@ -27,6 +28,8 @@ class SyncSetupService : public KeyedService {
     kSyncServiceCouldNotConnect,
     kSyncServiceServiceUnavailable,
     kSyncServiceNeedsPassphrase,
+    kSyncServiceNeedsTrustedVaultKey,
+    kSyncServiceTrustedVaultRecoverabilityDegraded,
     kSyncServiceUnrecoverableError,
     kSyncSettingsNotConfirmed,
     kLastSyncServiceError = kSyncServiceUnrecoverableError
@@ -51,8 +54,11 @@ class SyncSetupService : public KeyedService {
   // |SyncableDatatypes|.
   syncer::ModelType GetModelType(SyncableDatatype datatype);
 
-  // Returns whether sync is enabled.
-  virtual bool IsSyncEnabled() const;
+  // Returns whether the user wants Sync to run.
+  // It should be used only with kMobileIdentityConsistency enabled.
+  virtual bool IsSyncRequested() const;
+  // Returns whether Sync-the-transport can start the Sync feature.
+  virtual bool CanSyncFeatureStart() const;
   // Enables or disables sync. Changes won't take effect in the sync backend
   // before the next call to |CommitChanges|.
   virtual void SetSyncEnabled(bool sync_enabled);
@@ -66,7 +72,7 @@ class SyncSetupService : public KeyedService {
   // Returns whether the given datatype is enabled by the user.
   virtual bool IsDataTypePreferred(syncer::ModelType datatype) const;
   // Enables or disables the given datatype. To be noted: this can be called at
-  // any time, but will only be meaningful if |IsSyncEnabled| is true and
+  // any time, but will only be meaningful if |CanSyncFeatureStart| is true and
   // |IsSyncingAllDataTypes| is false. Changes won't take effect in the sync
   // backend before the next call to |CommitChanges|.
   void SetDataTypeEnabled(syncer::ModelType datatype, bool enabled);
@@ -84,6 +90,9 @@ class SyncSetupService : public KeyedService {
   // Returns the current sync service state.
   virtual SyncServiceState GetSyncServiceState();
 
+  // Returns whether all sync data is being encrypted.
+  virtual bool IsEncryptEverythingEnabled() const;
+
   // Returns true if the user has gone through the initial sync configuration.
   // This method is guaranteed not to start the sync backend so it can be
   // called at start-up.
@@ -99,15 +108,11 @@ class SyncSetupService : public KeyedService {
   // changes. PrepareForFirstSyncSetup() needs to be called before. This flag is
   // not set if the user didn't turn on sync.
   // This method should only be used with UnifiedConsent flag.
-  void SetFirstSetupComplete();
+  virtual void SetFirstSetupComplete(
+      syncer::SyncFirstSetupCompleteSource source);
 
   // Returns true if the user finished the Sync setup flow.
   bool IsFirstSetupComplete() const;
-
-  // Commits the current state of the configuration to the sync backend.
-  // This method should only be used with UnifiedConsent flag off. This method
-  // is kept to not change the pre-Unity behavior.
-  void PreUnityCommitChanges();
 
   // Commits all the pending configuration changes to Sync.
   // This method should only be used with UnifiedConsent flag.
@@ -123,7 +128,6 @@ class SyncSetupService : public KeyedService {
   void SetSyncEnabledWithoutChangingDatatypes(bool sync_enabled);
 
   syncer::SyncService* const sync_service_;
-  syncer::ModelTypeSet user_selectable_types_;
 
   // Prevents Sync from running until configuration is complete.
   std::unique_ptr<syncer::SyncSetupInProgressHandle> sync_blocker_;

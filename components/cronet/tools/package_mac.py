@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # Copyright 2018 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -8,11 +8,12 @@ package_mac.py - Build and Package Release and Debug libraries for Mac OS X.
 """
 
 import argparse
-import cr_cronet
 import glob
 import os
 import shutil
 import sys
+
+from cronet.tools import cr_cronet
 
 
 def package_mac(out_dir, gn_args, build_config):

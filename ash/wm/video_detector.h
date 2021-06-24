@@ -10,22 +10,18 @@
 #include <set>
 
 #include "ash/ash_export.h"
-#include "ash/session/session_observer.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "ash/shell_observer.h"
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
-#include "base/scoped_observer.h"
-#include "base/time/time.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/timer/timer.h"
-#include "mojo/public/cpp/bindings/binding.h"
-#include "services/viz/public/interfaces/compositing/video_detector_observer.mojom.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "services/viz/public/mojom/compositing/video_detector_observer.mojom.h"
 #include "ui/aura/env_observer.h"
+#include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
-
-namespace aura {
-class Window;
-}
 
 namespace ash {
 
@@ -107,14 +103,15 @@ class ASH_EXPORT VideoDetector : public aura::EnvObserver,
 
   base::ObserverList<Observer>::Unchecked observers_;
 
-  ScopedObserver<aura::Window, aura::WindowObserver> window_observer_manager_;
-  ScopedSessionObserver scoped_session_observer_;
+  base::ScopedMultiSourceObservation<aura::Window, aura::WindowObserver>
+      window_observations_manager_{this};
+  ScopedSessionObserver scoped_session_observer_{this};
 
   bool is_shutting_down_;
 
-  mojo::Binding<viz::mojom::VideoDetectorObserver> binding_;
+  mojo::Receiver<viz::mojom::VideoDetectorObserver> receiver_{this};
 
-  base::WeakPtrFactory<VideoDetector> weak_factory_;
+  base::WeakPtrFactory<VideoDetector> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(VideoDetector);
 };

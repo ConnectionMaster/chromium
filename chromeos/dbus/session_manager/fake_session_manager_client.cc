@@ -12,19 +12,22 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chromeos/dbus/constants/dbus_paths.h"
 #include "chromeos/dbus/cryptohome/account_identifier_operators.h"
-#include "chromeos/dbus/cryptohome/cryptohome_client.h"
 #include "chromeos/dbus/login_manager/policy_descriptor.pb.h"
+#include "chromeos/dbus/userdataauth/userdataauth_client.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "crypto/sha2.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace chromeos {
 
@@ -34,7 +37,6 @@ using RetrievePolicyResponseType =
 
 namespace {
 
-constexpr char kFakeContainerInstanceId[] = "0123456789ABCDEF";
 constexpr char kStubDevicePolicyFileNamePrefix[] = "stub_device_policy";
 constexpr char kStubPerAccountPolicyFileNamePrefix[] = "stub_policy";
 constexpr char kStubStateKeysFileName[] = "stub_state_keys";
@@ -44,7 +46,9 @@ constexpr char kStubSigninExtensionPolicyFileNameFragment[] =
 constexpr char kStubPerAccountPolicyKeyFileName[] = "policy.pub";
 constexpr char kEmptyAccountId[] = "";
 
-FakeSessionManagerClient* g_instance = nullptr;
+// Global flag weather the g_instance in SessionManagerClient is a
+// FakeSessionManagerClient or not.
+bool g_is_fake = false;
 
 // Helper to asynchronously retrieve a file's content.
 std::string GetFileContent(const base::FilePath& path) {
@@ -145,19 +149,19 @@ base::FilePath GetStubRelativePolicyPath(
       return base::FilePath(kStubDevicePolicyFileNamePrefix + postfix);
 
     case login_manager::ACCOUNT_TYPE_USER:
-    case login_manager::ACCOUNT_TYPE_SESSIONLESS_USER:
     case login_manager::ACCOUNT_TYPE_DEVICE_LOCAL_ACCOUNT: {
       DCHECK(descriptor.has_account_id());
       cryptohome::AccountIdentifier cryptohome_id;
       cryptohome_id.set_account_id(descriptor.account_id());
       const std::string sanitized_id =
-          CryptohomeClient::GetStubSanitizedUsername(cryptohome_id);
+          UserDataAuthClient::GetStubSanitizedUsername(cryptohome_id);
       return base::FilePath(sanitized_id)
           .AppendASCII(kStubPerAccountPolicyFileNamePrefix + postfix);
     }
+    default:
+      NOTREACHED();
+      return base::FilePath();
   }
-  NOTREACHED();
-  return base::FilePath();
 }
 
 // Gets the stub file paths of the policy blob and optionally the policy key
@@ -181,7 +185,6 @@ base::FilePath GetStubPolicyFilePath(
     }
 
     case login_manager::ACCOUNT_TYPE_USER:
-    case login_manager::ACCOUNT_TYPE_SESSIONLESS_USER:
     case login_manager::ACCOUNT_TYPE_DEVICE_LOCAL_ACCOUNT: {
       base::FilePath base_path;
       CHECK(
@@ -192,9 +195,10 @@ base::FilePath GetStubPolicyFilePath(
       }
       return base_path.Append(relative_policy_path);
     }
+    default:
+      NOTREACHED();
+      return base::FilePath();
   }
-  NOTREACHED();
-  return base::FilePath();
 }
 
 // Returns a key that's used for storing policy in memory.
@@ -219,21 +223,32 @@ void PostReply(const base::Location& from_here,
 FakeSessionManagerClient::FakeSessionManagerClient()
     : FakeSessionManagerClient(PolicyStorageType::kInMemory) {}
 
+// This constructor will implicitly create a global static variable by
+// SessionManagerClient::SessionManagerClient() that can be retrieved
+// via FakeSessionManagerClient::Get() down casted. With the global
+// flag g_is_fake we make sure that either the SessionManagerClient or
+// the FakeSessionManagerClient constructor is called but not both.
 FakeSessionManagerClient::FakeSessionManagerClient(
     PolicyStorageType policy_storage)
     : policy_storage_(policy_storage) {
-  DCHECK(!g_instance);
-  g_instance = this;
+  DCHECK(!g_is_fake);
+  g_is_fake = true;
 }
 
 FakeSessionManagerClient::~FakeSessionManagerClient() {
-  DCHECK_EQ(this, g_instance);
-  g_instance = nullptr;
+  g_is_fake = false;
 }
 
 // static
+// Returns the static instance of FakeSessionManagerClient if the
+// g_instance in SessionManagerClientis a FakeSessionManagerClient otherwise it
+// will return nullptr.
 FakeSessionManagerClient* FakeSessionManagerClient::Get() {
-  return g_instance;
+  SessionManagerClient* client = SessionManagerClient::Get();
+  if (g_is_fake)
+    return static_cast<FakeSessionManagerClient*>(client);
+  else
+    return nullptr;
 }
 
 void FakeSessionManagerClient::SetStubDelegate(StubDelegate* delegate) {
@@ -271,22 +286,87 @@ void FakeSessionManagerClient::EmitAshInitialized() {}
 
 void FakeSessionManagerClient::RestartJob(int socket_fd,
                                           const std::vector<std::string>& argv,
-                                          VoidDBusMethodCallback callback) {}
+                                          RestartJobReason reason,
+                                          VoidDBusMethodCallback callback) {
+  DCHECK(supports_browser_restart_);
 
-void FakeSessionManagerClient::SaveLoginPassword(const std::string& password) {}
+  restart_job_argv_ = argv;
+  restart_job_reason_ = reason;
+  if (restart_job_callback_)
+    std::move(restart_job_callback_).Run();
+
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), true));
+}
+
+void FakeSessionManagerClient::SaveLoginPassword(const std::string& password) {
+  login_password_ = password;
+}
+
+void FakeSessionManagerClient::LoginScreenStorageStore(
+    const std::string& key,
+    const login_manager::LoginScreenStorageMetadata& metadata,
+    const std::string& data,
+    LoginScreenStorageStoreCallback callback) {
+  PostReply(FROM_HERE, std::move(callback), absl::nullopt /* error */);
+}
+
+void FakeSessionManagerClient::LoginScreenStorageRetrieve(
+    const std::string& key,
+    LoginScreenStorageRetrieveCallback callback) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), "Test" /* data */,
+                                absl::nullopt /* error */));
+}
+
+void FakeSessionManagerClient::LoginScreenStorageListKeys(
+    LoginScreenStorageListKeysCallback callback) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE,
+      base::BindOnce(std::move(callback), std::vector<std::string>() /* keys */,
+                     absl::nullopt /* error */));
+}
+
+void FakeSessionManagerClient::LoginScreenStorageDelete(
+    const std::string& key) {}
 
 void FakeSessionManagerClient::StartSession(
     const cryptohome::AccountIdentifier& cryptohome_id) {
   DCHECK_EQ(0UL, user_sessions_.count(cryptohome_id.account_id()));
   std::string user_id_hash =
-      CryptohomeClient::GetStubSanitizedUsername(cryptohome_id);
+      UserDataAuthClient::GetStubSanitizedUsername(cryptohome_id);
   user_sessions_[cryptohome_id.account_id()] = user_id_hash;
 }
 
-void FakeSessionManagerClient::StopSession() {}
+void FakeSessionManagerClient::StopSession(
+    login_manager::SessionStopReason reason) {
+  session_stopped_ = true;
+}
+
+void FakeSessionManagerClient::LoadShillProfile(
+    const cryptohome::AccountIdentifier& cryptohome_id) {
+  if (on_load_shill_profile_callback_.is_null())
+    return;
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE,
+      base::BindOnce(on_load_shill_profile_callback_, cryptohome_id));
+}
 
 void FakeSessionManagerClient::StartDeviceWipe() {
   start_device_wipe_call_count_++;
+  if (!on_start_device_wipe_callback_.is_null()) {
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE, std::move(on_start_device_wipe_callback_));
+  }
+}
+
+void FakeSessionManagerClient::StartRemoteDeviceWipe(
+    const enterprise_management::SignedData& signed_command) {
+  start_device_wipe_call_count_++;
+  if (!on_start_device_wipe_callback_.is_null()) {
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE, std::move(on_start_device_wipe_callback_));
+  }
 }
 
 void FakeSessionManagerClient::ClearForcedReEnrollmentVpd(
@@ -354,14 +434,6 @@ FakeSessionManagerClient::BlockingRetrievePolicyForUser(
   return BlockingRetrievePolicy(descriptor, policy_out);
 }
 
-void FakeSessionManagerClient::RetrievePolicyForUserWithoutSession(
-    const cryptohome::AccountIdentifier& cryptohome_id,
-    RetrievePolicyCallback callback) {
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_SESSIONLESS_USER, cryptohome_id.account_id());
-  RetrievePolicy(descriptor, std::move(callback));
-}
-
 void FakeSessionManagerClient::RetrieveDeviceLocalAccountPolicy(
     const std::string& account_id,
     RetrievePolicyCallback callback) {
@@ -397,7 +469,7 @@ void FakeSessionManagerClient::RetrievePolicy(
         GetStubPolicyFilePath(descriptor, nullptr /* key_path */);
     DCHECK(!policy_path.empty());
 
-    base::PostTaskWithTraitsAndReplyWithResult(
+    base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE,
         {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
         base::BindOnce(&GetFileContent, policy_path),
@@ -481,41 +553,47 @@ void FakeSessionManagerClient::StorePolicy(
     if (response.has_new_public_key())
       files_to_store[key_path] = response.new_public_key();
 
-    base::PostTaskWithTraitsAndReply(
+    base::ThreadPool::PostTaskAndReply(
         FROM_HERE,
         {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
         base::BindOnce(StoreFiles, std::move(files_to_store)),
         base::BindOnce(std::move(callback), true /* success */));
   } else {
     policy_[GetMemoryStorageKey(descriptor)] = policy_blob;
-    PostReply(FROM_HERE, std::move(callback), true /* success */);
 
     if (IsChromeDevicePolicy(descriptor)) {
-      // TODO(ljusten): For historical reasons, this code path only stores keys
-      // for device policy. Should this be extended to other policy?
       if (response.has_new_public_key()) {
         base::FilePath key_path;
         GetStubPolicyFilePath(descriptor, &key_path);
         DCHECK(!key_path.empty());
 
-        base::PostTaskWithTraits(
+        base::ThreadPool::PostTaskAndReply(
             FROM_HERE,
             {base::MayBlock(),
              base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
             base::BindOnce(StoreFiles,
                            std::map<base::FilePath, std::string>{
-                               {key_path, response.new_public_key()}}));
-        for (auto& observer : observers_)
-          observer.OwnerKeySet(true /* success */);
+                               {key_path, response.new_public_key()}}),
+            base::BindOnce(
+                &FakeSessionManagerClient::HandleOwnerKeySet,
+                weak_ptr_factory_.GetWeakPtr(),
+                base::BindOnce(std::move(callback), true /*success*/)));
       }
       for (auto& observer : observers_)
         observer.PropertyChangeComplete(true /* success */);
     }
+
+    // Run the callback if it hasn't been passed to
+    // PostTaskAndReply(), in which case it will be run after the
+    // owner key file was stored to disk.
+    if (callback) {
+      PostReply(FROM_HERE, std::move(callback), true /* success */);
+    }
   }
 }
 
-bool FakeSessionManagerClient::SupportsRestartToApplyUserFlags() const {
-  return supports_restart_to_apply_user_flags_;
+bool FakeSessionManagerClient::SupportsBrowserRestart() const {
+  return supports_browser_restart_;
 }
 
 void FakeSessionManagerClient::SetFlagsForUser(
@@ -524,14 +602,27 @@ void FakeSessionManagerClient::SetFlagsForUser(
   flags_for_user_[cryptohome_id] = flags;
 }
 
+void FakeSessionManagerClient::SetFeatureFlagsForUser(
+    const cryptohome::AccountIdentifier& cryptohome_id,
+    const std::vector<std::string>& feature_flags) {
+  // session_manager's SetFeatureFlagsForUser implementation has the side effect
+  // of clearing flags, match that behavior.
+  flags_for_user_[cryptohome_id] = {};
+}
+
 void FakeSessionManagerClient::GetServerBackedStateKeys(
     StateKeysCallback callback) {
+  if (force_state_keys_missing_) {
+    PostReply(FROM_HERE, std::move(callback), std::vector<std::string>());
+    return;
+  }
+
   if (policy_storage_ == PolicyStorageType::kOnDisk) {
     base::FilePath owner_key_path;
     CHECK(base::PathService::Get(dbus_paths::FILE_OWNER_KEY, &owner_key_path));
     const base::FilePath state_keys_path =
         owner_key_path.DirName().AppendASCII(kStubStateKeysFileName);
-    base::PostTaskWithTraitsAndReplyWithResult(
+    base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE,
         {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
         base::BindOnce(&ReadCreateStateKeysStub, state_keys_path),
@@ -543,45 +634,39 @@ void FakeSessionManagerClient::GetServerBackedStateKeys(
 
 void FakeSessionManagerClient::StartArcMiniContainer(
     const login_manager::StartArcMiniContainerRequest& request,
-    StartArcMiniContainerCallback callback) {
+    VoidDBusMethodCallback callback) {
   last_start_arc_mini_container_request_ = request;
 
   if (!arc_available_) {
-    PostReply(FROM_HERE, std::move(callback), base::nullopt);
+    PostReply(FROM_HERE, std::move(callback), false);
     return;
   }
   // This is starting a new container.
-  base::Base64Encode(kFakeContainerInstanceId, &container_instance_id_);
-  PostReply(FROM_HERE, std::move(callback), container_instance_id_);
+  container_running_ = true;
+  PostReply(FROM_HERE, std::move(callback), true);
 }
 
 void FakeSessionManagerClient::UpgradeArcContainer(
     const login_manager::UpgradeArcContainerRequest& request,
-    base::OnceClosure success_callback,
-    UpgradeErrorCallback error_callback) {
+    VoidDBusMethodCallback callback) {
   last_upgrade_arc_request_ = request;
 
-  if (!arc_available_) {
-    PostReply(FROM_HERE, std::move(error_callback), false);
-    return;
-  }
-  if (low_disk_) {
+  PostReply(FROM_HERE, std::move(callback), !force_upgrade_failure_);
+  if (force_upgrade_failure_) {
+    // Emulate ArcInstanceStopped signal propagation.
     base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
         base::BindOnce(&FakeSessionManagerClient::NotifyArcInstanceStopped,
                        weak_ptr_factory_.GetWeakPtr(),
-                       login_manager::ArcContainerStopReason::LOW_DISK_SPACE,
-                       std::move(container_instance_id_)));
-    PostReply(FROM_HERE, std::move(error_callback), true);
-    return;
+                       login_manager::ArcContainerStopReason::UPGRADE_FAILURE));
   }
-  base::ThreadTaskRunnerHandle::Get()->PostTask(FROM_HERE,
-                                                std::move(success_callback));
 }
 
 void FakeSessionManagerClient::StopArcInstance(
+    const std::string& account_id,
+    bool should_backup_log,
     VoidDBusMethodCallback callback) {
-  if (!arc_available_ || container_instance_id_.empty()) {
+  if (!arc_available_ || !container_running_) {
     PostReply(FROM_HERE, std::move(callback), false /* result */);
     return;
   }
@@ -592,9 +677,9 @@ void FakeSessionManagerClient::StopArcInstance(
       FROM_HERE,
       base::BindOnce(&FakeSessionManagerClient::NotifyArcInstanceStopped,
                      weak_ptr_factory_.GetWeakPtr(),
-                     login_manager::ArcContainerStopReason::USER_REQUEST,
-                     std::move(container_instance_id_)));
-  container_instance_id_.clear();
+                     login_manager::ArcContainerStopReason::USER_REQUEST));
+
+  container_running_ = false;
 }
 
 void FakeSessionManagerClient::SetArcCpuRestriction(
@@ -613,14 +698,23 @@ void FakeSessionManagerClient::GetArcStartTime(
     DBusMethodCallback<base::TimeTicks> callback) {
   PostReply(
       FROM_HERE, std::move(callback),
-      arc_available_ ? base::make_optional(arc_start_time_) : base::nullopt);
+      arc_available_ ? absl::make_optional(arc_start_time_) : absl::nullopt);
+}
+
+void FakeSessionManagerClient::EnableAdbSideload(
+    EnableAdbSideloadCallback callback) {}
+
+void FakeSessionManagerClient::QueryAdbSideload(
+    QueryAdbSideloadCallback callback) {
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), adb_sideload_response_,
+                                adb_sideload_enabled_));
 }
 
 void FakeSessionManagerClient::NotifyArcInstanceStopped(
-    login_manager::ArcContainerStopReason reason,
-    const std::string& container_instance_id) {
+    login_manager::ArcContainerStopReason reason) {
   for (auto& observer : observers_)
-    observer.ArcInstanceStopped(reason, container_instance_id);
+    observer.ArcInstanceStopped(reason);
 }
 
 bool FakeSessionManagerClient::GetFlagsForUser(
@@ -668,15 +762,6 @@ void FakeSessionManagerClient::set_user_policy(
   policy_[GetMemoryStorageKey(descriptor)] = policy_blob;
 }
 
-void FakeSessionManagerClient::set_user_policy_without_session(
-    const cryptohome::AccountIdentifier& cryptohome_id,
-    const std::string& policy_blob) {
-  DCHECK(policy_storage_ == PolicyStorageType::kInMemory);
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_SESSIONLESS_USER, cryptohome_id.account_id());
-  policy_[GetMemoryStorageKey(descriptor)] = policy_blob;
-}
-
 const std::string& FakeSessionManagerClient::device_local_account_policy(
     const std::string& account_id) const {
   DCHECK(policy_storage_ == PolicyStorageType::kInMemory);
@@ -698,6 +783,37 @@ void FakeSessionManagerClient::set_device_local_account_policy(
 void FakeSessionManagerClient::OnPropertyChangeComplete(bool success) {
   for (auto& observer : observers_)
     observer.PropertyChangeComplete(success);
+}
+
+void FakeSessionManagerClient::HandleOwnerKeySet(
+    base::OnceClosure callback_to_run) {
+  for (auto& observer : observers_)
+    observer.OwnerKeySet(true /* success */);
+
+  std::move(callback_to_run).Run();
+}
+
+void FakeSessionManagerClient::set_on_start_device_wipe_callback(
+    base::OnceClosure callback) {
+  on_start_device_wipe_callback_ = std::move(callback);
+}
+
+ScopedFakeSessionManagerClient::ScopedFakeSessionManagerClient() {
+  SessionManagerClient::InitializeFake();
+}
+
+ScopedFakeSessionManagerClient::~ScopedFakeSessionManagerClient() {
+  SessionManagerClient::Shutdown();
+}
+
+ScopedFakeInMemorySessionManagerClient::
+    ScopedFakeInMemorySessionManagerClient() {
+  SessionManagerClient::InitializeFakeInMemory();
+}
+
+ScopedFakeInMemorySessionManagerClient::
+    ~ScopedFakeInMemorySessionManagerClient() {
+  SessionManagerClient::Shutdown();
 }
 
 }  // namespace chromeos

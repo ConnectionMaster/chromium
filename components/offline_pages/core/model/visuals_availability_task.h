@@ -25,16 +25,16 @@ class VisualsAvailabilityTask : public Task {
                           VisualsAvailableCallback exists_callback);
   ~VisualsAvailabilityTask() override;
 
+ private:
   // Task implementation:
   void Run() override;
 
- private:
   void OnVisualsAvailable(VisualsAvailability availability);
 
   OfflinePageMetadataStore* store_;
   int64_t offline_id_;
   VisualsAvailableCallback exists_callback_;
-  base::WeakPtrFactory<VisualsAvailabilityTask> weak_ptr_factory_;
+  base::WeakPtrFactory<VisualsAvailabilityTask> weak_ptr_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(VisualsAvailabilityTask);
 };
 

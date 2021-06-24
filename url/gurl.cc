@@ -7,21 +7,18 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <memory>
 #include <ostream>
+#include <utility>
 
-#include "base/lazy_instance.h"
-#include "base/logging.h"
+#include "base/check_op.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/trace_event/memory_usage_estimator.h"
+#include "third_party/perfetto/include/perfetto/tracing/traced_value.h"
 #include "url/url_canon_stdstring.h"
 #include "url/url_util.h"
-
-namespace {
-
-static base::LazyInstance<GURL>::Leaky empty_gurl = LAZY_INSTANCE_INITIALIZER;
-
-}  // namespace
 
 GURL::GURL() : is_valid_(false) {
 }
@@ -31,7 +28,7 @@ GURL::GURL(const GURL& other)
       is_valid_(other.is_valid_),
       parsed_(other.parsed_) {
   if (other.inner_url_)
-    inner_url_.reset(new GURL(*other.inner_url_));
+    inner_url_ = std::make_unique<GURL>(*other.inner_url_);
   // Valid filesystem urls should always have an inner_url_.
   DCHECK(!is_valid_ || !SchemeIsFileSystem() || inner_url_);
 }
@@ -54,7 +51,7 @@ GURL::GURL(base::StringPiece16 url_string) {
 }
 
 GURL::GURL(const std::string& url_string, RetainWhiteSpaceSelector) {
-  InitCanonical(base::StringPiece(url_string), false);
+  InitCanonical(url_string, false);
 }
 
 GURL::GURL(const char* canonical_spec,
@@ -72,9 +69,8 @@ GURL::GURL(std::string canonical_spec, const url::Parsed& parsed, bool is_valid)
   InitializeFromCanonicalSpec();
 }
 
-template<typename STR>
-void GURL::InitCanonical(base::BasicStringPiece<STR> input_spec,
-                         bool trim_path_end) {
+template <typename T, typename CharT>
+void GURL::InitCanonical(T input_spec, bool trim_path_end) {
   url::StdStringCanonOutput output(&spec_);
   is_valid_ = url::Canonicalize(
       input_spec.data(), static_cast<int>(input_spec.length()), trim_path_end,
@@ -82,8 +78,8 @@ void GURL::InitCanonical(base::BasicStringPiece<STR> input_spec,
 
   output.Complete();  // Must be done before using string.
   if (is_valid_ && SchemeIsFileSystem()) {
-    inner_url_.reset(new GURL(spec_.data(), parsed_.Length(),
-                              *parsed_.inner_parsed(), true));
+    inner_url_ = std::make_unique<GURL>(spec_.data(), parsed_.Length(),
+                                        *parsed_.inner_parsed(), true);
   }
   // Valid URLs always have non-empty specs.
   DCHECK(!is_valid_ || !spec_.empty());
@@ -91,9 +87,8 @@ void GURL::InitCanonical(base::BasicStringPiece<STR> input_spec,
 
 void GURL::InitializeFromCanonicalSpec() {
   if (is_valid_ && SchemeIsFileSystem()) {
-    inner_url_.reset(
-        new GURL(spec_.data(), parsed_.Length(),
-                 *parsed_.inner_parsed(), true));
+    inner_url_ = std::make_unique<GURL>(spec_.data(), parsed_.Length(),
+                                        *parsed_.inner_parsed(), true);
   }
 
 #ifndef NDEBUG
@@ -143,7 +138,7 @@ GURL& GURL::operator=(const GURL& other) {
   else if (inner_url_)
     *inner_url_ = *other.inner_url_;
   else
-    inner_url_.reset(new GURL(*other.inner_url_));
+    inner_url_ = std::make_unique<GURL>(*other.inner_url_);
 
   return *this;
 }
@@ -194,9 +189,9 @@ GURL GURL::Resolve(base::StringPiece relative) const {
   output.Complete();
   result.is_valid_ = true;
   if (result.SchemeIsFileSystem()) {
-    result.inner_url_.reset(
-        new GURL(result.spec_.data(), result.parsed_.Length(),
-                 *result.parsed_.inner_parsed(), true));
+    result.inner_url_ =
+        std::make_unique<GURL>(result.spec_.data(), result.parsed_.Length(),
+                               *result.parsed_.inner_parsed(), true);
   }
   return result;
 }
@@ -220,9 +215,9 @@ GURL GURL::Resolve(base::StringPiece16 relative) const {
   output.Complete();
   result.is_valid_ = true;
   if (result.SchemeIsFileSystem()) {
-    result.inner_url_.reset(
-        new GURL(result.spec_.data(), result.parsed_.Length(),
-                 *result.parsed_.inner_parsed(), true));
+    result.inner_url_ =
+        std::make_unique<GURL>(result.spec_.data(), result.parsed_.Length(),
+                               *result.parsed_.inner_parsed(), true);
   }
   return result;
 }
@@ -243,16 +238,16 @@ GURL GURL::ReplaceComponents(
 
   output.Complete();
   if (result.is_valid_ && result.SchemeIsFileSystem()) {
-    result.inner_url_.reset(new GURL(result.spec_.data(),
-                                     result.parsed_.Length(),
-                                     *result.parsed_.inner_parsed(), true));
+    result.inner_url_ =
+        std::make_unique<GURL>(result.spec_.data(), result.parsed_.Length(),
+                               *result.parsed_.inner_parsed(), true);
   }
   return result;
 }
 
 // Note: code duplicated above (it's inconvenient to use a template here).
 GURL GURL::ReplaceComponents(
-    const url::Replacements<base::char16>& replacements) const {
+    const url::Replacements<char16_t>& replacements) const {
   GURL result;
 
   // Not allowed for invalid URLs.
@@ -266,9 +261,9 @@ GURL GURL::ReplaceComponents(
 
   output.Complete();
   if (result.is_valid_ && result.SchemeIsFileSystem()) {
-    result.inner_url_.reset(new GURL(result.spec_.data(),
-                                     result.parsed_.Length(),
-                                     *result.parsed_.inner_parsed(), true));
+    result.inner_url_ =
+        std::make_unique<GURL>(result.spec_.data(), result.parsed_.Length(),
+                               *result.parsed_.inner_parsed(), true);
   }
   return result;
 }
@@ -293,7 +288,7 @@ GURL GURL::GetOrigin() const {
 }
 
 GURL GURL::GetAsReferrer() const {
-  if (!SchemeIsValidForReferrer())
+  if (!is_valid() || !IsReferrerScheme(spec_.data(), parsed_.scheme))
     return GURL();
 
   if (!has_ref() && !has_username() && !has_password())
@@ -339,16 +334,11 @@ bool GURL::IsStandard() const {
 }
 
 bool GURL::IsAboutBlank() const {
-  if (!SchemeIs(url::kAboutScheme))
-    return false;
+  return IsAboutUrl(url::kAboutBlankPath);
+}
 
-  if (has_host() || has_username() || has_password() || has_port())
-    return false;
-
-  if (path() != url::kAboutBlankPath && path() != url::kAboutBlankWithHashPath)
-    return false;
-
-  return true;
+bool GURL::IsAboutSrcdoc() const {
+  return IsAboutUrl(url::kAboutSrcdocPath);
 }
 
 bool GURL::SchemeIs(base::StringPiece lower_ascii_scheme) const {
@@ -362,10 +352,6 @@ bool GURL::SchemeIs(base::StringPiece lower_ascii_scheme) const {
 
 bool GURL::SchemeIsHTTPOrHTTPS() const {
   return SchemeIs(url::kHttpScheme) || SchemeIs(url::kHttpsScheme);
-}
-
-bool GURL::SchemeIsValidForReferrer() const {
-  return is_valid_ && IsReferrerScheme(spec_.data(), parsed_.scheme);
 }
 
 bool GURL::SchemeIsWSOrWSS() const {
@@ -406,14 +392,14 @@ std::string GURL::ExtractFileName() const {
   return ComponentString(file_component);
 }
 
-std::string GURL::PathForRequest() const {
+base::StringPiece GURL::PathForRequestPiece() const {
   DCHECK(parsed_.path.len > 0)
       << "Canonical path for requests should be non-empty";
   if (parsed_.ref.len >= 0) {
     // Clip off the reference when it exists. The reference starts after the
     // #-sign, so we have to subtract one to also remove it.
-    return std::string(spec_, parsed_.path.begin,
-                       parsed_.ref.begin - parsed_.path.begin - 1);
+    return base::StringPiece(&spec_[parsed_.path.begin],
+                             parsed_.ref.begin - parsed_.path.begin - 1);
   }
   // Compute the actual path length, rather than depending on the spec's
   // terminator. If we're an inner_url, our spec continues on into our outer
@@ -422,11 +408,15 @@ std::string GURL::PathForRequest() const {
   if (parsed_.query.is_valid())
     path_len = parsed_.query.end() - parsed_.path.begin;
 
-  return std::string(spec_, parsed_.path.begin, path_len);
+  return base::StringPiece(&spec_[parsed_.path.begin], path_len);
+}
+
+std::string GURL::PathForRequest() const {
+  return std::string(PathForRequestPiece());
 }
 
 std::string GURL::HostNoBrackets() const {
-  return HostNoBracketsPiece().as_string();
+  return std::string(HostNoBracketsPiece());
 }
 
 base::StringPiece GURL::HostNoBracketsPiece() const {
@@ -453,7 +443,8 @@ bool GURL::HostIsIPAddress() const {
 }
 
 const GURL& GURL::EmptyGURL() {
-  return empty_gurl.Get();
+  static base::NoDestructor<GURL> empty_gurl;
+  return *empty_gurl;
 }
 
 bool GURL::DomainIs(base::StringPiece canonical_domain) const {
@@ -487,6 +478,40 @@ size_t GURL::EstimateMemoryUsage() const {
          (parsed_.inner_parsed() ? sizeof(url::Parsed) : 0);
 }
 
+bool GURL::IsAboutUrl(base::StringPiece allowed_path) const {
+  if (!SchemeIs(url::kAboutScheme))
+    return false;
+
+  if (has_host() || has_username() || has_password() || has_port())
+    return false;
+
+  return IsAboutPath(path_piece(), allowed_path);
+}
+
+// static
+bool GURL::IsAboutPath(base::StringPiece actual_path,
+                       base::StringPiece allowed_path) {
+  if (!base::StartsWith(actual_path, allowed_path))
+    return false;
+
+  if (actual_path.size() == allowed_path.size()) {
+    DCHECK_EQ(actual_path, allowed_path);
+    return true;
+  }
+
+  if ((actual_path.size() == allowed_path.size() + 1) &&
+      actual_path.back() == '/') {
+    DCHECK_EQ(actual_path, std::string(allowed_path) + '/');
+    return true;
+  }
+
+  return false;
+}
+
+void GURL::WriteIntoTrace(perfetto::TracedValue context) const {
+  std::move(context).WriteString(possibly_invalid_spec());
+}
+
 std::ostream& operator<<(std::ostream& out, const GURL& url) {
   return out << url.possibly_invalid_spec();
 }
@@ -500,7 +525,9 @@ bool operator!=(const GURL& x, const GURL& y) {
 }
 
 bool operator==(const GURL& x, const base::StringPiece& spec) {
-  DCHECK_EQ(GURL(spec).possibly_invalid_spec(), spec);
+  DCHECK_EQ(GURL(spec).possibly_invalid_spec(), spec)
+      << "Comparisons of GURLs and strings must ensure as a precondition that "
+         "the string is fully canonicalized.";
   return x.possibly_invalid_spec() == spec;
 }
 

@@ -7,10 +7,12 @@
 #import <WebKit/WebKit.h>
 
 #import "base/ios/block_types.h"
+#include "base/memory/ptr_util.h"
 #include "base/task/post_task.h"
 #import "ios/web/browsing_data/browsing_data_remover_observer.h"
+#import "ios/web/common/uikit_ui_util.h"
 #import "ios/web/public/browser_state.h"
-#import "ios/web/public/web_thread.h"
+#import "ios/web/public/thread/web_thread.h"
 #import "ios/web/web_state/ui/wk_web_view_configuration_provider.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -79,7 +81,7 @@ void BrowsingDataRemover::ClearBrowsingData(ClearBrowsingDataMask types,
   }
 
   if (![data_types_to_remove count]) {
-    base::PostTask(FROM_HERE, base::BindOnce(std::move(block_closure)));
+    std::move(block_closure).Run();
     return;
   }
 
@@ -135,8 +137,7 @@ void BrowsingDataRemover::ClearBrowsingData(ClearBrowsingDataMask types,
       // remove/check the cookies which indicates that we might have the same
       // issue with cookies. Adding the web view to the view hierarchy as a safe
       // guard.
-      [[UIApplication sharedApplication].keyWindow insertSubview:dummy_web_view_
-                                                         atIndex:0];
+      [GetAnyKeyWindow() insertSubview:dummy_web_view_ atIndex:0];
     }
   }
 

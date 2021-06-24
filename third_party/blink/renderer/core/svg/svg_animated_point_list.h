@@ -37,20 +37,9 @@
 namespace blink {
 
 class SVGAnimatedPointList final
-    : public GarbageCollectedFinalized<SVGAnimatedPointList>,
+    : public GarbageCollected<SVGAnimatedPointList>,
       public SVGAnimatedProperty<SVGPointList> {
-  USING_GARBAGE_COLLECTED_MIXIN(SVGAnimatedPointList);
-
  public:
-  static SVGAnimatedPointList* Create(
-      SVGElement* context_element,
-      const QualifiedName& attribute_name,
-      SVGPointList* initial_value,
-      CSSPropertyID css_property_id = CSSPropertyID::kInvalid) {
-    return MakeGarbageCollected<SVGAnimatedPointList>(
-        context_element, attribute_name, initial_value, css_property_id);
-  }
-
   SVGAnimatedPointList(SVGElement* context_element,
                        const QualifiedName& attribute_name,
                        SVGPointList* initial_value,
@@ -63,4 +52,4 @@ class SVGAnimatedPointList final
 
 }  // namespace blink
 
-#endif
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_SVG_SVG_ANIMATED_POINT_LIST_H_

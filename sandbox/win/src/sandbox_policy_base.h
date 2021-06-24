@@ -12,15 +12,15 @@
 
 #include <list>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/process/launch.h"
-#include "base/strings/string16.h"
 #include "base/win/scoped_handle.h"
-#include "sandbox/win/src/app_container_profile_base.h"
+#include "sandbox/win/src/app_container_base.h"
 #include "sandbox/win/src/crosscall_server.h"
 #include "sandbox/win/src/handle_closer.h"
 #include "sandbox/win/src/ipc_tags.h"
@@ -32,6 +32,8 @@
 namespace sandbox {
 
 class LowLevelPolicy;
+class PolicyDiagnostic;
+class PolicyInfo;
 class TargetProcess;
 struct PolicyGlobal;
 
@@ -49,7 +51,7 @@ class PolicyBase final : public TargetPolicy {
   JobLevel GetJobLevel() const override;
   ResultCode SetJobMemoryLimit(size_t memory_limit) override;
   ResultCode SetAlternateDesktop(bool alternate_winstation) override;
-  base::string16 GetAlternateDesktop() const override;
+  std::wstring GetAlternateDesktop() const override;
   ResultCode CreateAlternateDesktop(bool alternate_winstation) override;
   void DestroyAlternateDesktop() override;
   ResultCode SetIntegrityLevel(IntegrityLevel integrity_level) override;
@@ -68,23 +70,27 @@ class PolicyBase final : public TargetPolicy {
                      Semantics semantics,
                      const wchar_t* pattern) override;
   ResultCode AddDllToUnload(const wchar_t* dll_name) override;
-  ResultCode AddKernelObjectToClose(const base::char16* handle_type,
-                                    const base::char16* handle_name) override;
+  ResultCode AddKernelObjectToClose(const wchar_t* handle_type,
+                                    const wchar_t* handle_name) override;
   void AddHandleToShare(HANDLE handle) override;
   void SetLockdownDefaultDacl() override;
-  void SetEnableOPMRedirection() override;
-  bool GetEnableOPMRedirection() override;
+  void AddRestrictingRandomSid() override;
   ResultCode AddAppContainerProfile(const wchar_t* package_name,
                                     bool create_profile) override;
-  scoped_refptr<AppContainerProfile> GetAppContainerProfile() override;
+  scoped_refptr<AppContainer> GetAppContainer() override;
   void SetEffectiveToken(HANDLE token) override;
+  std::unique_ptr<PolicyInfo> GetPolicyInfo() override;
 
   // Get the AppContainer profile as its internal type.
-  scoped_refptr<AppContainerProfileBase> GetAppContainerProfileBase();
+  scoped_refptr<AppContainerBase> GetAppContainerBase();
 
   // Creates a Job object with the level specified in a previous call to
   // SetJobLevel().
   ResultCode MakeJobObject(base::win::ScopedHandle* job);
+
+  // Updates the active process limit on the job to zero. Has no effect
+  // if the job is allowed to spawn processes.
+  ResultCode DropActiveProcessLimit(base::win::ScopedHandle* job);
 
   // Creates the two tokens with the levels specified in a previous call to
   // SetTokenLevel(). Also creates a lowbox token if specified based on the
@@ -97,14 +103,18 @@ class PolicyBase final : public TargetPolicy {
 
   // Adds a target process to the internal list of targets. Internally a
   // call to TargetProcess::Init() is issued.
-  ResultCode AddTarget(TargetProcess* target);
+  ResultCode AddTarget(std::unique_ptr<TargetProcess> target);
 
   // Called when there are no more active processes in a Job.
   // Removes a Job object associated with this policy and the target associated
-  // with the job.
+  // with the job. If a process is not in a job, call OnProcessFinished().
   bool OnJobEmpty(HANDLE job);
 
-  EvalResult EvalPolicy(int service, CountedParameterSetBase* params);
+  // Called when a process no longer needs to be tracked. Processes in jobs
+  // should be notified via OnJobEmpty instead.
+  bool OnProcessFinished(DWORD process_id);
+
+  EvalResult EvalPolicy(IpcTag service, CountedParameterSetBase* params);
 
   HANDLE GetStdoutHandle();
   HANDLE GetStderrHandle();
@@ -113,13 +123,15 @@ class PolicyBase final : public TargetPolicy {
   const base::HandlesToInheritVector& GetHandlesBeingShared();
 
  private:
+  // Allow PolicyInfo to snapshot PolicyBase for diagnostics.
+  friend class PolicyDiagnostic;
   ~PolicyBase();
 
-  // Sets up interceptions for a new target.
-  ResultCode SetupAllInterceptions(TargetProcess* target);
+  // Sets up interceptions for a new target. This policy must own |target|.
+  ResultCode SetupAllInterceptions(TargetProcess& target);
 
-  // Sets up the handle closer for a new target.
-  bool SetupHandleCloser(TargetProcess* target);
+  // Sets up the handle closer for a new target. This policy must own |target|.
+  bool SetupHandleCloser(TargetProcess& target);
 
   ResultCode AddRuleInternal(SubSystem subsystem,
                              Semantics semantics,
@@ -129,7 +141,7 @@ class PolicyBase final : public TargetPolicy {
   CRITICAL_SECTION lock_;
   // Maintains the list of target process associated with this policy.
   // The policy takes ownership of them.
-  typedef std::list<TargetProcess*> TargetSet;
+  typedef std::list<std::unique_ptr<TargetProcess>> TargetSet;
   TargetSet targets_;
   // Standard object-lifetime reference counter.
   volatile LONG ref_count;
@@ -156,15 +168,14 @@ class PolicyBase final : public TargetPolicy {
   // Memory structure that stores the low level policy.
   PolicyGlobal* policy_;
   // The list of dlls to unload in the target process.
-  std::vector<base::string16> blacklisted_dlls_;
+  std::vector<std::wstring> blocklisted_dlls_;
   // This is a map of handle-types to names that we need to close in the
   // target process. A null set means we need to close all handles of the
   // given type.
   HandleCloser handle_closer_;
-  PSID lowbox_sid_;
-  base::win::ScopedHandle lowbox_directory_;
   std::unique_ptr<Dispatcher> dispatcher_;
   bool lockdown_default_dacl_;
+  bool add_restricting_random_sid_;
 
   static HDESK alternate_desktop_handle_;
   static HWINSTA alternate_winstation_handle_;
@@ -177,9 +188,8 @@ class PolicyBase final : public TargetPolicy {
   // This list contains handles other than the stderr/stdout handles which are
   // shared with the target at times.
   base::HandlesToInheritVector handles_to_share_;
-  bool enable_opm_redirection_;
 
-  scoped_refptr<AppContainerProfileBase> app_container_profile_;
+  scoped_refptr<AppContainerBase> app_container_;
 
   HANDLE effective_token_;
 

@@ -77,10 +77,10 @@ BeginFrameArgs CreateBeginFrameArgsForTesting(
 }
 
 bool operator==(const BeginFrameArgs& lhs, const BeginFrameArgs& rhs) {
-  return (lhs.type == rhs.type) && (lhs.source_id == rhs.source_id) &&
-         (lhs.sequence_number == rhs.sequence_number) &&
+  return (lhs.type == rhs.type) && (lhs.frame_id == rhs.frame_id) &&
          (lhs.frame_time == rhs.frame_time) && (lhs.deadline == rhs.deadline) &&
-         (lhs.interval == rhs.interval);
+         (lhs.interval == rhs.interval) &&
+         (lhs.frames_throttled_since_last == rhs.frames_throttled_since_last);
 }
 
 ::std::ostream& operator<<(::std::ostream& os, const BeginFrameArgs& args) {
@@ -90,16 +90,15 @@ bool operator==(const BeginFrameArgs& lhs, const BeginFrameArgs& rhs) {
 
 void PrintTo(const BeginFrameArgs& args, ::std::ostream* os) {
   *os << "BeginFrameArgs(" << BeginFrameArgs::TypeToString(args.type) << ", "
-      << args.source_id << ", " << args.sequence_number << ", "
-      << args.frame_time.since_origin().InMicroseconds() << ", "
+      << args.frame_id.source_id << ", " << args.frame_id.sequence_number
+      << ", " << args.frame_time.since_origin().InMicroseconds() << ", "
       << args.deadline.since_origin().InMicroseconds() << ", "
-      << args.interval.InMicroseconds() << "us)";
+      << args.interval.InMicroseconds() << "us, "
+      << args.frames_throttled_since_last << ")";
 }
 
 bool operator==(const BeginFrameAck& lhs, const BeginFrameAck& rhs) {
-  return (lhs.source_id == rhs.source_id) &&
-         (lhs.sequence_number == rhs.sequence_number) &&
-         (lhs.has_damage == rhs.has_damage);
+  return (lhs.frame_id == rhs.frame_id) && (lhs.has_damage == rhs.has_damage);
 }
 
 ::std::ostream& operator<<(::std::ostream& os, const BeginFrameAck& args) {
@@ -108,8 +107,8 @@ bool operator==(const BeginFrameAck& lhs, const BeginFrameAck& rhs) {
 }
 
 void PrintTo(const BeginFrameAck& ack, ::std::ostream* os) {
-  *os << "BeginFrameAck(" << ack.source_id << ", " << ack.sequence_number
-      << ", " << ack.has_damage << ")";
+  *os << "BeginFrameAck(" << ack.frame_id.source_id << ", "
+      << ack.frame_id.sequence_number << ", " << ack.has_damage << ")";
 }
 
 }  // namespace viz

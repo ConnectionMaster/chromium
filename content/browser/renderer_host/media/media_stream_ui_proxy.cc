@@ -9,16 +9,15 @@
 #include "base/bind.h"
 #include "base/command_line.h"
 #include "base/macros.h"
-#include "base/task/post_task.h"
-#include "content/browser/frame_host/frame_tree_node.h"
-#include "content/browser/frame_host/render_frame_host_delegate.h"
-#include "content/browser/frame_host/render_frame_host_impl.h"
+#include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/render_frame_host_delegate.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/media_stream_request.h"
 #include "content/public/common/content_switches.h"
 #include "media/capture/video/fake_video_capture_device.h"
-#include "third_party/blink/public/mojom/feature_policy/feature_policy.mojom.h"
+#include "third_party/blink/public/mojom/permissions_policy/permissions_policy.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -26,9 +25,10 @@ namespace content {
 
 bool IsFeatureEnabled(RenderFrameHost* rfh,
                       bool tests_use_fake_render_frame_hosts,
-                      blink::mojom::FeaturePolicyFeature feature) {
+                      blink::mojom::PermissionsPolicyFeature feature) {
   // Some tests don't (or can't) set up the RenderFrameHost. In these cases we
-  // just ignore feature policy checks (there is no feature policy to test).
+  // just ignore permissions policy checks (there is no permissions policy to
+  // test).
   if (!rfh && tests_use_fake_render_frame_hosts)
     return true;
 
@@ -48,14 +48,14 @@ void SetAndCheckAncestorFlag(MediaStreamRequest* request) {
     // RenderFrame destroyed before the request is handled?
     return;
   }
-  FrameTreeNode* node = rfh->frame_tree_node();
 
-  while (node->parent() != nullptr) {
-    if (!node->HasSameOrigin(*node->parent())) {
+  while (rfh->GetParent()) {
+    if (!rfh->GetLastCommittedOrigin().IsSameOriginWith(
+            rfh->GetParent()->GetLastCommittedOrigin())) {
       request->all_ancestors_have_same_origin =  false;
       return;
     }
-    node = node->parent();
+    rfh = rfh->GetParent();
   }
   request->all_ancestors_have_same_origin = true;
 }
@@ -67,18 +67,26 @@ class MediaStreamUIProxy::Core {
   ~Core();
 
   void RequestAccess(std::unique_ptr<MediaStreamRequest> request);
-  void OnStarted(gfx::NativeViewId* window_id, bool has_source_callback);
+  void OnStarted(gfx::NativeViewId* window_id,
+                 bool has_source_callback,
+                 const std::string& label,
+                 std::vector<DesktopMediaID> screen_capture_ids);
+  void OnDeviceStopped(const std::string& label,
+                       const DesktopMediaID& media_id);
 
-  void ProcessAccessRequestResponse(int render_process_id,
-                                    int render_frame_id,
-                                    const blink::MediaStreamDevices& devices,
-                                    blink::MediaStreamRequestResult result,
-                                    std::unique_ptr<MediaStreamUI> stream_ui);
+  void ProcessAccessRequestResponse(
+      int render_process_id,
+      int render_frame_id,
+      const blink::MediaStreamDevices& devices,
+      blink::mojom::MediaStreamRequestResult result,
+      std::unique_ptr<MediaStreamUI> stream_ui);
 
  private:
   friend class FakeMediaStreamUIProxy;
   void ProcessStopRequestFromUI();
-  void ProcessChangeSourceRequestFromUI();
+  void ProcessChangeSourceRequestFromUI(const DesktopMediaID& media_id);
+  void ProcessStateChangeFromUI(const DesktopMediaID& media,
+                                blink::mojom::MediaStreamStateChange);
   RenderFrameHostDelegate* GetRenderFrameHostDelegate(int render_process_id,
                                                       int render_frame_id);
 
@@ -90,7 +98,11 @@ class MediaStreamUIProxy::Core {
 
   // WeakPtr<> is used to RequestMediaAccessPermission() because there is no way
   // cancel media requests.
-  base::WeakPtrFactory<Core> weak_factory_;
+  base::WeakPtrFactory<Core> weak_factory_{this};
+
+  // Used for calls supplied to `ui_`. Invalidated every time a new UI is
+  // created.
+  base::WeakPtrFactory<Core> weak_factory_for_ui_{this};
 
   DISALLOW_COPY_AND_ASSIGN(Core);
 };
@@ -99,8 +111,7 @@ MediaStreamUIProxy::Core::Core(const base::WeakPtr<MediaStreamUIProxy>& proxy,
                                RenderFrameHostDelegate* test_render_delegate)
     : proxy_(proxy),
       tests_use_fake_render_frame_hosts_(test_render_delegate != nullptr),
-      test_render_delegate_(test_render_delegate),
-      weak_factory_(this) {}
+      test_render_delegate_(test_render_delegate) {}
 
 MediaStreamUIProxy::Core::~Core() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
@@ -117,7 +128,8 @@ void MediaStreamUIProxy::Core::RequestAccess(
   if (!render_delegate) {
     ProcessAccessRequestResponse(
         request->render_process_id, request->render_frame_id,
-        blink::MediaStreamDevices(), blink::MEDIA_DEVICE_FAILED_DUE_TO_SHUTDOWN,
+        blink::MediaStreamDevices(),
+        blink::mojom::MediaStreamRequestResult::FAILED_DUE_TO_SHUTDOWN,
         std::unique_ptr<MediaStreamUI>());
     return;
   }
@@ -130,20 +142,35 @@ void MediaStreamUIProxy::Core::RequestAccess(
                      request->render_frame_id));
 }
 
-void MediaStreamUIProxy::Core::OnStarted(gfx::NativeViewId* window_id,
-                                         bool has_source_callback) {
+void MediaStreamUIProxy::Core::OnStarted(
+    gfx::NativeViewId* window_id,
+    bool has_source_callback,
+    const std::string& label,
+    std::vector<DesktopMediaID> screen_share_ids) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  base::RepeatingClosure device_change_cb;
+  if (!ui_)
+    return;
+
+  MediaStreamUI::SourceCallback device_change_cb;
   if (has_source_callback) {
-    device_change_cb = base::BindRepeating(
-        &Core::ProcessChangeSourceRequestFromUI, base::Unretained(this));
+    device_change_cb =
+        base::BindRepeating(&Core::ProcessChangeSourceRequestFromUI,
+                            weak_factory_for_ui_.GetWeakPtr());
   }
 
+  *window_id =
+      ui_->OnStarted(base::BindOnce(&Core::ProcessStopRequestFromUI,
+                                    weak_factory_for_ui_.GetWeakPtr()),
+                     device_change_cb, label, screen_share_ids,
+                     base::BindRepeating(&Core::ProcessStateChangeFromUI,
+                                         weak_factory_for_ui_.GetWeakPtr()));
+}
+
+void MediaStreamUIProxy::Core::OnDeviceStopped(const std::string& label,
+                                               const DesktopMediaID& media_id) {
   if (ui_) {
-    *window_id = ui_->OnStarted(
-        base::BindOnce(&Core::ProcessStopRequestFromUI, base::Unretained(this)),
-        device_change_cb);
+    ui_->OnDeviceStopped(label, media_id);
   }
 }
 
@@ -151,36 +178,47 @@ void MediaStreamUIProxy::Core::ProcessAccessRequestResponse(
     int render_process_id,
     int render_frame_id,
     const blink::MediaStreamDevices& devices,
-    blink::MediaStreamRequestResult result,
+    blink::mojom::MediaStreamRequestResult result,
     std::unique_ptr<MediaStreamUI> stream_ui) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   blink::MediaStreamDevices filtered_devices;
-  RenderFrameHost* host =
-      RenderFrameHost::FromID(render_process_id, render_frame_id);
+  auto* host = RenderFrameHostImpl::FromID(render_process_id, render_frame_id);
   for (const blink::MediaStreamDevice& device : devices) {
-    if (device.type == blink::MEDIA_DEVICE_AUDIO_CAPTURE &&
-        !IsFeatureEnabled(host, tests_use_fake_render_frame_hosts_,
-                          blink::mojom::FeaturePolicyFeature::kMicrophone)) {
+    if (device.type == blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE &&
+        !IsFeatureEnabled(
+            host, tests_use_fake_render_frame_hosts_,
+            blink::mojom::PermissionsPolicyFeature::kMicrophone)) {
       continue;
     }
 
-    if (device.type == blink::MEDIA_DEVICE_VIDEO_CAPTURE &&
+    if (device.type == blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE &&
         !IsFeatureEnabled(host, tests_use_fake_render_frame_hosts_,
-                          blink::mojom::FeaturePolicyFeature::kCamera)) {
+                          blink::mojom::PermissionsPolicyFeature::kCamera)) {
       continue;
     }
 
     filtered_devices.push_back(device);
   }
-  if (filtered_devices.empty() && result == blink::MEDIA_DEVICE_OK)
-    result = blink::MEDIA_DEVICE_PERMISSION_DENIED;
+  if (filtered_devices.empty() &&
+      result == blink::mojom::MediaStreamRequestResult::OK)
+    result = blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED;
 
-  if (stream_ui)
+  if (stream_ui) {
+    // Callbacks that were supplied to the existing `ui_` are no longer
+    // applicable. This is important as some implementions (TabSharingUIViews)
+    // always run the callback when destroyed. However at the point the UI is
+    // replaced while the screencast is ongoing. Invalidating ensures the
+    // screencast is not terminated. See crbug.com/1155426 for details.
+    weak_factory_for_ui_.InvalidateWeakPtrs();
     ui_ = std::move(stream_ui);
+  }
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
+  if (host && result == blink::mojom::MediaStreamRequestResult::OK)
+    host->OnGrantedMediaStreamAccess();
+
+  GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(&MediaStreamUIProxy::ProcessAccessRequestResponse, proxy_,
                      filtered_devices, result));
 }
@@ -188,18 +226,28 @@ void MediaStreamUIProxy::Core::ProcessAccessRequestResponse(
 void MediaStreamUIProxy::Core::ProcessStopRequestFromUI() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
+  GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(&MediaStreamUIProxy::ProcessStopRequestFromUI, proxy_));
 }
 
-void MediaStreamUIProxy::Core::ProcessChangeSourceRequestFromUI() {
+void MediaStreamUIProxy::Core::ProcessChangeSourceRequestFromUI(
+    const DesktopMediaID& media_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::IO},
+  GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(&MediaStreamUIProxy::ProcessChangeSourceRequestFromUI,
-                     proxy_));
+                     proxy_, media_id));
+}
+
+void MediaStreamUIProxy::Core::ProcessStateChangeFromUI(
+    const DesktopMediaID& media_id,
+    blink::mojom::MediaStreamStateChange new_state) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&MediaStreamUIProxy::ProcessStateChangeFromUI,
+                                proxy_, media_id, new_state));
 }
 
 RenderFrameHostDelegate* MediaStreamUIProxy::Core::GetRenderFrameHostDelegate(
@@ -225,8 +273,7 @@ std::unique_ptr<MediaStreamUIProxy> MediaStreamUIProxy::CreateForTests(
 }
 
 MediaStreamUIProxy::MediaStreamUIProxy(
-    RenderFrameHostDelegate* test_render_delegate)
-    : weak_factory_(this) {
+    RenderFrameHostDelegate* test_render_delegate) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   core_.reset(new Core(weak_factory_.GetWeakPtr(), test_render_delegate));
 }
@@ -241,53 +288,77 @@ void MediaStreamUIProxy::RequestAccess(
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   response_callback_ = std::move(response_callback);
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(&Core::RequestAccess, base::Unretained(core_.get()),
                      std::move(request)));
 }
 
-void MediaStreamUIProxy::OnStarted(base::OnceClosure stop_callback,
-                                   base::RepeatingClosure source_callback,
-                                   WindowIdCallback window_id_callback) {
+void MediaStreamUIProxy::OnStarted(
+    base::OnceClosure stop_callback,
+    MediaStreamUI::SourceCallback source_callback,
+    WindowIdCallback window_id_callback,
+    const std::string& label,
+    std::vector<DesktopMediaID> screen_share_ids,
+    MediaStreamUI::StateChangeCallback state_change_callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   stop_callback_ = std::move(stop_callback);
   source_callback_ = std::move(source_callback);
+  state_change_callback_ = std::move(state_change_callback);
 
   // Owned by the PostTaskAndReply callback.
   gfx::NativeViewId* window_id = new gfx::NativeViewId(0);
 
-  base::PostTaskWithTraitsAndReply(
-      FROM_HERE, {BrowserThread::UI},
+  GetUIThreadTaskRunner({})->PostTaskAndReply(
+      FROM_HERE,
       base::BindOnce(&Core::OnStarted, base::Unretained(core_.get()), window_id,
-                     !!source_callback_),
+                     !!source_callback_, label, screen_share_ids),
       base::BindOnce(&MediaStreamUIProxy::OnWindowId,
                      weak_factory_.GetWeakPtr(), std::move(window_id_callback),
                      base::Owned(window_id)));
 }
 
+void MediaStreamUIProxy::OnDeviceStopped(const std::string& label,
+                                         const DesktopMediaID& media_id) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(&Core::OnDeviceStopped, base::Unretained(core_.get()),
+                     label, media_id));
+}
+
 void MediaStreamUIProxy::ProcessAccessRequestResponse(
     const blink::MediaStreamDevices& devices,
-    blink::MediaStreamRequestResult result) {
+    blink::mojom::MediaStreamRequestResult result) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   DCHECK(!response_callback_.is_null());
 
-  base::ResetAndReturn(&response_callback_).Run(devices, result);
+  std::move(response_callback_).Run(devices, result);
 }
 
 void MediaStreamUIProxy::ProcessStopRequestFromUI() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(!stop_callback_.is_null());
-
-  base::ResetAndReturn(&stop_callback_).Run();
+  if (stop_callback_)
+    std::move(stop_callback_).Run();
 }
 
-void MediaStreamUIProxy::ProcessChangeSourceRequestFromUI() {
+void MediaStreamUIProxy::ProcessChangeSourceRequestFromUI(
+    const DesktopMediaID& media_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   if (source_callback_)
-    source_callback_.Run();
+    source_callback_.Run(media_id);
+}
+
+void MediaStreamUIProxy::ProcessStateChangeFromUI(
+    const DesktopMediaID& media_id,
+    blink::mojom::MediaStreamStateChange new_state) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+
+  if (state_change_callback_)
+    state_change_callback_.Run(media_id, new_state);
 }
 
 void MediaStreamUIProxy::OnWindowId(WindowIdCallback window_id_callback,
@@ -328,14 +399,14 @@ void FakeMediaStreamUIProxy::RequestAccess(
   if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
           switches::kUseFakeUIForMediaStream) == "deny") {
     // Immediately deny the request.
-    base::PostTaskWithTraits(
-        FROM_HERE, {BrowserThread::UI},
-        base::BindOnce(&MediaStreamUIProxy::Core::ProcessAccessRequestResponse,
-                       base::Unretained(core_.get()),
-                       request->render_process_id, request->render_frame_id,
-                       blink::MediaStreamDevices(),
-                       blink::MEDIA_DEVICE_PERMISSION_DENIED,
-                       std::unique_ptr<MediaStreamUI>()));
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &MediaStreamUIProxy::Core::ProcessAccessRequestResponse,
+            base::Unretained(core_.get()), request->render_process_id,
+            request->render_frame_id, blink::MediaStreamDevices(),
+            blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED,
+            std::unique_ptr<MediaStreamUI>()));
     return;
   }
 
@@ -347,15 +418,15 @@ void FakeMediaStreamUIProxy::RequestAccess(
   // fake UI.
   for (blink::MediaStreamDevices::const_iterator it = devices_.begin();
        it != devices_.end(); ++it) {
-    if (!accepted_audio &&
-        IsAudioInputMediaType(request->audio_type) &&
-        IsAudioInputMediaType(it->type) &&
+    if (!accepted_audio && blink::IsAudioInputMediaType(request->audio_type) &&
+        blink::IsAudioInputMediaType(it->type) &&
         (request->requested_audio_device_id.empty() ||
          request->requested_audio_device_id == it->id)) {
       devices_to_use.push_back(*it);
       accepted_audio = true;
-    } else if (!accepted_video && IsVideoInputMediaType(request->video_type) &&
-               IsVideoInputMediaType(it->type) &&
+    } else if (!accepted_video &&
+               blink::IsVideoInputMediaType(request->video_type) &&
+               blink::IsVideoInputMediaType(it->type) &&
                (request->requested_video_device_id.empty() ||
                 request->requested_video_device_id == it->id)) {
       devices_to_use.push_back(*it);
@@ -364,23 +435,33 @@ void FakeMediaStreamUIProxy::RequestAccess(
   }
 
   // Fail the request if a device doesn't exist for the requested type.
-  if ((request->audio_type != blink::MEDIA_NO_SERVICE && !accepted_audio) ||
-      (request->video_type != blink::MEDIA_NO_SERVICE && !accepted_video)) {
+  if ((request->audio_type != blink::mojom::MediaStreamType::NO_SERVICE &&
+       !accepted_audio) ||
+      (request->video_type != blink::mojom::MediaStreamType::NO_SERVICE &&
+       !accepted_video)) {
     devices_to_use.clear();
   }
 
-  base::PostTaskWithTraits(
-      FROM_HERE, {BrowserThread::UI},
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
       base::BindOnce(&MediaStreamUIProxy::Core::ProcessAccessRequestResponse,
                      base::Unretained(core_.get()), request->render_process_id,
                      request->render_frame_id, devices_to_use,
-                     devices_to_use.empty() ? blink::MEDIA_DEVICE_NO_HARDWARE
-                                            : blink::MEDIA_DEVICE_OK,
+                     devices_to_use.empty()
+                         ? blink::mojom::MediaStreamRequestResult::NO_HARDWARE
+                         : blink::mojom::MediaStreamRequestResult::OK,
                      std::unique_ptr<MediaStreamUI>()));
 }
 
-void FakeMediaStreamUIProxy::OnStarted(base::OnceClosure stop_callback,
-                                       base::RepeatingClosure source_callback,
-                                       WindowIdCallback window_id_callback) {}
+void FakeMediaStreamUIProxy::OnStarted(
+    base::OnceClosure stop_callback,
+    MediaStreamUI::SourceCallback source_callback,
+    WindowIdCallback window_id_callback,
+    const std::string& label,
+    std::vector<DesktopMediaID> screen_share_ids,
+    MediaStreamUI::StateChangeCallback state_change_callback) {}
+
+void FakeMediaStreamUIProxy::OnDeviceStopped(const std::string& label,
+                                             const DesktopMediaID& media_id) {}
 
 }  // namespace content

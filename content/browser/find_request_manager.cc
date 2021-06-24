@@ -5,14 +5,14 @@
 #include "content/browser/find_request_manager.h"
 
 #include <algorithm>
+#include <utility>
 
 #include "base/bind.h"
+#include "base/containers/contains.h"
 #include "base/containers/queue.h"
 #include "content/browser/find_in_page_client.h"
-#include "content/browser/frame_host/render_frame_host_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
-#include "content/common/frame_messages.h"
-#include "content/public/browser/guest_mode.h"
 
 namespace content {
 
@@ -21,29 +21,25 @@ namespace {
 // The following functions allow traversal over all frames, including those
 // across WebContentses.
 //
-// Note that there are currently two different ways in which an inner
-// WebContents may be embedded in an outer WebContents:
-//
-// 1) As a guest of the outer WebContents's BrowserPluginEmbedder.
-// 2) Within an inner WebContentsTreeNode of the outer WebContents's
-//    WebContentsTreeNode.
+// An inner WebContents may be embedded in an outer WebContents via an inner
+// WebContentsTreeNode of the outer WebContents's WebContentsTreeNode.
 
 // Returns all child frames of |node|.
 std::vector<FrameTreeNode*> GetChildren(FrameTreeNode* node) {
-  std::vector<FrameTreeNode*> children(node->child_count());
-  for (size_t i = 0; i != node->child_count(); ++i)
-    children[i] = node->child_at(i);
-
-  if (auto* contents = WebContentsImpl::FromOuterFrameTreeNode(node)) {
-    children.push_back(contents->GetMainFrame()->frame_tree_node());
-  } else {
-    contents = WebContentsImpl::FromFrameTreeNode(node);
-    if (node->IsMainFrame() && contents->GetBrowserPluginEmbedder()) {
-      for (auto* inner_contents : contents->GetInnerWebContents()) {
-        children.push_back(static_cast<WebContentsImpl*>(inner_contents)
-                               ->GetMainFrame()
-                               ->frame_tree_node());
+  std::vector<FrameTreeNode*> children;
+  children.reserve(node->child_count());
+  for (size_t i = 0; i != node->child_count(); ++i) {
+    if (auto* contents = static_cast<WebContentsImpl*>(
+            WebContentsImpl::FromOuterFrameTreeNode(node->child_at(i)))) {
+      // Portals can't receive keyboard events or be focused, so we don't return
+      // find results inside a portal.
+      if (!contents->IsPortal()) {
+        // If the child is used for an inner WebContents then add the inner
+        // WebContents.
+        children.push_back(contents->GetFrameTree()->root());
       }
+    } else {
+      children.push_back(node->child_at(i));
     }
   }
 
@@ -83,22 +79,17 @@ RenderFrameHost* GetDeepestLastChild(RenderFrameHost* rfh) {
 // Returns the parent FrameTreeNode of |node|, if |node| has a parent, or
 // nullptr otherwise.
 FrameTreeNode* GetParent(FrameTreeNode* node) {
+  if (!node)
+    return nullptr;
   if (node->parent())
-    return node->parent();
+    return node->parent()->frame_tree_node();
 
-  // The parent frame may be in another WebContents.
-  if (node->IsMainFrame()) {
-    auto* contents = WebContentsImpl::FromFrameTreeNode(node);
-    if (GuestMode::IsCrossProcessFrameGuest(contents)) {
-      int node_id = contents->GetOuterDelegateFrameTreeNodeId();
-      if (node_id != FrameTreeNode::kFrameTreeNodeInvalidId)
-        return FrameTreeNode::GloballyFindByID(node_id);
-    } else if (auto* outer_contents = contents->GetOuterWebContents()) {
-      return outer_contents->GetMainFrame()->frame_tree_node();
-    }
-  }
+  auto* contents = WebContentsImpl::FromFrameTreeNode(node);
+  if (!node->IsMainFrame() || !contents->GetOuterWebContents())
+    return nullptr;
 
-  return nullptr;
+  return GetParent(FrameTreeNode::GloballyFindByID(
+      contents->GetOuterDelegateFrameTreeNodeId()));
 }
 
 // Returns the previous sibling FrameTreeNode of |node|, if one exists, or
@@ -187,13 +178,15 @@ class FindRequestManager::FrameObserver : public WebContentsObserver {
   FrameObserver(WebContentsImpl* web_contents, FindRequestManager* manager)
       : WebContentsObserver(web_contents), manager_(manager) {}
 
-  ~FrameObserver() override {}
+  ~FrameObserver() override = default;
 
   void DidFinishLoad(RenderFrameHost* rfh, const GURL& validated_url) override {
     if (manager_->current_session_id_ == kInvalidId)
       return;
 
     manager_->RemoveFrame(rfh);
+    // Make sure RenderFrameDeleted will be called to clean up
+    DCHECK(rfh->IsRenderFrameCreated());
     manager_->AddFrame(rfh, true /* force */);
   }
 
@@ -209,10 +202,6 @@ class FindRequestManager::FrameObserver : public WebContentsObserver {
       RemoveFrameRecursively(static_cast<RenderFrameHostImpl*>(old_host));
   }
 
-  void FrameDeleted(RenderFrameHost* rfh) override {
-    manager_->RemoveFrame(rfh);
-  }
-
  private:
   void RemoveFrameRecursively(RenderFrameHostImpl* rfh) {
     for (size_t i = 0; i < rfh->child_count(); ++i)
@@ -226,11 +215,11 @@ class FindRequestManager::FrameObserver : public WebContentsObserver {
   DISALLOW_COPY_AND_ASSIGN(FrameObserver);
 };
 
-FindRequestManager::FindRequest::FindRequest() {}
+FindRequestManager::FindRequest::FindRequest() = default;
 
 FindRequestManager::FindRequest::FindRequest(
     int id,
-    const base::string16& search_text,
+    const std::u16string& search_text,
     blink::mojom::FindOptionsPtr options)
     : id(id), search_text(search_text), options(std::move(options)) {}
 
@@ -239,7 +228,7 @@ FindRequestManager::FindRequest::FindRequest(const FindRequest& request)
       search_text(request.search_text),
       options(request.options.Clone()) {}
 
-FindRequestManager::FindRequest::~FindRequest() {}
+FindRequestManager::FindRequest::~FindRequest() = default;
 
 FindRequestManager::FindRequest& FindRequestManager::FindRequest::operator=(
     const FindRequest& request) {
@@ -256,36 +245,28 @@ FindRequestManager::ActivateNearestFindResultState::
     ActivateNearestFindResultState(float x, float y)
     : current_request_id(GetNextID()), point(x, y) {}
 FindRequestManager::ActivateNearestFindResultState::
-~ActivateNearestFindResultState() {}
+    ~ActivateNearestFindResultState() = default;
 
 FindRequestManager::FrameRects::FrameRects() = default;
 FindRequestManager::FrameRects::FrameRects(const std::vector<gfx::RectF>& rects,
                                            int version)
     : rects(rects), version(version) {}
-FindRequestManager::FrameRects::~FrameRects() {}
+FindRequestManager::FrameRects::~FrameRects() = default;
 
 FindRequestManager::FindMatchRectsState::FindMatchRectsState() = default;
-FindRequestManager::FindMatchRectsState::~FindMatchRectsState() {}
+FindRequestManager::FindMatchRectsState::~FindMatchRectsState() = default;
 #endif
 
 // static
 const int FindRequestManager::kInvalidId = -1;
 
 FindRequestManager::FindRequestManager(WebContentsImpl* web_contents)
-    : contents_(web_contents),
-      current_session_id_(kInvalidId),
-      pending_find_next_reply_(nullptr),
-      pending_active_match_ordinal_(false),
-      number_of_matches_(0),
-      active_frame_(nullptr),
-      relative_active_match_ordinal_(0),
-      active_match_ordinal_(0),
-      last_reported_id_(kInvalidId) {}
+    : contents_(web_contents) {}
 
-FindRequestManager::~FindRequestManager() {}
+FindRequestManager::~FindRequestManager() = default;
 
 void FindRequestManager::Find(int request_id,
-                              const base::string16& search_text,
+                              const std::u16string& search_text,
                               blink::mojom::FindOptionsPtr options) {
   // Every find request must have a unique ID, and these IDs must strictly
   // increase so that newer requests always have greater IDs than older
@@ -294,7 +275,7 @@ void FindRequestManager::Find(int request_id,
   DCHECK_GT(request_id, current_session_id_);
 
   // If this is a new find session, clear any queued requests from last session.
-  if (!options->find_next)
+  if (options->new_session)
     find_request_queue_ = base::queue<FindRequest>();
 
   find_request_queue_.emplace(request_id, search_text, std::move(options));
@@ -308,6 +289,9 @@ void FindRequestManager::StopFinding(StopFindAction action) {
       RenderFrameHostImpl* rfh = node->current_frame_host();
       if (!CheckFrame(rfh) || !rfh->IsRenderFrameLive())
         continue;
+      DCHECK(
+          !static_cast<WebContentsImpl*>(WebContents::FromRenderFrameHost(rfh))
+               ->IsPortal());
       rfh->GetFindInPage()->StopFinding(
           static_cast<blink::mojom::StopFindAction>(action));
     }
@@ -340,7 +324,7 @@ void FindRequestManager::HandleFinalUpdateForFrame(RenderFrameHostImpl* rfh,
 
   // This is the final update for all frames for the current find operation.
   if (request_id == current_request_.id && request_id != current_session_id_) {
-    DCHECK(current_request_.options->find_next);
+    DCHECK(!current_request_.options->new_session);
     DCHECK_EQ(pending_find_next_reply_, rfh);
     pending_find_next_reply_ = nullptr;
   }
@@ -409,6 +393,11 @@ void FindRequestManager::RemoveFrame(RenderFrameHost* rfh) {
   if (current_session_id_ == kInvalidId || !CheckFrame(rfh))
     return;
 
+  // Make sure to always clear the highlighted selection. It is useful in case
+  // the user goes back to the same page using the BackForwardCache.
+  static_cast<RenderFrameHostImpl*>(rfh)->GetFindInPage()->StopFinding(
+      blink::mojom::StopFindAction::kStopFindActionClearSelection);
+
   // If matches are counted for the frame that is being removed, decrement the
   // match total before erasing that entry.
   auto it = find_in_page_clients_.find(rfh);
@@ -416,6 +405,14 @@ void FindRequestManager::RemoveFrame(RenderFrameHost* rfh) {
     number_of_matches_ -= it->second->number_of_matches();
     find_in_page_clients_.erase(it);
   }
+
+  // If this is a main frame, then clear the search queue as well, since we
+  // shouldn't be dispatching any more requests. Note that if any other frame is
+  // removed, we can target any queued requests to the focused frame or main
+  // frame. However, if the main frame is removed we will not have a valid
+  // RenderFrameHost to target for the request queue.
+  if (!rfh->GetParent())
+    find_request_queue_ = base::queue<FindRequest>();
 
   // Update the active match ordinal, since it may have changed.
   if (active_frame_ == rfh) {
@@ -433,10 +430,8 @@ void FindRequestManager::RemoveFrame(RenderFrameHost* rfh) {
     activate_.nearest_frame = nullptr;
 
   // Match rects in the removed frame are no longer relevant.
-  if (match_rects_.frame_rects.count(rfh)) {
-    match_rects_.frame_rects.erase(rfh);
+  if (match_rects_.frame_rects.erase(rfh) != 0)
     ++match_rects_.known_version;
-  }
 
   // A reply should not be expected from the removed frame.
   RemoveNearestFindResultPendingReply(rfh);
@@ -445,16 +440,16 @@ void FindRequestManager::RemoveFrame(RenderFrameHost* rfh) {
 
   // If no pending find replies are expected for the removed frame, then just
   // report the updated results.
-  if (!pending_initial_replies_.count(rfh) && pending_find_next_reply_ != rfh) {
+  if (!base::Contains(pending_initial_replies_, rfh) &&
+      pending_find_next_reply_ != rfh) {
     bool final_update =
         pending_initial_replies_.empty() && !pending_find_next_reply_;
     NotifyFindReply(current_session_id_, final_update);
     return;
   }
 
-  if (pending_initial_replies_.count(rfh)) {
+  if (pending_initial_replies_.erase(rfh) != 0) {
     // A reply should not be expected from the removed frame.
-    pending_initial_replies_.erase(rfh);
     if (pending_initial_replies_.empty()) {
       FinalUpdateReceived(current_session_id_, rfh);
     }
@@ -487,6 +482,9 @@ void FindRequestManager::ActivateNearestFindResult(float x, float y) {
       if (!CheckFrame(rfh) || !rfh->IsRenderFrameLive())
         continue;
 
+      DCHECK(
+          !static_cast<WebContentsImpl*>(WebContents::FromRenderFrameHost(rfh))
+               ->IsPortal());
       activate_.pending_replies.insert(rfh);
       // Lifetime of FindRequestManager > RenderFrameHost > Mojo connection,
       // so it's safe to bind |this| and |rfh|.
@@ -503,7 +501,7 @@ void FindRequestManager::OnGetNearestFindResultReply(RenderFrameHostImpl* rfh,
                                                      int request_id,
                                                      float distance) {
   if (request_id != activate_.current_request_id ||
-      !activate_.pending_replies.count(rfh)) {
+      !base::Contains(activate_.pending_replies, rfh)) {
     return;
   }
 
@@ -519,22 +517,26 @@ void FindRequestManager::OnGetNearestFindResultReply(RenderFrameHostImpl* rfh,
 void FindRequestManager::RequestFindMatchRects(int current_version) {
   match_rects_.pending_replies.clear();
   match_rects_.request_version = current_version;
+  match_rects_.active_rect = gfx::RectF();
 
   // Request the latest find match rects from each frame.
   for (WebContentsImpl* contents : contents_->GetWebContentsAndAllInner()) {
-    for (FrameTreeNode* node : contents->GetFrameTree()->Nodes()) {
-      RenderFrameHostImpl* rfh = node->current_frame_host();
+    if (!contents->IsPortal()) {
+      for (FrameTreeNode* node : contents->GetFrameTree()->Nodes()) {
+        RenderFrameHostImpl* rfh = node->current_frame_host();
 
-      if (!CheckFrame(rfh) || !rfh->IsRenderFrameLive())
-        continue;
+        if (!CheckFrame(rfh) || !rfh->IsRenderFrameLive())
+          continue;
 
-      match_rects_.pending_replies.insert(rfh);
-      auto it = match_rects_.frame_rects.find(rfh);
-      int version = (it != match_rects_.frame_rects.end()) ? it->second.version
-                                                           : kInvalidId;
-      rfh->GetFindInPage()->FindMatchRects(
-          version, base::BindOnce(&FindRequestManager::OnFindMatchRectsReply,
-                                  base::Unretained(this), rfh));
+        match_rects_.pending_replies.insert(rfh);
+        auto it = match_rects_.frame_rects.find(rfh);
+        int version = (it != match_rects_.frame_rects.end())
+                          ? it->second.version
+                          : kInvalidId;
+        rfh->GetFindInPage()->FindMatchRects(
+            version, base::BindOnce(&FindRequestManager::OnFindMatchRectsReply,
+                                    base::Unretained(this), rfh));
+      }
     }
   }
 }
@@ -580,7 +582,7 @@ void FindRequestManager::FindInternal(const FindRequest& request) {
   DCHECK_GT(request.id, current_request_.id);
   DCHECK_GT(request.id, current_session_id_);
 
-  if (request.options->find_next) {
+  if (!request.options->new_session) {
     // This is a find next operation.
 
     // This implies that there is an ongoing find session with the same search
@@ -604,9 +606,14 @@ void FindRequestManager::FindInternal(const FindRequest& request) {
   // This is an initial find operation.
   Reset(request);
   for (WebContentsImpl* contents : contents_->GetWebContentsAndAllInner()) {
-    frame_observers_.push_back(std::make_unique<FrameObserver>(contents, this));
-    for (FrameTreeNode* node : contents->GetFrameTree()->Nodes()) {
-      AddFrame(node->current_frame_host(), false /* force */);
+    // Portals can't receive keyboard events or be focused, so we don't return
+    // find results inside a portal.
+    if (!contents->IsPortal()) {
+      frame_observers_.push_back(
+          std::make_unique<FrameObserver>(contents, this));
+      for (FrameTreeNode* node : contents->GetFrameTree()->Nodes()) {
+        AddFrame(node->current_frame_host(), false /* force */);
+      }
     }
   }
 }
@@ -627,10 +634,10 @@ void FindRequestManager::SendFindRequest(const FindRequest& request,
   DCHECK(CheckFrame(rfh));
   DCHECK(rfh->IsRenderFrameLive());
 
-  if (request.options->find_next)
-    pending_find_next_reply_ = rfh;
-  else
+  if (request.options->new_session)
     pending_initial_replies_.insert(rfh);
+  else
+    pending_find_next_reply_ = rfh;
 
   static_cast<RenderFrameHostImpl*>(rfh)->GetFindInPage()->Find(
       request.id, base::UTF16ToUTF8(request.search_text),
@@ -670,10 +677,15 @@ RenderFrameHost* FindRequestManager::Traverse(RenderFrameHost* from_rfh,
   DCHECK(from_rfh);
   // If |from_rfh| is being detached, it might already be removed from
   // its parent's list of children, meaning we can't traverse it correctly.
-  if (!static_cast<RenderFrameHostImpl*>(from_rfh)->is_active())
+  // We also don't traverse when |from_rfh| is in back-forward cache as we don't
+  // allow any updates in this state.
+  auto* from_rfh_impl = static_cast<RenderFrameHostImpl*>(from_rfh);
+  if (from_rfh_impl->IsPendingDeletion() ||
+      from_rfh_impl->IsInBackForwardCache()) {
     return nullptr;
-  FrameTreeNode* node =
-      static_cast<RenderFrameHostImpl*>(from_rfh)->frame_tree_node();
+  }
+
+  FrameTreeNode* node = from_rfh_impl->frame_tree_node();
   FrameTreeNode* last_node = node;
   while ((node = TraverseNode(node, forward, wrap)) != nullptr) {
     if (!CheckFrame(node->current_frame_host())) {
@@ -687,7 +699,7 @@ RenderFrameHost* FindRequestManager::Traverse(RenderFrameHost* from_rfh,
     RenderFrameHost* current_rfh = node->current_frame_host();
     if (!matches_only ||
         find_in_page_clients_.find(current_rfh)->second->number_of_matches() ||
-        pending_initial_replies_.count(current_rfh)) {
+        base::Contains(pending_initial_replies_, current_rfh)) {
       // Note that if there is still a pending reply expected for this frame,
       // then it may have unaccounted matches and will not be skipped via
       // |matches_only|.
@@ -712,13 +724,13 @@ void FindRequestManager::AddFrame(RenderFrameHost* rfh, bool force) {
 
   FindRequest request = current_request_;
   request.id = current_session_id_;
-  request.options->find_next = false;
+  request.options->new_session = true;
   request.options->force = force;
   SendFindRequest(request, rfh);
 }
 
 bool FindRequestManager::CheckFrame(RenderFrameHost* rfh) const {
-  return rfh && find_in_page_clients_.count(rfh);
+  return rfh && base::Contains(find_in_page_clients_, rfh);
 }
 
 void FindRequestManager::UpdateActiveMatchOrdinal() {
@@ -745,6 +757,7 @@ void FindRequestManager::UpdateActiveMatchOrdinal() {
 void FindRequestManager::FinalUpdateReceived(int request_id,
                                              RenderFrameHost* rfh) {
   if (!number_of_matches_ ||
+      !current_request_.options->find_match ||
       (active_match_ordinal_ && !pending_active_match_ordinal_) ||
       pending_find_next_reply_) {
     // All the find results for |request_id| are in and ready to report. Note
@@ -761,7 +774,7 @@ void FindRequestManager::FinalUpdateReceived(int request_id,
 
   RenderFrameHost* target_rfh;
   if (request_id == current_request_.id &&
-      current_request_.options->find_next) {
+      !current_request_.options->new_session) {
     // If this was a find next operation, then the active match will be in the
     // next frame with matches after this one.
     target_rfh = Traverse(rfh, current_request_.options->forward,
@@ -795,7 +808,7 @@ void FindRequestManager::FinalUpdateReceived(int request_id,
   // has not yet been found.
   NotifyFindReply(request_id, false /* final_update */);
 
-  current_request_.options->find_next = true;
+  current_request_.options->new_session = false;
   SendFindRequest(current_request_, target_rfh);
 }
 
@@ -823,30 +836,29 @@ void FindRequestManager::RemoveFindMatchRectsPendingReply(
     return;
 
   match_rects_.pending_replies.erase(it);
-  if (match_rects_.pending_replies.empty()) {
-    // All replies are in.
-    std::vector<gfx::RectF> aggregate_rects;
-    if (match_rects_.request_version != match_rects_.known_version) {
-      // Request version is stale, so aggregate and report the newer find
-      // match rects. The rects should be aggregated in search order.
-      for (RenderFrameHost* frame = GetInitialFrame(true /* forward */); frame;
-           frame = Traverse(frame,
-                            true /* forward */,
-                            true /* matches_only */,
-                            false /* wrap */)) {
-        auto frame_it = match_rects_.frame_rects.find(frame);
-        if (frame_it == match_rects_.frame_rects.end())
-          continue;
+  if (!match_rects_.pending_replies.empty())
+    return;
 
-        std::vector<gfx::RectF>& frame_rects = frame_it->second.rects;
-        aggregate_rects.insert(
-            aggregate_rects.end(), frame_rects.begin(), frame_rects.end());
-      }
+  // All replies are in.
+  std::vector<gfx::RectF> aggregate_rects;
+  if (match_rects_.request_version != match_rects_.known_version) {
+    // Request version is stale, so aggregate and report the newer find
+    // match rects. The rects should be aggregated in search order.
+    for (RenderFrameHost* frame = GetInitialFrame(true /* forward */); frame;
+         frame = Traverse(frame, true /* forward */, true /* matches_only */,
+                          false /* wrap */)) {
+      auto frame_it = match_rects_.frame_rects.find(frame);
+      if (frame_it == match_rects_.frame_rects.end())
+        continue;
+
+      std::vector<gfx::RectF>& frame_rects = frame_it->second.rects;
+      aggregate_rects.insert(aggregate_rects.end(), frame_rects.begin(),
+                             frame_rects.end());
     }
-    contents_->NotifyFindMatchRectsReply(
-        match_rects_.known_version, aggregate_rects, match_rects_.active_rect);
   }
+  contents_->NotifyFindMatchRectsReply(
+      match_rects_.known_version, aggregate_rects, match_rects_.active_rect);
 }
-#endif
+#endif  // defined(OS_ANDROID)
 
 }  // namespace content

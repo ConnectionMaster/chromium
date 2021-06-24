@@ -9,45 +9,11 @@
 #include "base/lazy_instance.h"
 #include "base/task/post_task.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/host/chromoting_host_context.h"
 #include "remoting/host/it2me/it2me_native_messaging_host.h"
 #include "remoting/host/policy_watcher.h"
-#include "ui/events/system_input_injector.h"
-
-#if defined(USE_OZONE)
-#include "ui/ozone/public/ozone_platform.h"
-#endif
-
-namespace {
-
-#if defined(USE_OZONE)
-class OzoneSystemInputInjectorAdaptor
-    : public ::ui::SystemInputInjectorFactory {
- public:
-  std::unique_ptr<ui::SystemInputInjector> CreateSystemInputInjector()
-      override {
-    return ui::OzonePlatform::GetInstance()->CreateSystemInputInjector();
-  }
-};
-
-base::LazyInstance<OzoneSystemInputInjectorAdaptor>::Leaky
-    g_ozone_system_input_injector_adaptor = LAZY_INSTANCE_INITIALIZER;
-#endif
-
-ui::SystemInputInjectorFactory* GetInputInjector() {
-  ui::SystemInputInjectorFactory* system = ui::GetSystemInputInjectorFactory();
-  if (system)
-    return system;
-
-#if defined(USE_OZONE)
-  return g_ozone_system_input_injector_adaptor.Pointer();
-#endif
-
-  return nullptr;
-}
-
-}  // namespace
 
 namespace remoting {
 
@@ -60,9 +26,8 @@ CreateIt2MeNativeMessagingHostForChromeOS(
   std::unique_ptr<ChromotingHostContext> context =
       ChromotingHostContext::CreateForChromeOS(
           io_runnner, ui_runnner,
-          base::CreateSingleThreadTaskRunnerWithTraits(
-              {base::MayBlock(), base::TaskPriority::BEST_EFFORT}),
-          GetInputInjector());
+          base::ThreadPool::CreateSingleThreadTaskRunner(
+              {base::MayBlock(), base::TaskPriority::BEST_EFFORT}));
   std::unique_ptr<PolicyWatcher> policy_watcher =
       PolicyWatcher::CreateWithPolicyService(policy_service);
   std::unique_ptr<extensions::NativeMessageHost> host(

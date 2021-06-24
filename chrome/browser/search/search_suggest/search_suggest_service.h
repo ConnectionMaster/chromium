@@ -9,27 +9,34 @@
 #include <string>
 
 #include "base/observer_list.h"
-#include "base/optional.h"
 #include "chrome/browser/search/search_suggest/search_suggest_data.h"
 #include "chrome/browser/search/search_suggest/search_suggest_loader.h"
 #include "chrome/browser/search/search_suggest/search_suggest_service_observer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class Profile;
 
-namespace identity {
+namespace signin {
 class IdentityManager;
-}  // namespace identity
+}  // namespace signin
 
 // A service that downloads, caches, and hands out SearchSuggestData. It never
 // initiates a download automatically, only when Refresh is called. When the
 // user signs in or out, the cached value is cleared.
 class SearchSuggestService : public KeyedService {
  public:
+  // Search suggestions should be disabled when on-focus zero-prefix suggestions
+  // are displaying in the NTP. So this returns false if either the NTP_REALBOX
+  // or INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS zero-suggest variants are
+  // enabled. Search suggestions can still be forced on regardless of
+  // zero-suggest state by enabling ntp_features::kSearchSuggestChips.
+  static bool IsEnabled();
+
   SearchSuggestService(Profile* profile,
-                       identity::IdentityManager* identity_manager,
+                       signin::IdentityManager* identity_manager,
                        std::unique_ptr<SearchSuggestLoader> loader);
   ~SearchSuggestService() override;
 
@@ -38,11 +45,9 @@ class SearchSuggestService : public KeyedService {
 
   // Returns the currently cached SearchSuggestData, if any.
   // Virtual for testing.
-  virtual const base::Optional<SearchSuggestData>& search_suggest_data() const;
+  virtual const absl::optional<SearchSuggestData>& search_suggest_data() const;
 
-  const SearchSuggestLoader::Status& search_suggest_status() const {
-    return search_suggest_status_;
-  }
+  virtual const SearchSuggestLoader::Status& search_suggest_status() const;
 
   // Determines if a request for search suggestions should be made. If a request
   // should not be made immediately call SearchSuggestDataLoaded with the
@@ -110,7 +115,7 @@ class SearchSuggestService : public KeyedService {
   // If the |status|==FATAL_ERROR freeze future requests until the request
   // freeze interval has elapsed.
   void SearchSuggestDataLoaded(SearchSuggestLoader::Status status,
-                               const base::Optional<SearchSuggestData>& data);
+                               const absl::optional<SearchSuggestData>& data);
 
  private:
   class SigninObserver;
@@ -142,7 +147,7 @@ class SearchSuggestService : public KeyedService {
 
   base::ObserverList<SearchSuggestServiceObserver, true>::Unchecked observers_;
 
-  base::Optional<SearchSuggestData> search_suggest_data_;
+  absl::optional<SearchSuggestData> search_suggest_data_;
 
   SearchSuggestLoader::Status search_suggest_status_;
 };

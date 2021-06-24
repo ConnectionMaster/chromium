@@ -4,7 +4,8 @@
 
 #include "base/bind.h"
 #include "base/command_line.h"
-#include "base/message_loop/message_loop.h"
+#include "base/message_loop/message_pump_type.h"
+#include "base/task/single_thread_task_executor.h"
 #include "base/test/launcher/unit_test_launcher.h"
 #include "base/test/test_suite.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -12,14 +13,19 @@
 namespace {
 
 int RunHelper(base::TestSuite* test_suite) {
-  base::MessageLoopForIO message_loop;
+  base::SingleThreadTaskExecutor io_task_executor(base::MessagePumpType::IO);
   return test_suite->Run();
 }
 
 }  // namespace
 
+// Definition located in third_party/dawn/src/tests/unittests/validation/ValidationTest.h
+// Forward declared here to avoid pulling in the Dawn headers.
+void InitDawnValidationTestEnvironment(int argc, char** argv);
+
 int main(int argc, char** argv) {
   base::CommandLine::Init(argc, argv);
+  InitDawnValidationTestEnvironment(argc, argv);
   testing::InitGoogleMock(&argc, argv);
   base::TestSuite test_suite(argc, argv);
   int rt = base::LaunchUnitTestsSerially(

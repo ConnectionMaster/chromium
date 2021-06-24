@@ -17,6 +17,7 @@
   opacity: 0;
   position: absolute;
   will-change: opacity, transform;
+  word-break: break-word;
 }
 
 #container.shown-initially {
@@ -133,6 +134,7 @@
   grid-column: 2;
   margin-top: 3px;
   margin-bottom: 4px;
+  white-space: pre-line;
 }
 
 #sub-message {

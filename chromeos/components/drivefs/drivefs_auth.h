@@ -12,18 +12,22 @@
 #include "base/component_export.h"
 #include "base/macros.h"
 #include "base/time/clock.h"
+#include "base/timer/timer.h"
 #include "chromeos/components/drivefs/mojom/drivefs.mojom.h"
-#include "services/identity/public/mojom/identity_accessor.mojom.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class AccountId;
+class GoogleServiceAuthError;
 
 namespace network {
 class SharedURLLoaderFactory;
 }  // namespace network
 
-namespace service_manager {
-class Connector;
-}  // namespace service_manager
+namespace signin {
+struct AccessTokenInfo;
+class IdentityManager;
+class PrimaryAccountAccessTokenFetcher;
+}  // namespace signin
 
 namespace drivefs {
 
@@ -36,9 +40,10 @@ class COMPONENT_EXPORT(DRIVEFS) DriveFsAuth {
 
     virtual scoped_refptr<network::SharedURLLoaderFactory>
     GetURLLoaderFactory() = 0;
-    virtual service_manager::Connector* GetConnector() = 0;
+    virtual signin::IdentityManager* GetIdentityManager() = 0;
     virtual const AccountId& GetAccountId() = 0;
     virtual std::string GetObfuscatedAccountId() = 0;
+    virtual bool IsMetricsCollectionEnabled() = 0;
 
    private:
     DISALLOW_COPY_AND_ASSIGN(Delegate);
@@ -46,6 +51,7 @@ class COMPONENT_EXPORT(DRIVEFS) DriveFsAuth {
 
   DriveFsAuth(const base::Clock* clock,
               const base::FilePath& profile_path,
+              std::unique_ptr<base::OneShotTimer> timer,
               Delegate* delegate);
   virtual ~DriveFsAuth();
 
@@ -57,33 +63,34 @@ class COMPONENT_EXPORT(DRIVEFS) DriveFsAuth {
     return delegate_->GetObfuscatedAccountId();
   }
 
-  base::Optional<std::string> GetCachedAccessToken();
+  bool IsMetricsCollectionEnabled() {
+    return delegate_->IsMetricsCollectionEnabled();
+  }
+
+  absl::optional<std::string> GetCachedAccessToken();
 
   virtual void GetAccessToken(
       bool use_cached,
       mojom::DriveFsDelegate::GetAccessTokenCallback callback);
 
  private:
-  void AccountReady(const AccountInfo& info,
-                    const identity::AccountState& state);
-
-  void GotChromeAccessToken(const base::Optional<std::string>& access_token,
-                            base::Time expiration_time,
-                            const GoogleServiceAuthError& error);
+  void GotChromeAccessToken(GoogleServiceAuthError error,
+                            signin::AccessTokenInfo access_token_info);
 
   const std::string& GetOrResetCachedToken(bool use_cached);
 
   void UpdateCachedToken(const std::string& token, base::Time expiry);
 
-  identity::mojom::IdentityAccessor& GetIdentityAccessor();
+  void AuthTimeout();
 
   SEQUENCE_CHECKER(sequence_checker_);
   const base::Clock* const clock_;
   const base::FilePath profile_path_;
+  const std::unique_ptr<base::OneShotTimer> timer_;
   Delegate* const delegate_;
 
-  // The connection to the identity service. Access via |GetIdentityAccessor()|.
-  identity::mojom::IdentityAccessorPtr identity_accessor_;
+  std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
+      access_token_fetcher_;
 
   // Pending callback for an in-flight GetAccessToken request.
   mojom::DriveFsDelegate::GetAccessTokenCallback get_access_token_callback_;

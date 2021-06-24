@@ -44,7 +44,7 @@ void FakeGCMDriverForInstanceID::RemoveInstanceIDData(
 
 void FakeGCMDriverForInstanceID::GetInstanceIDData(
     const std::string& app_id,
-    const GetInstanceIDDataCallback& callback) {
+    GetInstanceIDDataCallback callback) {
   auto iter = instance_id_data_.find(app_id);
   std::string instance_id;
   std::string extra_data;
@@ -53,15 +53,15 @@ void FakeGCMDriverForInstanceID::GetInstanceIDData(
     extra_data = iter->second.second;
   }
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, instance_id, extra_data));
+      FROM_HERE, base::BindOnce(std::move(callback), instance_id, extra_data));
 }
 
 void FakeGCMDriverForInstanceID::GetToken(
     const std::string& app_id,
     const std::string& authorized_entity,
     const std::string& scope,
-    const std::map<std::string, std::string>& options,
-    const GetTokenCallback& callback) {
+    base::TimeDelta time_to_live,
+    GetTokenCallback callback) {
   std::string key = app_id + authorized_entity + scope;
   auto iter = tokens_.find(key);
   std::string token;
@@ -76,7 +76,8 @@ void FakeGCMDriverForInstanceID::GetToken(
   last_gettoken_authorized_entity_ = authorized_entity;
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, token, gcm::GCMClient::SUCCESS));
+      FROM_HERE,
+      base::BindOnce(std::move(callback), token, gcm::GCMClient::SUCCESS));
 }
 
 void FakeGCMDriverForInstanceID::ValidateToken(
@@ -84,16 +85,16 @@ void FakeGCMDriverForInstanceID::ValidateToken(
     const std::string& authorized_entity,
     const std::string& scope,
     const std::string& token,
-    const ValidateTokenCallback& callback) {
+    ValidateTokenCallback callback) {
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, true /* is_valid */));
+      FROM_HERE, base::BindOnce(std::move(callback), true /* is_valid */));
 }
 
 void FakeGCMDriverForInstanceID::DeleteToken(
     const std::string& app_id,
     const std::string& authorized_entity,
     const std::string& scope,
-    const DeleteTokenCallback& callback) {
+    DeleteTokenCallback callback) {
   std::string key_prefix = app_id;
 
   // Calls to InstanceID::DeleteID() will end up deleting the token for a given
@@ -114,7 +115,7 @@ void FakeGCMDriverForInstanceID::DeleteToken(
   last_deletetoken_app_id_ = app_id;
 
   base::ThreadTaskRunnerHandle::Get()->PostTask(
-      FROM_HERE, base::BindOnce(callback, gcm::GCMClient::SUCCESS));
+      FROM_HERE, base::BindOnce(std::move(callback), gcm::GCMClient::SUCCESS));
 }
 
 }  // namespace instance_id

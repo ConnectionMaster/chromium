@@ -10,11 +10,13 @@
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "components/autofill_assistant/browser/web_controller.h"
+#include "components/autofill_assistant/browser/actions/action_delegate_util.h"
+#include "components/autofill_assistant/browser/web/element_finder.h"
+#include "components/autofill_assistant/browser/web/web_controller.h"
 
 namespace autofill_assistant {
 
-BatchElementChecker::BatchElementChecker() : weak_ptr_factory_(this) {}
+BatchElementChecker::BatchElementChecker() {}
 
 BatchElementChecker::~BatchElementChecker() {}
 
@@ -36,18 +38,21 @@ bool BatchElementChecker::empty() const {
   return element_check_callbacks_.empty() && get_field_value_callbacks_.empty();
 }
 
-void BatchElementChecker::Run(WebController* web_controller,
-                              base::OnceCallback<void()> all_done) {
+void BatchElementChecker::AddAllDoneCallback(
+    base::OnceCallback<void()> all_done) {
+  all_done_.emplace_back(std::move(all_done));
+}
+
+void BatchElementChecker::Run(WebController* web_controller) {
   DCHECK(web_controller);
   DCHECK(!started_);
   started_ = true;
 
-  all_done_ = std::move(all_done);
   pending_checks_count_ =
       element_check_callbacks_.size() + get_field_value_callbacks_.size() + 1;
 
   for (auto& entry : element_check_callbacks_) {
-    web_controller->ElementCheck(
+    web_controller->FindElement(
         entry.first, /* strict= */ false,
         base::BindOnce(
             &BatchElementChecker::OnElementChecked,
@@ -58,14 +63,18 @@ void BatchElementChecker::Run(WebController* web_controller,
   }
 
   for (auto& entry : get_field_value_callbacks_) {
-    web_controller->GetFieldValue(
-        entry.first,
+    web_controller->FindElement(
+        entry.first, /* strict= */ true,
         base::BindOnce(
-            &BatchElementChecker::OnGetFieldValue,
-            weak_ptr_factory_.GetWeakPtr(),
-            // Guaranteed to exist for the lifetime of this instance, because
-            // the map isn't modified after Run has been called.
-            base::Unretained(&entry.second)));
+            &action_delegate_util::TakeElementAndGetProperty<std::string>,
+            base::BindOnce(&WebController::GetFieldValue,
+                           web_controller->GetWeakPtr()),
+            base::BindOnce(&BatchElementChecker::OnFieldValueChecked,
+                           weak_ptr_factory_.GetWeakPtr(),
+                           // Guaranteed to exist for the lifetime of
+                           // this instance, because the map isn't
+                           // modified after Run has been called.
+                           base::Unretained(&entry.second))));
   }
 
   // The extra +1 of pending_check_count and this check happening last
@@ -81,20 +90,21 @@ void BatchElementChecker::Run(WebController* web_controller,
 
 void BatchElementChecker::OnElementChecked(
     std::vector<ElementCheckCallback>* callbacks,
-    bool exists) {
+    const ClientStatus& element_status,
+    std::unique_ptr<ElementFinder::Result> element_result) {
   for (auto& callback : *callbacks) {
-    std::move(callback).Run(exists);
+    std::move(callback).Run(element_status, *element_result);
   }
   callbacks->clear();
   CheckDone();
 }
 
-void BatchElementChecker::OnGetFieldValue(
+void BatchElementChecker::OnFieldValueChecked(
     std::vector<GetFieldValueCallback>* callbacks,
-    bool exists,
+    const ClientStatus& status,
     const std::string& value) {
   for (auto& callback : *callbacks) {
-    std::move(callback).Run(exists, value);
+    std::move(callback).Run(status, value);
   }
   callbacks->clear();
   CheckDone();
@@ -104,10 +114,12 @@ void BatchElementChecker::CheckDone() {
   pending_checks_count_--;
   DCHECK_GE(pending_checks_count_, 0);
   if (pending_checks_count_ <= 0) {
-    DCHECK(all_done_);
-    std::move(all_done_).Run();
-    // Don't do anything after calling all_done, since this could have been
-    // deleted.
+    std::vector<base::OnceCallback<void()>> all_done = std::move(all_done_);
+    // Callbacks in all_done_ can delete the current instance. Nothing can
+    // safely access |this| after this point.
+    for (auto& callback : all_done) {
+      std::move(callback).Run();
+    }
   }
 }
 

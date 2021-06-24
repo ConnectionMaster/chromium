@@ -4,9 +4,10 @@
 
 #include "chrome/browser/transition_manager/full_browser_transition_manager.h"
 
+#include "base/containers/contains.h"
 #include "base/no_destructor.h"
-#include "base/stl_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_key.h"
 
 FullBrowserTransitionManager::FullBrowserTransitionManager() = default;
 FullBrowserTransitionManager::~FullBrowserTransitionManager() = default;
@@ -17,7 +18,7 @@ FullBrowserTransitionManager* FullBrowserTransitionManager::Get() {
   return instance.get();
 }
 
-void FullBrowserTransitionManager::RegisterCallbackOnProfileCreation(
+bool FullBrowserTransitionManager::RegisterCallbackOnProfileCreation(
     SimpleFactoryKey* key,
     OnProfileCreationCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -26,8 +27,10 @@ void FullBrowserTransitionManager::RegisterCallbackOnProfileCreation(
   if (iterator != simple_key_to_profile_.end()) {
     // Profile has already been created, run the callback now.
     std::move(callback).Run(iterator->second);
+    return true;
   } else {
     on_profile_creation_callbacks_[key].push_back(std::move(callback));
+    return false;
   }
 }
 
@@ -35,7 +38,7 @@ void FullBrowserTransitionManager::OnProfileCreated(Profile* profile) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   SimpleFactoryKey* key = profile->GetProfileKey();
-  DCHECK(!base::ContainsKey(simple_key_to_profile_, key));
+  DCHECK(!base::Contains(simple_key_to_profile_, key));
 
   // Register the mapping so that it can be used if deferred callbacks are added
   // later.

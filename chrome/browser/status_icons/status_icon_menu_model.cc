@@ -19,8 +19,7 @@ struct StatusIconMenuModel::ItemState {
   bool visible;
   bool is_dynamic;
   ui::Accelerator accelerator;
-  base::string16 label;
-  base::string16 sublabel;
+  std::u16string label;
   gfx::Image icon;
 };
 
@@ -56,16 +55,9 @@ void StatusIconMenuModel::SetAcceleratorForCommandId(
 }
 
 void StatusIconMenuModel::ChangeLabelForCommandId(int command_id,
-                                                  const base::string16& label) {
+                                                  const std::u16string& label) {
   item_states_[command_id].is_dynamic = true;
   item_states_[command_id].label = label;
-  NotifyMenuStateChanged();
-}
-
-void StatusIconMenuModel::ChangeSublabelForCommandId(
-    int command_id, const base::string16& sublabel) {
-  item_states_[command_id].is_dynamic = true;
-  item_states_[command_id].sublabel = sublabel;
   NotifyMenuStateChanged();
 }
 
@@ -123,29 +115,18 @@ bool StatusIconMenuModel::IsItemForCommandIdDynamic(int command_id) const {
   return false;
 }
 
-base::string16 StatusIconMenuModel::GetLabelForCommandId(int command_id) const {
+std::u16string StatusIconMenuModel::GetLabelForCommandId(int command_id) const {
   auto iter = item_states_.find(command_id);
   if (iter != item_states_.end())
     return iter->second.label;
-  return base::string16();
+  return std::u16string();
 }
 
-base::string16 StatusIconMenuModel::GetSublabelForCommandId(
-    int command_id) const {
+ui::ImageModel StatusIconMenuModel::GetIconForCommandId(int command_id) const {
   auto iter = item_states_.find(command_id);
-  if (iter != item_states_.end())
-    return iter->second.sublabel;
-  return base::string16();
-}
-
-bool StatusIconMenuModel::GetIconForCommandId(int command_id,
-                                              gfx::Image* image_skia) const {
-  auto iter = item_states_.find(command_id);
-  if (iter != item_states_.end() && !iter->second.icon.IsEmpty()) {
-    *image_skia = iter->second.icon;
-    return true;
-  }
-  return false;
+  if (iter != item_states_.end() && !iter->second.icon.IsEmpty())
+    return ui::ImageModel::FromImage(iter->second.icon);
+  return ui::ImageModel();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

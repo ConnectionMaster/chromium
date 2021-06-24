@@ -8,7 +8,6 @@
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/logging.h"
 #include "base/path_service.h"
 #include "base/values.h"
 #include "chrome/common/chrome_paths.h"
@@ -43,7 +42,7 @@ std::string ReadAppLocale() {
   if (!base::ReadFileToString(cache_file, &input))
     return std::string();
 
-  base::Optional<base::Value> settings = base::JSONReader::Read(input);
+  absl::optional<base::Value> settings = base::JSONReader::Read(input);
   if (!settings.has_value())
     return std::string();
 

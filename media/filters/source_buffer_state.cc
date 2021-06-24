@@ -9,6 +9,7 @@
 #include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/strings/string_number_conversions.h"
+#include "build/build_config.h"
 #include "media/base/media_switches.h"
 #include "media/base/media_track.h"
 #include "media/base/media_tracks.h"
@@ -16,6 +17,7 @@
 #include "media/filters/chunk_demuxer.h"
 #include "media/filters/frame_processor.h"
 #include "media/filters/source_buffer_stream.h"
+#include "media/media_buildflags.h"
 
 namespace media {
 
@@ -129,13 +131,13 @@ Ranges<TimeDelta> SourceBufferState::ComputeRangesIntersection(
 SourceBufferState::SourceBufferState(
     std::unique_ptr<StreamParser> stream_parser,
     std::unique_ptr<FrameProcessor> frame_processor,
-    const CreateDemuxerStreamCB& create_demuxer_stream_cb,
+    CreateDemuxerStreamCB create_demuxer_stream_cb,
     MediaLog* media_log)
-    : timestamp_offset_during_append_(NULL),
+    : timestamp_offset_during_append_(nullptr),
       parsing_media_segment_(false),
       stream_parser_(stream_parser.release()),
       frame_processor_(frame_processor.release()),
-      create_demuxer_stream_cb_(create_demuxer_stream_cb),
+      create_demuxer_stream_cb_(std::move(create_demuxer_stream_cb)),
       media_log_(media_log),
       state_(UNINITIALIZED) {
   DCHECK(create_demuxer_stream_cb_);
@@ -150,11 +152,11 @@ void SourceBufferState::Init(
     StreamParser::InitCB init_cb,
     const std::string& expected_codecs,
     const StreamParser::EncryptedMediaInitDataCB& encrypted_media_init_data_cb,
-    const NewTextTrackCB& new_text_track_cb) {
+    NewTextTrackCB new_text_track_cb) {
   DCHECK_EQ(state_, UNINITIALIZED);
   init_cb_ = std::move(init_cb);
   encrypted_media_init_data_cb_ = encrypted_media_init_data_cb;
-  new_text_track_cb_ = new_text_track_cb;
+  new_text_track_cb_ = std::move(new_text_track_cb);
   state_ = PENDING_PARSER_CONFIG;
   InitializeParser(expected_codecs);
 }
@@ -196,7 +198,7 @@ void SourceBufferState::SetTracksWatcher(
 }
 
 void SourceBufferState::SetParseWarningCallback(
-    const SourceBufferParseWarningCB& parse_warning_cb) {
+    SourceBufferParseWarningCB parse_warning_cb) {
   // Give the callback to |frame_processor_|; none of these warnings are
   // currently emitted elsewhere.
   frame_processor_->SetParseWarningCallback(parse_warning_cb);
@@ -214,8 +216,8 @@ bool SourceBufferState::Append(const uint8_t* data,
   append_window_end_during_append_ = append_window_end;
   timestamp_offset_during_append_ = timestamp_offset;
 
-  // TODO(wolenetz/acolwell): Curry and pass a NewBuffersCB here bound with
-  // append window and timestamp offset pointer. See http://crbug.com/351454.
+  // TODO(wolenetz): Curry and pass a NewBuffersCB here bound with append window
+  // and timestamp offset pointer. See http://crbug.com/351454.
   bool result = stream_parser_->Parse(data, length);
   if (!result) {
     MEDIA_LOG(ERROR, media_log_)
@@ -224,7 +226,32 @@ bool SourceBufferState::Append(const uint8_t* data,
         << " append_window_end=" << append_window_end.InSecondsF();
   }
 
-  timestamp_offset_during_append_ = NULL;
+  timestamp_offset_during_append_ = nullptr;
+  append_in_progress_ = false;
+  return result;
+}
+
+bool SourceBufferState::AppendChunks(
+    std::unique_ptr<StreamParser::BufferQueue> buffer_queue,
+    TimeDelta append_window_start,
+    TimeDelta append_window_end,
+    TimeDelta* timestamp_offset) {
+  append_in_progress_ = true;
+  DCHECK(timestamp_offset);
+  DCHECK(!timestamp_offset_during_append_);
+  append_window_start_during_append_ = append_window_start;
+  append_window_end_during_append_ = append_window_end;
+  timestamp_offset_during_append_ = timestamp_offset;
+
+  // TODO(wolenetz): Curry and pass a NewBuffersCB here bound with append window
+  // and timestamp offset pointer. See http://crbug.com/351454.
+  bool result = stream_parser_->ProcessChunks(std::move(buffer_queue));
+  if (!result) {
+    MEDIA_LOG(ERROR, media_log_)
+        << __func__ << ": Processing encoded chunks for buffering failed.";
+  }
+
+  timestamp_offset_during_append_ = nullptr;
   append_in_progress_ = false;
   return result;
 }
@@ -239,7 +266,7 @@ void SourceBufferState::ResetParserState(TimeDelta append_window_start,
   append_window_end_during_append_ = append_window_end;
 
   stream_parser_->Flush();
-  timestamp_offset_during_append_ = NULL;
+  timestamp_offset_during_append_ = nullptr;
 
   frame_processor_->Reset();
   parsing_media_segment_ = false;
@@ -313,9 +340,16 @@ bool SourceBufferState::EvictCodedFrames(base::TimeDelta media_time,
 }
 
 void SourceBufferState::OnMemoryPressure(
-    DecodeTimestamp media_time,
+    base::TimeDelta media_time,
     base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level,
     bool force_instant_gc) {
+  // TODO(sebmarchand): Check if MEMORY_PRESSURE_LEVEL_MODERATE should also be
+  // ignored.
+  if (memory_pressure_level ==
+      base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE) {
+    return;
+  }
+
   // Notify video streams about memory pressure first, since video typically
   // takes up the most memory and that's where we can expect most savings.
   for (const auto& it : video_streams_) {
@@ -645,9 +679,8 @@ bool SourceBufferState::OnNewConfigs(
           return false;
         }
         audio_streams_[track_id] = stream;
-        media_log_->SetBooleanProperty("found_audio_stream", true);
-        media_log_->SetStringProperty("audio_codec_name",
-                                      GetCodecName(audio_config.codec()));
+        media_log_->SetProperty<MediaLogProperty::kAudioTracks>(
+            std::vector<AudioDecoderConfig>{audio_config});
       } else {
         if (audio_streams_.size() > 1) {
           auto it = audio_streams_.find(track_id);
@@ -683,6 +716,28 @@ bool SourceBufferState::OnNewConfigs(
                << " config: " << video_config.AsHumanReadableString();
       DCHECK(video_config.IsValidConfig());
 
+      if (video_config.codec() == kCodecHEVC) {
+#if BUILDFLAG(ENABLE_PLATFORM_ENCRYPTED_HEVC)
+        // HEVC is only supported through EME under this build flag, so
+        // require the config to be for an encrypted track. Even so,
+        // conditionally allow clear HEVC if cmdline has test override.
+        if (video_config.encryption_scheme() ==
+                EncryptionScheme::kUnencrypted &&
+            !base::CommandLine::ForCurrentProcess()->HasSwitch(
+                switches::kEnableClearHevcForTesting)) {
+          MEDIA_LOG(ERROR, media_log_)
+              << "MSE playback of HEVC on is only supported via platform "
+                 "decryptor, but the provided HEVC "
+                 "track is not encrypted.";
+          return false;
+        }
+#elif !BUILDFLAG(ENABLE_PLATFORM_HEVC)
+        NOTREACHED()
+            << "MSE parser must not emit HEVC tracks on build configurations "
+               "that do not support HEVC playback via platform.";
+#endif  // BUILDFLAG(ENABLE_PLATFORM_ENCRYPTED_HEVC)
+      }
+
       const auto& it = std::find(expected_vcodecs.begin(),
                                  expected_vcodecs.end(), video_config.codec());
       if (it == expected_vcodecs.end()) {
@@ -702,9 +757,9 @@ bool SourceBufferState::OnNewConfigs(
           return false;
         }
         video_streams_[track_id] = stream;
-        media_log_->SetBooleanProperty("found_video_stream", true);
-        media_log_->SetStringProperty("video_codec_name",
-                                      GetCodecName(video_config.codec()));
+
+        media_log_->SetProperty<MediaLogProperty::kVideoTracks>(
+            std::vector<VideoDecoderConfig>{video_config});
       } else {
         if (video_streams_.size() > 1) {
           auto it = video_streams_.find(track_id);

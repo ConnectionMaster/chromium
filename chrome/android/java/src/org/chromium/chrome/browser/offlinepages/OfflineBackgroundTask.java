@@ -8,14 +8,14 @@ import android.content.Context;
 import android.os.Bundle;
 import android.text.format.DateUtils;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
 import org.chromium.base.Log;
 import org.chromium.base.SysUtils;
-import org.chromium.base.VisibleForTesting;
-import org.chromium.chrome.browser.DeviceConditions;
-import org.chromium.chrome.browser.background_task_scheduler.NativeBackgroundTask;
-import org.chromium.components.background_task_scheduler.BackgroundTask.TaskFinishedCallback;
+import org.chromium.chrome.browser.device.DeviceConditions;
+import org.chromium.components.background_task_scheduler.NativeBackgroundTask;
 import org.chromium.components.background_task_scheduler.TaskIds;
 import org.chromium.components.background_task_scheduler.TaskParameters;
 
@@ -100,9 +100,6 @@ public class OfflineBackgroundTask extends NativeBackgroundTask {
             Bundle taskExtras, Callback<Boolean> callback) {
         // Gather UMA data to measure how often the user's machine is amenable to background
         // loading when we wake to do a task.
-        long taskScheduledTimeMillis = TaskExtrasPacker.unpackTimeFromBundle(taskExtras);
-        OfflinePageUtils.recordWakeupUMA(context, taskScheduledTimeMillis);
-
         DeviceConditions deviceConditions = DeviceConditions.getCurrent(context);
         return bridge.startScheduledProcessing(deviceConditions, callback);
     }

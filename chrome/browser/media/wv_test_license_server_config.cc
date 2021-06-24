@@ -48,8 +48,8 @@ bool WVTestLicenseServerConfig::GetServerCommandLine(
   base::FilePath license_server_path;
   GetLicenseServerPath(&license_server_path);
   if (!base::PathExists(license_server_path)) {
-    DVLOG(0) << "Missing license server file at "
-             << license_server_path.value();
+    LOG(WARNING) << "Missing license server file at "
+                 << license_server_path.value();
     return false;
   }
 
@@ -60,7 +60,8 @@ bool WVTestLicenseServerConfig::GetServerCommandLine(
   if (!base::PathExists(config_path.Append(kKeysFileName)) ||
       !base::PathExists(config_path.Append(kPoliciesFileName)) ||
       !base::PathExists(config_path.Append(kProfilesFileName))) {
-    DVLOG(0) << "Missing license server configuration files.";
+    LOG(WARNING) << "Missing license server configuration files at "
+                 << config_path;
     return false;
   }
 
@@ -69,7 +70,7 @@ bool WVTestLicenseServerConfig::GetServerCommandLine(
 
   // Needed to dynamically load .so libraries used by license server.
   // TODO(shadi): Remove need to set env variable once b/12932983 is fixed.
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   std::unique_ptr<base::Environment> env(base::Environment::Create());
   const char kLibraryPathEnvVarName[] = "LD_LIBRARY_PATH";
   std::string library_paths(license_server_path.DirName().value());
@@ -77,7 +78,7 @@ bool WVTestLicenseServerConfig::GetServerCommandLine(
   if (env->GetVar(kLibraryPathEnvVarName, &old_path))
     library_paths.append(":").append(old_path);
   env->SetVar(kLibraryPathEnvVarName, library_paths);
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 
   // Since it is a Python command line, we need to AppendArg instead of
   // AppendSwitch so that the arguments are passed to the Python server instead
@@ -93,13 +94,13 @@ bool WVTestLicenseServerConfig::GetServerCommandLine(
   return true;
 }
 
-base::Optional<base::EnvironmentMap>
+absl::optional<base::EnvironmentMap>
 WVTestLicenseServerConfig::GetServerEnvironment() {
   // Add the Python protocol buffers files directory to Python path.
   base::FilePath pyproto_dir;
   if (!GetPyProtoPath(&pyproto_dir)) {
-    DVLOG(0) << "Cannot find pyproto directory required by license server.";
-    return base::nullopt;
+    LOG(WARNING) << "Cannot find pyproto directory required by license server.";
+    return absl::nullopt;
   }
 
   base::EnvironmentMap map;
@@ -122,17 +123,19 @@ bool WVTestLicenseServerConfig::SelectServerPort() {
       return true;
     }
   }
-  DVLOG(0) << "Could not find an open port in the range of " <<  kMinPort <<
-             " to " << kMinPort + kPortRangeSize;
+  LOG(WARNING) << "Could not find an open port in the range of " << kMinPort
+               << " to " << kMinPort + kPortRangeSize;
   return false;
 }
 
 bool WVTestLicenseServerConfig::IsPlatformSupported() {
-#if defined(OS_LINUX) && defined(ARCH_CPU_X86_64)
+// TODO(crbug.com/1175344): Reenable OS_LINUX once license server
+// (or Widevine CDM) updated.
+#if defined(OS_CHROMEOS) && defined(ARCH_CPU_X86_64)
   return true;
 #else
   return false;
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_CHROMEOS) && defined(ARCH_CPU_X86_64)
 }
 
 std::string WVTestLicenseServerConfig::GetServerURL() {
@@ -144,12 +147,12 @@ void WVTestLicenseServerConfig::GetLicenseServerPath(base::FilePath *path) {
   GetLicenseServerRootPath(&server_root);
   // Platform-specific license server binary path relative to root.
   *path =
-#if defined(OS_LINUX)
-    server_root.Append(FILE_PATH_LITERAL("linux"))
-               .Append(FILE_PATH_LITERAL("license_server.py"));
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+      server_root.Append(FILE_PATH_LITERAL("linux"))
+          .Append(FILE_PATH_LITERAL("license_server.py"));
 #else
     server_root.Append(FILE_PATH_LITERAL("unsupported_platform"));
-#endif  // defined(OS_LINUX)
+#endif  // defined(OS_LINUX) || defined(OS_CHROMEOS)
 }
 
 void WVTestLicenseServerConfig::GetLicenseServerRootPath(

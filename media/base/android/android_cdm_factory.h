@@ -23,19 +23,18 @@ struct CdmConfig;
 
 class MEDIA_EXPORT AndroidCdmFactory : public CdmFactory {
  public:
-  AndroidCdmFactory(const CreateFetcherCB& create_fetcher_cb,
-                    const CreateStorageCB& create_storage_cb);
+  AndroidCdmFactory(CreateFetcherCB create_fetcher_cb,
+                    CreateStorageCB create_storage_cb);
   ~AndroidCdmFactory() final;
 
   // CdmFactory implementation.
   void Create(const std::string& key_system,
-              const url::Origin& security_origin,
               const CdmConfig& cdm_config,
               const SessionMessageCB& session_message_cb,
               const SessionClosedCB& session_closed_cb,
               const SessionKeysChangeCB& session_keys_change_cb,
               const SessionExpirationUpdateCB& session_expiration_update_cb,
-              const CdmCreatedCB& cdm_created_cb) final;
+              CdmCreatedCB cdm_created_cb) final;
 
  private:
   // Callback for MediaDrmBridgeFactory::Create().
@@ -53,7 +52,7 @@ class MEDIA_EXPORT AndroidCdmFactory : public CdmFactory {
       std::pair<std::unique_ptr<MediaDrmBridgeFactory>, CdmCreatedCB>;
   base::flat_map<uint32_t, PendingCreation> pending_creations_;
 
-  base::WeakPtrFactory<AndroidCdmFactory> weak_factory_;
+  base::WeakPtrFactory<AndroidCdmFactory> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AndroidCdmFactory);
 };

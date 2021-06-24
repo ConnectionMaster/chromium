@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,6 @@
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
-#include "base/time/time.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/capabilities.h"
 #include "gpu/command_buffer/common/command_buffer_id.h"
@@ -53,17 +53,22 @@ class ShaderTranslatorInterface;
 class TransformFeedbackManager;
 class VertexArrayManager;
 
-struct DisallowedFeatures {
-  DisallowedFeatures() = default;
+struct GPU_GLES2_EXPORT DisallowedFeatures {
+  DisallowedFeatures();
+  ~DisallowedFeatures();
+  DisallowedFeatures(const DisallowedFeatures&);
 
   void AllowExtensions() {
     chromium_color_buffer_float_rgba = false;
     chromium_color_buffer_float_rgb = false;
     ext_color_buffer_float = false;
     ext_color_buffer_half_float = false;
+    ext_texture_filter_anisotropic = false;
     oes_texture_float_linear = false;
     oes_texture_half_float_linear = false;
     ext_float_blend = false;
+    oes_fbo_render_mipmap = false;
+    oes_draw_buffers_indexed = false;
   }
 
   bool operator==(const DisallowedFeatures& other) const {
@@ -75,9 +80,12 @@ struct DisallowedFeatures {
   bool chromium_color_buffer_float_rgb = false;
   bool ext_color_buffer_float = false;
   bool ext_color_buffer_half_float = false;
+  bool ext_texture_filter_anisotropic = false;
   bool oes_texture_float_linear = false;
   bool oes_texture_half_float_linear = false;
   bool ext_float_blend = false;
+  bool oes_fbo_render_mipmap = false;
+  bool oes_draw_buffers_indexed = false;
 };
 
 // This class implements the DecoderContext interface, decoding GLES2

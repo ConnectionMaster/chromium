@@ -5,8 +5,6 @@
 #ifndef CHROME_CHROME_CLEANER_OS_FILE_REMOVER_API_H_
 #define CHROME_CHROME_CLEANER_OS_FILE_REMOVER_API_H_
 
-#include <vector>
-
 #include "base/callback.h"
 #include "base/files/file_path.h"
 #include "chrome/chrome_cleaner/os/file_path_set.h"
@@ -20,7 +18,10 @@ class FileRemoverAPI {
   enum class DeletionValidationStatus {
     ALLOWED,
     FORBIDDEN,
-    INACTIVE,
+
+    // Path is unsafe (eg. a UNC path that could be a network share). Do not
+    // even call functions like SanitizePath or NormalizePath on it.
+    UNSAFE,
   };
   // Callback used for the asynchronous versions of RemoveNow
   // and RegisterPostRebootRemoval.

@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/values.h"
 #include "net/base/proxy_server.h"
 #include "net/http/http_network_session.h"
@@ -16,7 +16,6 @@
 #include "net/socket/transport_client_socket_pool.h"
 #include "net/socket/transport_connect_job.h"
 #include "net/socket/websocket_transport_client_socket_pool.h"
-#include "net/ssl/ssl_config_service.h"
 
 namespace net {
 
@@ -25,34 +24,32 @@ class SocketPerformanceWatcherFactory;
 ClientSocketPoolManagerImpl::ClientSocketPoolManagerImpl(
     const CommonConnectJobParams& common_connect_job_params,
     const CommonConnectJobParams& websocket_common_connect_job_params,
-    SSLConfigService* ssl_config_service,
     HttpNetworkSession::SocketPoolType pool_type)
     : common_connect_job_params_(common_connect_job_params),
       websocket_common_connect_job_params_(websocket_common_connect_job_params),
-      ssl_config_service_(ssl_config_service),
       pool_type_(pool_type) {
   // |websocket_endpoint_lock_manager| must only be set for websocket
   // connections.
   DCHECK(!common_connect_job_params_.websocket_endpoint_lock_manager);
   DCHECK(websocket_common_connect_job_params.websocket_endpoint_lock_manager);
-
-  CertDatabase::GetInstance()->AddObserver(this);
 }
 
 ClientSocketPoolManagerImpl::~ClientSocketPoolManagerImpl() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  CertDatabase::GetInstance()->RemoveObserver(this);
 }
 
-void ClientSocketPoolManagerImpl::FlushSocketPoolsWithError(int error) {
+void ClientSocketPoolManagerImpl::FlushSocketPoolsWithError(
+    int net_error,
+    const char* net_log_reason_utf8) {
   for (const auto& it : socket_pools_) {
-    it.second->FlushWithError(error);
+    it.second->FlushWithError(net_error, net_log_reason_utf8);
   }
 }
 
-void ClientSocketPoolManagerImpl::CloseIdleSockets() {
+void ClientSocketPoolManagerImpl::CloseIdleSockets(
+    const char* net_log_reason_utf8) {
   for (const auto& it : socket_pools_) {
-    it.second->CloseIdleSockets();
+    it.second->CloseIdleSockets(net_log_reason_utf8);
   }
 }
 
@@ -79,13 +76,14 @@ ClientSocketPool* ClientSocketPoolManagerImpl::GetSocketPool(
   if (pool_type_ == HttpNetworkSession::WEBSOCKET_SOCKET_POOL &&
       proxy_server.is_direct()) {
     new_pool = std::make_unique<WebSocketTransportClientSocketPool>(
-        sockets_per_proxy_server, sockets_per_group,
+        sockets_per_proxy_server, sockets_per_group, proxy_server,
         &websocket_common_connect_job_params_);
   } else {
     new_pool = std::make_unique<TransportClientSocketPool>(
         sockets_per_proxy_server, sockets_per_group,
-        unused_idle_socket_timeout(pool_type_), &common_connect_job_params_,
-        ssl_config_service_);
+        unused_idle_socket_timeout(pool_type_), proxy_server,
+        pool_type_ == HttpNetworkSession::WEBSOCKET_SOCKET_POOL,
+        &common_connect_job_params_);
   }
 
   std::pair<SocketPoolMap::iterator, bool> ret =
@@ -111,10 +109,6 @@ ClientSocketPoolManagerImpl::SocketPoolInfoToValue() const {
   }
 
   return std::move(list);
-}
-
-void ClientSocketPoolManagerImpl::OnCertDBChanged() {
-  FlushSocketPoolsWithError(ERR_NETWORK_CHANGED);
 }
 
 void ClientSocketPoolManagerImpl::DumpMemoryStats(

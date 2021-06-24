@@ -1,32 +1,43 @@
 {
   "layers": [
     {
-      "name": "LayoutView #document",
-      "bounds": [800, 600],
-      "drawsContent": false,
-      "backgroundColor": "#FFFFFF"
-    },
-    {
-      "name": "Scrolling Layer",
-      "bounds": [800, 600],
-      "drawsContent": false
-    },
-    {
       "name": "Scrolling Contents Layer",
       "bounds": [800, 600],
       "contentsOpaque": true,
       "backgroundColor": "#FFFFFF",
-      "paintInvalidations": [
-        {
-          "object": "LayoutBlockFlow (positioned) DIV",
-          "rect": [0, 50, 106, 106],
-          "reason": "chunk appeared"
-        },
-        {
-          "object": "LayoutBlockFlow HTML",
-          "rect": [0, 50, 106, 106],
-          "reason": "chunk disappeared"
-        }
+      "invalidations": [
+        [0, 50, 106, 106]
+      ]
+    },
+    {
+      "name": "LayoutNGBlockFlow (positioned) DIV",
+      "bounds": [106, 106],
+      "invalidations": [
+        [0, 0, 106, 106]
+      ],
+      "transform": 1
+    },
+    {
+      "name": "Scrolling Contents Layer",
+      "position": [3, 3],
+      "bounds": [100, 200],
+      "transform": 1
+    },
+    {
+      "name": "ContentsLayer for Vertical Scrollbar Layer",
+      "position": [88, 3],
+      "bounds": [15, 100],
+      "transform": 1
+    }
+  ],
+  "transforms": [
+    {
+      "id": 1,
+      "transform": [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 50, 0, 1]
       ]
     }
   ]

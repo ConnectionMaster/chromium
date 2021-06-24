@@ -5,20 +5,19 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_TAB_ICON_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_TAB_ICON_H_
 
-#include "base/macros.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/tabs/tab_network_state.h"
-#include "ui/gfx/animation/animation_delegate.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/animation/linear_animation.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/paint_throbber.h"
+#include "ui/views/animation/animation_delegate_views.h"
 #include "ui/views/view.h"
 
 namespace base {
 class TickClock;
 }
 
-class GURL;
 struct TabRendererData;
 
 // View that displays the favicon, sad tab, throbber, and attention indicator
@@ -29,8 +28,10 @@ struct TabRendererData;
 // the width is TabIcon::GetIdealWidth(), and the height goes down to the
 // bottom of the enclosing view (this is so the crashed tab can animate out of
 // the bottom).
-class TabIcon : public views::View, public gfx::AnimationDelegate {
+class TabIcon : public views::View, public views::AnimationDelegateViews {
  public:
+  METADATA_HEADER(TabIcon);
+
   // Attention indicator types (use as a bitmask). There is only one visual
   // representation, but the state of each of these is tracked separately and
   // the indicator is shown as long as one is enabled.
@@ -40,6 +41,8 @@ class TabIcon : public views::View, public gfx::AnimationDelegate {
   };
 
   TabIcon();
+  TabIcon(const TabIcon&) = delete;
+  TabIcon& operator=(const TabIcon&) = delete;
   ~TabIcon() override;
 
   // Sets the tab data (network state, favicon, load progress, etc.) that are
@@ -50,8 +53,8 @@ class TabIcon : public views::View, public gfx::AnimationDelegate {
   // will be shown as long as any of the types are enabled.
   void SetAttention(AttentionType type, bool enabled);
 
-  bool ShowingLoadingAnimation() const;
-  bool ShowingAttentionIndicator() const;
+  bool GetShowingLoadingAnimation() const;
+  bool GetShowingAttentionIndicator() const;
 
   // Sets whether this object can paint to a layer. When the loading animation
   // is running, painting to a layer saves painting overhead. But if the tab is
@@ -64,8 +67,6 @@ class TabIcon : public views::View, public gfx::AnimationDelegate {
   // strip in order to keep the throbbers in sync.
   void StepLoadingAnimation(const base::TimeDelta& elapsed_time);
 
-  void SetBackgroundColor(SkColor color);
-
  private:
   class CrashAnimation;
   friend CrashAnimation;
@@ -75,7 +76,7 @@ class TabIcon : public views::View, public gfx::AnimationDelegate {
   void OnPaint(gfx::Canvas* canvas) override;
   void OnThemeChanged() override;
 
-  // gfx::AnimationDelegate:
+  // views::AnimationDelegateViews:
   void AnimationProgressed(const gfx::Animation* animation) override;
   void AnimationEnded(const gfx::Animation* animation) override;
 
@@ -95,10 +96,10 @@ class TabIcon : public views::View, public gfx::AnimationDelegate {
   void MaybePaintFavicon(gfx::Canvas* canvas,
                          const gfx::ImageSkia& icon,
                          const gfx::Rect& bounds);
-  bool HasNonDefaultFavicon() const;
+  bool GetNonDefaultFavicon() const;
 
-  // Sets the icon. Depending on the URL the icon may be automatically themed.
-  void SetIcon(const GURL& url, const gfx::ImageSkia& favicon);
+  // Sets the icon.
+  void SetIcon(const gfx::ImageSkia& icon, bool should_themify_favicon);
 
   // For certain types of tabs the loading animation is not desired so the
   // caller can set inhibit_loading_animation to true. When false, the loading
@@ -106,13 +107,12 @@ class TabIcon : public views::View, public gfx::AnimationDelegate {
   void SetNetworkState(TabNetworkState network_state);
 
   // Sets whether the tab should paint as crashed or not.
-  void SetIsCrashed(bool is_crashed);
+  void SetCrashed(bool crashed);
+  bool GetCrashed() const;
 
   // Creates or destroys the layer according to the current animation state and
   // whether a layer can be used.
   void RefreshLayer();
-
-  void UpdateThemedFavicon();
 
   gfx::ImageSkia ThemeImage(const gfx::ImageSkia& source);
 
@@ -120,7 +120,7 @@ class TabIcon : public views::View, public gfx::AnimationDelegate {
 
   gfx::ImageSkia favicon_;
   TabNetworkState network_state_ = TabNetworkState::kNone;
-  bool is_crashed_ = false;
+  bool crashed_ = false;
   int attention_types_ = 0;  // Bitmask of AttentionType.
 
   // Value from last call to SetNetworkState. When true, the network loading
@@ -159,11 +159,7 @@ class TabIcon : public views::View, public gfx::AnimationDelegate {
 
   bool can_paint_to_layer_ = false;
 
-  SkColor bg_color_ = SK_ColorBLACK;
-
   bool has_tab_renderer_data_ = false;
-
-  DISALLOW_COPY_AND_ASSIGN(TabIcon);
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_TAB_ICON_H_

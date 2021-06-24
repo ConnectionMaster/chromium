@@ -24,13 +24,19 @@
 
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/node_rare_data.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
 
 NameNodeList::NameNodeList(ContainerNode& root_node, const AtomicString& name)
     : LiveNodeList(root_node, kNameNodeListType, kInvalidateOnNameAttrChange),
       name_(name) {}
+
+NameNodeList::NameNodeList(ContainerNode& root_node,
+                           CollectionType type,
+                           const AtomicString& name)
+    : NameNodeList(root_node, name) {
+  DCHECK_EQ(type, kNameNodeListType);
+}
 
 NameNodeList::~NameNodeList() = default;
 

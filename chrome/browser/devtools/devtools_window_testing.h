@@ -45,7 +45,7 @@ class DevToolsWindowTesting {
   content::WebContents* main_web_contents();
   content::WebContents* toolbox_web_contents();
   void SetInspectedPageBounds(const gfx::Rect& bounds);
-  void SetCloseCallback(const base::Closure& closure);
+  void SetCloseCallback(base::OnceClosure closure);
   void SetOpenNewWindowForPopups(bool value);
 
  private:
@@ -58,7 +58,7 @@ class DevToolsWindowTesting {
   static DevToolsWindowTesting* Find(DevToolsWindow* window);
 
   DevToolsWindow* devtools_window_;
-  base::Closure close_callback_;
+  base::OnceClosure close_callback_;
 
   DISALLOW_COPY_AND_ASSIGN(DevToolsWindowTesting);
 };
@@ -81,7 +81,7 @@ class DevToolsWindowCreationObserver {
 
   void DevToolsWindowCreated(DevToolsWindow* devtools_window);
 
-  base::Callback<void(DevToolsWindow*)> creation_callback_;
+  base::RepeatingCallback<void(DevToolsWindow*)> creation_callback_;
   DevToolsWindows devtools_windows_;
   scoped_refptr<content::MessageLoopRunner> runner_;
 

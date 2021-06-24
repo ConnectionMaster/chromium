@@ -4,7 +4,7 @@
 
 (async function() {
   TestRunner.addResult(`Tests that modifying stylesheet text with multiple @import at-rules does not crash.\n`);
-  await TestRunner.loadModule('elements_test_runner');
+  await TestRunner.loadModule('elements'); await TestRunner.loadTestModule('elements_test_runner');
   await TestRunner.showPanel('elements');
   await TestRunner.loadHTML(`
     <head>
@@ -24,6 +24,10 @@
   var initialAddsExpected = 3;
   var initialAdded = [];
   await new Promise(f => TestRunner.cssModel.addEventListener(SDK.CSSModel.Events.StyleSheetAdded, function styleSheetAdded(event) {
+    if (event.data.sourceURL === "") {
+      // Don't include the <style> element sheet.
+      return;
+    }
     initialAdded.push(resourceName(event.data.sourceURL));
     if (!(--initialAddsExpected)) {
       initialAdded.sort();

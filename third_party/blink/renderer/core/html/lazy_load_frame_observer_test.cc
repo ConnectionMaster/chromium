@@ -8,12 +8,13 @@
 #include <memory>
 #include <tuple>
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/platform/web_effective_connection_type.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_compositor.h"
@@ -92,18 +93,24 @@ class LazyLoadFramesParamsTest
       : scoped_lazy_frame_loading_for_test_(
             std::get<LazyFrameLoadingFeatureStatus>(GetParam()) ==
             LazyFrameLoadingFeatureStatus::kEnabled),
+        scoped_automatic_lazy_frame_loading_for_test_(
+            std::get<LazyFrameLoadingFeatureStatus>(GetParam()) ==
+            LazyFrameLoadingFeatureStatus::kEnabled),
+        scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+            false),
         scoped_lazy_frame_visible_load_time_metrics_for_test_(
             std::get<LazyFrameVisibleLoadTimeFeatureStatus>(GetParam()) ==
-            LazyFrameVisibleLoadTimeFeatureStatus::kEnabled),
-        scoped_restrict_lazy_frame_loading_to_data_saver_for_test_(false) {}
+            LazyFrameVisibleLoadTimeFeatureStatus::kEnabled) {}
 
   void SetUp() override {
-    WebFrameClient().SetEffectiveConnectionTypeForTesting(
-        std::get<WebEffectiveConnectionType>(GetParam()));
+    GetNetworkStateNotifier().SetNetworkConnectionInfoOverride(
+        true /*on_line*/, kWebConnectionTypeWifi,
+        std::get<WebEffectiveConnectionType>(GetParam()),
+        1000 /*http_rtt_msec*/, 100 /*max_bandwidth_mbps*/);
 
     SimTest::SetUp();
     WebView().MainFrameWidget()->Resize(
-        WebSize(kViewportWidth, kViewportHeight));
+        gfx::Size(kViewportWidth, kViewportHeight));
 
     Settings& settings = WebView().GetPage()->GetSettings();
 
@@ -203,8 +210,8 @@ class LazyLoadFramesParamsTest
       // This SimRequest needs to be created now if the frame won't actually be
       // lazily loaded. Otherwise, it'll be defined later to ensure that the
       // subframe resource isn't requested until the page is scrolled down.
-      child_frame_resource.reset(
-          new SimRequest("https://crossorigin.com/subframe.html", "text/html"));
+      child_frame_resource = std::make_unique<SimRequest>(
+          "https://crossorigin.com/subframe.html", "text/html");
     }
 
     LoadURL("https://example.com/");
@@ -238,8 +245,8 @@ class LazyLoadFramesParamsTest
         "Blink.LazyLoad.CrossOriginFrames.VisibleAfterBeingDeferred", 0);
 
     if (!child_frame_resource) {
-      child_frame_resource.reset(
-          new SimRequest("https://crossorigin.com/subframe.html", "text/html"));
+      child_frame_resource = std::make_unique<SimRequest>(
+          "https://crossorigin.com/subframe.html", "text/html");
     }
 
     return child_frame_resource;
@@ -247,10 +254,12 @@ class LazyLoadFramesParamsTest
 
  private:
   ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test_;
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test_;
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_;
   ScopedLazyFrameVisibleLoadTimeMetricsForTest
       scoped_lazy_frame_visible_load_time_metrics_for_test_;
-  ScopedRestrictLazyFrameLoadingToDataSaverForTest
-      scoped_restrict_lazy_frame_loading_to_data_saver_for_test_;
 
   HistogramTester histogram_tester_;
 };
@@ -374,8 +383,8 @@ TEST_P(LazyLoadFramesParamsTest, BelowTheFoldButNearViewportFrame) {
   ExpectVisibleLoadTimeHistogramSamplesIfApplicable(0, 0);
 
   // Scroll down until the child frame is visible.
-  GetDocument().View()->LayoutViewport()->SetScrollOffset(ScrollOffset(0, 150),
-                                                          kProgrammaticScroll);
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -484,7 +493,7 @@ TEST_P(LazyLoadFramesParamsTest, HiddenAndTinyFrames) {
   // Scroll down to where the hidden frames are.
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
       ScrollOffset(0, kViewportHeight + GetLoadingDistanceThreshold()),
-      kProgrammaticScroll);
+      mojom::blink::ScrollType::kProgrammatic);
 
   // All of the frames on the page are hidden or tiny, so no visible load time
   // samples should have been recorded for them.
@@ -508,7 +517,7 @@ TEST_P(LazyLoadFramesParamsTest, LoadCrossOriginFrameFarFromViewport) {
     // If LazyFrameLoading is enabled, then scroll down near the child frame to
     // cause the child frame to start loading.
     GetDocument().View()->LayoutViewport()->SetScrollOffset(
-        ScrollOffset(0, 150), kProgrammaticScroll);
+        ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
 
     Compositor().BeginFrame();
     test::RunPendingTasks();
@@ -535,7 +544,7 @@ TEST_P(LazyLoadFramesParamsTest, LoadCrossOriginFrameFarFromViewport) {
   // Scroll down so that the child frame is visible.
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
       ScrollOffset(0, GetLoadingDistanceThreshold() + 150),
-      kProgrammaticScroll);
+      mojom::blink::ScrollType::kProgrammatic);
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -561,7 +570,7 @@ TEST_P(LazyLoadFramesParamsTest,
   // Scroll down so that the child frame is visible.
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
       ScrollOffset(0, GetLoadingDistanceThreshold() + 150),
-      kProgrammaticScroll);
+      mojom::blink::ScrollType::kProgrammatic);
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -613,7 +622,7 @@ TEST_P(LazyLoadFramesParamsTest, NestedFrameInCrossOriginFrameFarFromViewport) {
     // If LazyFrameLoading is enabled, then scroll down near the child frame to
     // cause the child frame to start loading.
     GetDocument().View()->LayoutViewport()->SetScrollOffset(
-        ScrollOffset(0, 150), kProgrammaticScroll);
+        ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
 
     Compositor().BeginFrame();
     test::RunPendingTasks();
@@ -684,6 +693,16 @@ TEST_P(LazyLoadFramesParamsTest, AboutBlankChildFrameNavigation) {
                                            ConsoleMessages().end(),
                                            "child frame element onload")));
 
+  if (RuntimeEnabledFeatures::LazyFrameLoadingEnabled()) {
+    // If LazyFrameLoading is enabled, then scroll down near the child frame to
+    // cause the child frame to start loading.
+    GetDocument().View()->LayoutViewport()->SetScrollOffset(
+        ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
+
+    Compositor().BeginFrame();
+    test::RunPendingTasks();
+  }
+
   child_frame_resource.Complete("");
 
   Compositor().BeginFrame();
@@ -697,10 +716,22 @@ TEST_P(LazyLoadFramesParamsTest, AboutBlankChildFrameNavigation) {
   histogram_tester()->ExpectTotalCount(
       "Blink.VisibleBeforeLoaded.LazyLoadEligibleFrames.BelowTheFold", 0);
 
-  for (const auto& pair : kInitialDeferralActionHistogramNames)
-    histogram_tester()->ExpectTotalCount(pair.second, 0);
+  int expected_histogram_count = 0;
+  if (RuntimeEnabledFeatures::LazyFrameLoadingEnabled())
+    expected_histogram_count = 1;
+
+  for (const auto& pair : kInitialDeferralActionHistogramNames) {
+    if (RuntimeEnabledFeatures::LazyFrameLoadingEnabled() &&
+        std::get<WebEffectiveConnectionType>(GetParam()) == pair.first) {
+      histogram_tester()->ExpectTotalCount(pair.second, 1);
+    } else {
+      histogram_tester()->ExpectTotalCount(pair.second, 0);
+    }
+  }
+
   histogram_tester()->ExpectTotalCount(
-      "Blink.LazyLoad.CrossOriginFrames.LoadStartedAfterBeingDeferred", 0);
+      "Blink.LazyLoad.CrossOriginFrames.LoadStartedAfterBeingDeferred",
+      expected_histogram_count);
   histogram_tester()->ExpectTotalCount(
       "Blink.LazyLoad.CrossOriginFrames.VisibleAfterBeingDeferred", 0);
 }
@@ -738,7 +769,7 @@ TEST_P(LazyLoadFramesParamsTest, JavascriptStringFrameUrl) {
 }
 
 TEST_P(LazyLoadFramesParamsTest,
-       CrossOriginFrameFarFromViewportWithLazyLoadAttrOff) {
+       CrossOriginFrameFarFromViewportWithLoadingAttributeEager) {
   SimRequest main_resource("https://example.com/", "text/html");
   SimRequest child_frame_resource("https://crossorigin.com/subframe.html",
                                   "text/html");
@@ -765,6 +796,10 @@ TEST_P(LazyLoadFramesParamsTest,
 
   EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
   EXPECT_TRUE(ConsoleMessages().Contains("child frame element onload"));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
 
   ExpectVisibleLoadTimeHistogramSamplesIfApplicable(0, 0);
   histogram_tester()->ExpectTotalCount(
@@ -779,9 +814,9 @@ TEST_P(LazyLoadFramesParamsTest,
 }
 
 TEST_P(LazyLoadFramesParamsTest,
-       LoadSameOriginFrameFarFromViewportWithLazyLoadAttributeOn) {
+       LoadSameOriginFrameFarFromViewportWithLoadingAttributeLazy) {
   SimRequest main_resource("https://example.com/", "text/html");
-  base::Optional<SimRequest> child_frame_resource;
+  absl::optional<SimRequest> child_frame_resource;
 
   if (!RuntimeEnabledFeatures::LazyFrameLoadingEnabled()) {
     // This SimRequest needs to be created now if the frame won't actually be
@@ -811,6 +846,10 @@ TEST_P(LazyLoadFramesParamsTest,
   EXPECT_EQ(RuntimeEnabledFeatures::LazyFrameLoadingEnabled(),
             ConsoleMessages().Contains("main body onload"));
   EXPECT_FALSE(ConsoleMessages().Contains("child frame element onload"));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
 
   ExpectVisibleLoadTimeHistogramSamplesIfApplicable(0, 0);
 
@@ -830,7 +869,7 @@ TEST_P(LazyLoadFramesParamsTest,
     // If LazyFrameLoading is enabled, then scroll down near the child frame to
     // cause the child frame to start loading.
     GetDocument().View()->LayoutViewport()->SetScrollOffset(
-        ScrollOffset(0, 150), kProgrammaticScroll);
+        ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
 
     Compositor().BeginFrame();
     test::RunPendingTasks();
@@ -857,7 +896,7 @@ TEST_P(LazyLoadFramesParamsTest,
   // Scroll down so that the child frame is visible.
   GetDocument().View()->LayoutViewport()->SetScrollOffset(
       ScrollOffset(0, GetLoadingDistanceThreshold() + 150),
-      kProgrammaticScroll);
+      mojom::blink::ScrollType::kProgrammatic);
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
@@ -876,9 +915,9 @@ TEST_P(LazyLoadFramesParamsTest,
 }
 
 TEST_P(LazyLoadFramesParamsTest,
-       LoadCrossOriginFrameFarFromViewportThenSetLazyLoadAttributeOff) {
+       LoadCrossOriginFrameFarFromViewportThenSetLoadingAttributeEager) {
   SimRequest main_resource("https://example.com/", "text/html");
-  base::Optional<SimRequest> child_frame_resource;
+  absl::optional<SimRequest> child_frame_resource;
 
   if (!RuntimeEnabledFeatures::LazyFrameLoadingEnabled()) {
     // This SimRequest needs to be created now if the frame won't actually be
@@ -931,6 +970,10 @@ TEST_P(LazyLoadFramesParamsTest,
 
   EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
   EXPECT_TRUE(ConsoleMessages().Contains("child frame element onload"));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
 
   ExpectVisibleLoadTimeHistogramSamplesIfApplicable(0, 0);
 
@@ -945,7 +988,7 @@ TEST_P(LazyLoadFramesParamsTest,
 }
 
 TEST_P(LazyLoadFramesParamsTest,
-       NestedFrameWithLazyLoadAttributeOnInFrameWithNoLazyLoadAttribute) {
+       NestedFrameWithLazyLoadAttributeOnInFrameWithNoLoadingAttribute) {
   std::unique_ptr<SimRequest> child_frame_resource =
       LoadPageWithCrossOriginFrameFarFromViewport();
 
@@ -953,7 +996,7 @@ TEST_P(LazyLoadFramesParamsTest,
     // If LazyFrameLoading is enabled, then scroll down near the child frame to
     // cause the child frame to start loading.
     GetDocument().View()->LayoutViewport()->SetScrollOffset(
-        ScrollOffset(0, 150), kProgrammaticScroll);
+        ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
 
     Compositor().BeginFrame();
     test::RunPendingTasks();
@@ -963,7 +1006,7 @@ TEST_P(LazyLoadFramesParamsTest,
   // even further down such that it's not near the viewport. If LazyLoad is
   // enabled, it should be deferred even though it's nested inside a frame that
   // was previously deferred, because it has the attribute loading=lazy.
-  base::Optional<SimRequest> nested_frame_resource;
+  absl::optional<SimRequest> nested_frame_resource;
   if (!RuntimeEnabledFeatures::LazyFrameLoadingEnabled())
     nested_frame_resource.emplace("https://test.com/", "text/html");
 
@@ -989,7 +1032,7 @@ TEST_P(LazyLoadFramesParamsTest,
 }
 
 TEST_P(LazyLoadFramesParamsTest,
-       NestedFrameWithLazyLoadAttributeOnInFrameWithLazyLoadAttributeOff) {
+       NestedFrameWithLazyLoadAttributeOnInFrameWithLoadingAttributeEager) {
   SimRequest main_resource("https://example.com/", "text/html");
   SimRequest child_frame_resource("https://crossorigin.com/subframe.html",
                                   "text/html");
@@ -1008,13 +1051,17 @@ TEST_P(LazyLoadFramesParamsTest,
 
   Compositor().BeginFrame();
   test::RunPendingTasks();
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
 
   // There's another nested cross origin iframe inside the first child frame,
   // even further down such that it's not near the viewport. If LazyLoad is
   // enabled, it should be deferred because it has the attribute loading=lazy,
   // even though it's nested inside a frame that has the attribute
   // loading=eager.
-  base::Optional<SimRequest> nested_frame_resource;
+  absl::optional<SimRequest> nested_frame_resource;
   if (!RuntimeEnabledFeatures::LazyFrameLoadingEnabled())
     nested_frame_resource.emplace("https://test.com/", "text/html");
 
@@ -1040,7 +1087,7 @@ TEST_P(LazyLoadFramesParamsTest,
 }
 
 TEST_P(LazyLoadFramesParamsTest,
-       NestedFrameWithLazyLoadAttributeOffInFrameWithLazyLoadAttributeOff) {
+       NestedFrameWithLazyLoadAttributeOffInFrameWithLoadingAttributeEager) {
   SimRequest main_resource("https://example.com/", "text/html");
   SimRequest child_frame_resource("https://crossorigin.com/subframe.html",
                                   "text/html");
@@ -1084,6 +1131,10 @@ TEST_P(LazyLoadFramesParamsTest,
 
   EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
   EXPECT_TRUE(ConsoleMessages().Contains("child frame element onload"));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1108,21 +1159,24 @@ class LazyLoadFramesTest : public SimTest {
   static constexpr int kLoadingDistanceThresholdPx = 1000;
 
   void SetUp() override {
-    WebFrameClient().SetEffectiveConnectionTypeForTesting(
-        WebEffectiveConnectionType::kTypeUnknown);
+    GetNetworkStateNotifier().SetSaveDataEnabledOverride(false);
+    GetNetworkStateNotifier().SetNetworkConnectionInfoOverride(
+        true /*on_line*/, kWebConnectionTypeWifi,
+        WebEffectiveConnectionType::kType4G, 1000 /*http_rtt_msec*/,
+        100 /*max_bandwidth_mbps*/);
 
     SimTest::SetUp();
     WebView().MainFrameWidget()->Resize(
-        WebSize(kViewportWidth, kViewportHeight));
+        gfx::Size(kViewportWidth, kViewportHeight));
 
     Settings& settings = WebView().GetPage()->GetSettings();
-    settings.SetLazyFrameLoadingDistanceThresholdPxUnknown(
+    settings.SetLazyFrameLoadingDistanceThresholdPx4G(
         kLoadingDistanceThresholdPx);
     settings.SetLazyLoadEnabled(true);
   }
 
   void TearDown() override {
-    GetNetworkStateNotifier().SetSaveDataEnabled(false);
+    GetNetworkStateNotifier().SetSaveDataEnabledOverride(false);
     SimTest::TearDown();
   }
 
@@ -1182,7 +1236,7 @@ class LazyLoadFramesTest : public SimTest {
     // Scroll down near the child frame to cause the child frame to start
     // loading.
     GetDocument().View()->LayoutViewport()->SetScrollOffset(
-        ScrollOffset(0, 150), kProgrammaticScroll);
+        ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
 
     Compositor().BeginFrame();
     test::RunPendingTasks();
@@ -1196,67 +1250,386 @@ class LazyLoadFramesTest : public SimTest {
 
     EXPECT_TRUE(ConsoleMessages().Contains("child frame element onload"));
   }
+
+  void TestLazyLoadUsedInPageReload(const char* iframe_attributes,
+                                    bool is_deferral_expected_on_reload) {
+    HistogramTester histogram_tester;
+    ConsoleMessages().clear();
+
+    SimRequest main_resource("https://example.com/", "text/html");
+    MainFrame().StartReload(WebFrameLoadType::kReload);
+
+    main_resource.Complete(String::Format(
+        R"HTML(
+            <body onload='console.log("main body onload");'>
+            <div style='height: %dpx;'></div>
+            <iframe src='https://crossorigin.com/subframe.html' %s
+                 style='width: 400px; height: 400px;'
+                 onload='console.log("child frame element onload");'></iframe>
+            </body>)HTML",
+        LazyLoadFramesTest::kViewportHeight +
+            LazyLoadFramesTest::kLoadingDistanceThresholdPx + 100,
+        iframe_attributes));
+
+    if (is_deferral_expected_on_reload) {
+      // The body's load event should have already fired.
+      EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
+      EXPECT_FALSE(ConsoleMessages().Contains("child frame element onload"));
+
+      GetDocument().View()->LayoutViewport()->SetScrollOffset(
+          ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
+
+      SimRequest child_frame_resource("https://crossorigin.com/subframe.html",
+                                      "text/html");
+      Compositor().BeginFrame();
+      test::RunPendingTasks();
+      child_frame_resource.Complete("");
+      test::RunPendingTasks();
+
+      // Scroll down near the child frame to cause the child frame to start
+      // loading.
+      GetDocument().View()->LayoutViewport()->SetScrollOffset(
+          ScrollOffset(0, LazyLoadFramesTest::kViewportHeight +
+                              LazyLoadFramesTest::kLoadingDistanceThresholdPx),
+          mojom::blink::ScrollType::kProgrammatic);
+
+      Compositor().BeginFrame();
+      test::RunPendingTasks();
+
+      histogram_tester.ExpectTotalCount(
+          "Blink.VisibleLoadTime.LazyLoadEligibleFrames.BelowTheFold.4G", 1);
+    } else {
+      SimRequest child_frame_resource("https://crossorigin.com/subframe.html",
+                                      "text/html");
+      Compositor().BeginFrame();
+      test::RunPendingTasks();
+      child_frame_resource.Complete("");
+    }
+    test::RunPendingTasks();
+    EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
+    EXPECT_TRUE(ConsoleMessages().Contains("child frame element onload"));
+  }
 };
 
-TEST_F(LazyLoadFramesTest, LazyLoadWhenNotRestricted) {
+TEST_F(LazyLoadFramesTest, LazyLoadFrameUnsetLoadingAttributeWithoutAutomatic) {
   ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
-  ScopedRestrictLazyFrameLoadingToDataSaverForTest
-      scoped_restrict_lazy_frame_loading_to_data_saver_for_test_(false);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(false);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
+
+  SimRequest main_resource("https://example.com/", "text/html");
+  LoadURL("https://example.com/");
+
+  main_resource.Complete(String::Format(
+      R"HTML(
+        <body onload='console.log("main body onload");'>
+        <div style='height: %dpx;'></div>
+        <iframe id='child_frame' src='https://crossorigin.com/subframe.html'
+             loading='lazy' style='width: 200px; height: 200px;'
+             onload='console.log("child frame element onload");'></iframe>
+        </body>)HTML",
+      kViewportHeight + kLoadingDistanceThresholdPx + 100));
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  // The body's load event should have already fired.
+  EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
+  EXPECT_FALSE(ConsoleMessages().Contains("child frame element onload"));
+
+  SimRequest child_frame_resource("https://crossorigin.com/subframe.html",
+                                  "text/html");
+
+  Element* child_frame_element = GetDocument().getElementById("child_frame");
+  ASSERT_TRUE(child_frame_element);
+  child_frame_element->removeAttribute(html_names::kLoadingAttr);
+
+  test::RunPendingTasks();
+
+  EXPECT_FALSE(ConsoleMessages().Contains("child frame element onload"));
+
+  child_frame_resource.Complete("");
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  EXPECT_TRUE(ConsoleMessages().Contains("child frame element onload"));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadFrameUnsetLoadingAttributeWithAutomatic) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
+
+  SimRequest main_resource("https://example.com/", "text/html");
+  LoadURL("https://example.com/");
+
+  main_resource.Complete(String::Format(
+      R"HTML(
+        <body onload='console.log("main body onload");'>
+        <div style='height: %dpx;'></div>
+        <iframe id='child_frame' src='https://crossorigin.com/subframe.html'
+             loading='lazy' style='width: 200px; height: 200px;'
+             onload='console.log("child frame element onload");'></iframe>
+        </body>)HTML",
+      kViewportHeight + kLoadingDistanceThresholdPx + 100));
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  // The body's load event should have already fired.
+  EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
+  EXPECT_FALSE(ConsoleMessages().Contains("child frame element onload"));
+
+  Element* child_frame_element = GetDocument().getElementById("child_frame");
+  ASSERT_TRUE(child_frame_element);
+  child_frame_element->removeAttribute(html_names::kLoadingAttr);
+
+  test::RunPendingTasks();
+
+  EXPECT_FALSE(ConsoleMessages().Contains("child frame element onload"));
+
+  SimRequest child_frame_resource("https://crossorigin.com/subframe.html",
+                                  "text/html");
+
+  // The iframe should still be deferred because automatic lazy loading is
+  // enabled. Scroll down until it is visible.
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 150), mojom::blink::ScrollType::kProgrammatic);
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  child_frame_resource.Complete("");
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  EXPECT_TRUE(ConsoleMessages().Contains("child frame element onload"));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenDisabledAndAttrLazy) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(false);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(false);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
+
+  TestCrossOriginFrameIsImmediatelyLoaded("loading='lazy'");
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenAttrLazy) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(false);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
+
+  TestCrossOriginFrameIsLazilyLoaded("loading='lazy'");
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenAttrEager) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(false);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
+
+  TestCrossOriginFrameIsImmediatelyLoaded("loading='eager'");
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenAutomaticAndAttrLazy) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
+
+  TestCrossOriginFrameIsLazilyLoaded("loading='lazy'");
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenAutomaticAndAttrEager) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
+
+  TestCrossOriginFrameIsImmediatelyLoaded("loading='eager'");
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenAutomaticRestrictedAndAttrLazy) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          true);
+
+  TestCrossOriginFrameIsLazilyLoaded("loading='lazy'");
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenAutomaticRestrictedAndAttrEager) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          true);
+
+  GetNetworkStateNotifier().SetSaveDataEnabledOverride(true);
+  TestCrossOriginFrameIsImmediatelyLoaded("loading='eager'");
+  EXPECT_FALSE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeLazy));
+  EXPECT_TRUE(GetDocument().IsUseCounted(
+      WebFeature::kLazyLoadFrameLoadingAttributeEager));
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenAutomaticDisabled) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(false);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
+
+  TestCrossOriginFrameIsImmediatelyLoaded("");
+}
+
+TEST_F(LazyLoadFramesTest, LazyLoadWhenAutomaticEnabled) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          false);
 
   TestCrossOriginFrameIsLazilyLoaded("");
 }
 
-TEST_F(LazyLoadFramesTest,
-       LazyLoadWhenDataSaverDisabledAndNotRestrictedAttrOff) {
-  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
-  ScopedRestrictLazyFrameLoadingToDataSaverForTest
-      scoped_restrict_lazy_frame_loading_to_data_saver_for_test_(false);
-
-  TestCrossOriginFrameIsImmediatelyLoaded("loading='eager'");
-}
-
 TEST_F(LazyLoadFramesTest, LazyLoadWhenDataSaverDisabledAndRestricted) {
   ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
-  ScopedRestrictLazyFrameLoadingToDataSaverForTest
-      scoped_restrict_lazy_frame_loading_to_data_saver_for_test_(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          true);
 
-  GetNetworkStateNotifier().SetSaveDataEnabled(false);
-  WebView().GetPage()->GetSettings().SetDataSaverHoldbackWebApi(false);
-  TestCrossOriginFrameIsImmediatelyLoaded("");
-}
-
-TEST_F(LazyLoadFramesTest, LazyLoadWhenDataSaverEnabledHoldbackAndRestricted) {
-  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
-  ScopedRestrictLazyFrameLoadingToDataSaverForTest
-      scoped_restrict_lazy_frame_loading_to_data_saver_for_test_(true);
-
-  GetNetworkStateNotifier().SetSaveDataEnabled(true);
-  WebView().GetPage()->GetSettings().SetDataSaverHoldbackWebApi(true);
-  TestCrossOriginFrameIsLazilyLoaded("loading='lazy'");
   TestCrossOriginFrameIsImmediatelyLoaded("");
 }
 
 TEST_F(LazyLoadFramesTest, LazyLoadWhenDataSaverEnabledAndRestricted) {
   ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
-  ScopedRestrictLazyFrameLoadingToDataSaverForTest
-      scoped_restrict_lazy_frame_loading_to_data_saver_for_test_(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test_(
+          true);
 
-  GetNetworkStateNotifier().SetSaveDataEnabled(true);
-  WebView().GetPage()->GetSettings().SetDataSaverHoldbackWebApi(false);
+  GetNetworkStateNotifier().SetSaveDataEnabledOverride(true);
   TestCrossOriginFrameIsLazilyLoaded("");
 }
 
-TEST_F(LazyLoadFramesTest, LazyLoadWhenDataSaverDisabledAndRestrictedAttrOn) {
+// Frames with loading=lazy should be deferred irrespective of disable
+// lazyload-on reload feature state.
+TEST_F(LazyLoadFramesTest, NoAutoLazyLoadOnReload_DeferredForAttributeLazy) {
   ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
-  ScopedRestrictLazyFrameLoadingToDataSaverForTest
-      scoped_restrict_lazy_frame_loading_to_data_saver_for_test_(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test(
+          false);
+  ScopedAutoLazyLoadOnReloadsForTest scoped_auto_lazy_load_on_reloads_for_test(
+      false);
+  ScopedLazyFrameVisibleLoadTimeMetricsForTest
+      scoped_lazy_frame_visible_load_time_metrics_for_test(true);
 
-  GetNetworkStateNotifier().SetSaveDataEnabled(false);
-  WebView().GetPage()->GetSettings().SetDataSaverHoldbackWebApi(false);
-
-  // Even when restricted to data saver, the attribute should be respected.
   TestCrossOriginFrameIsLazilyLoaded("loading='lazy'");
-  TestCrossOriginFrameIsImmediatelyLoaded("");
+  TestLazyLoadUsedInPageReload("loading='lazy'", true);
+}
+
+// Frames with loading=lazy should be deferred irrespective of disable
+// lazyload-on reload feature state.
+TEST_F(LazyLoadFramesTest, AutoLazyLoadOnReload_DeferredForAttributeLazy) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test(
+          false);
+  ScopedAutoLazyLoadOnReloadsForTest scoped_auto_lazy_load_on_reloads_for_test(
+      true);
+  ScopedLazyFrameVisibleLoadTimeMetricsForTest
+      scoped_lazy_frame_visible_load_time_metrics_for_test(true);
+
+  TestCrossOriginFrameIsLazilyLoaded("loading='lazy'");
+  TestLazyLoadUsedInPageReload("loading='lazy'", true);
+}
+
+TEST_F(LazyLoadFramesTest, NoAutoLazyLoadOnReload_NotDeferredForAttributeAuto) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test(
+          false);
+  ScopedAutoLazyLoadOnReloadsForTest scoped_auto_lazy_load_on_reloads_for_test(
+      false);
+  ScopedLazyFrameVisibleLoadTimeMetricsForTest
+      scoped_lazy_frame_visible_load_time_metrics_for_test(true);
+
+  TestCrossOriginFrameIsLazilyLoaded("");
+  TestLazyLoadUsedInPageReload("", false);
+}
+
+TEST_F(LazyLoadFramesTest, AutoLazyLoadOnReload_DeferredForAttributeAuto) {
+  ScopedLazyFrameLoadingForTest scoped_lazy_frame_loading_for_test(true);
+  ScopedAutomaticLazyFrameLoadingForTest
+      scoped_automatic_lazy_frame_loading_for_test(true);
+  ScopedRestrictAutomaticLazyFrameLoadingToDataSaverForTest
+      scoped_restrict_automatic_lazy_frame_loading_to_data_saver_for_test(
+          false);
+  ScopedAutoLazyLoadOnReloadsForTest scoped_auto_lazy_load_on_reloads_for_test(
+      true);
+  ScopedLazyFrameVisibleLoadTimeMetricsForTest
+      scoped_lazy_frame_visible_load_time_metrics_for_test(true);
+
+  TestCrossOriginFrameIsLazilyLoaded("");
+  TestLazyLoadUsedInPageReload("", true);
 }
 
 }  // namespace

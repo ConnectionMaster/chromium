@@ -4,12 +4,14 @@
 
 #include "chrome/browser/android/search_permissions/search_permissions_service.h"
 
+#include <memory>
+
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/values.h"
 #include "chrome/browser/android/search_permissions/search_geolocation_disclosure_tab_helper.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/permissions/permission_decision_auto_blocker.h"
+#include "chrome/browser/permissions/permission_decision_auto_blocker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/search_engines/ui_thread_search_terms_data.h"
@@ -18,6 +20,7 @@
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
@@ -53,7 +56,7 @@ class SearchEngineDelegateImpl
       template_url_service_->RemoveObserver(this);
   }
 
-  base::string16 GetDSEName() override {
+  std::u16string GetDSEName() override {
     if (template_url_service_) {
       const TemplateURL* template_url =
           template_url_service_->GetDefaultSearchProvider();
@@ -61,7 +64,7 @@ class SearchEngineDelegateImpl
         return template_url->short_name();
     }
 
-    return base::string16();
+    return std::u16string();
   }
 
   url::Origin GetDSEOrigin() override {
@@ -78,8 +81,8 @@ class SearchEngineDelegateImpl
     return url::Origin();
   }
 
-  void SetDSEChangedCallback(const base::Closure& callback) override {
-    dse_changed_callback_ = callback;
+  void SetDSEChangedCallback(base::RepeatingClosure callback) override {
+    dse_changed_callback_ = std::move(callback);
   }
 
   // TemplateURLServiceObserver
@@ -91,13 +94,13 @@ class SearchEngineDelegateImpl
   // Will be null in unittests.
   TemplateURLService* template_url_service_;
 
-  base::Closure dse_changed_callback_;
+  base::RepeatingClosure dse_changed_callback_;
 };
 
 }  // namespace
 
 struct SearchPermissionsService::PrefValue {
-  base::string16 dse_name;
+  std::u16string dse_name;
   std::string dse_origin;
   ContentSetting geolocation_setting_to_restore;
   ContentSetting notifications_setting_to_restore;
@@ -152,8 +155,8 @@ SearchPermissionsService::SearchPermissionsService(Profile* profile)
   // This class should never be constructed in incognito.
   DCHECK(!profile_->IsOffTheRecord());
 
-  delegate_.reset(new SearchEngineDelegateImpl(profile_));
-  delegate_->SetDSEChangedCallback(base::Bind(
+  delegate_ = std::make_unique<SearchEngineDelegateImpl>(profile_);
+  delegate_->SetDSEChangedCallback(base::BindRepeating(
       &SearchPermissionsService::OnDSEChanged, base::Unretained(this)));
 
   // Under normal circumstances we wouldn't need to call OnDSEChanged here, just
@@ -170,8 +173,8 @@ SearchPermissionsService::SearchPermissionsService(Profile* profile)
 bool SearchPermissionsService::IsPermissionControlledByDSE(
     ContentSettingsType type,
     const url::Origin& requesting_origin) {
-  if (type != CONTENT_SETTINGS_TYPE_GEOLOCATION &&
-      type != CONTENT_SETTINGS_TYPE_NOTIFICATIONS) {
+  if (type != ContentSettingsType::GEOLOCATION &&
+      type != ContentSettingsType::NOTIFICATIONS) {
     return false;
   }
 
@@ -194,8 +197,8 @@ void SearchPermissionsService::ResetDSEPermission(ContentSettingsType type) {
 }
 
 void SearchPermissionsService::ResetDSEPermissions() {
-  ResetDSEPermission(CONTENT_SETTINGS_TYPE_GEOLOCATION);
-  ResetDSEPermission(CONTENT_SETTINGS_TYPE_NOTIFICATIONS);
+  ResetDSEPermission(ContentSettingsType::GEOLOCATION);
+  ResetDSEPermission(ContentSettingsType::NOTIFICATIONS);
 }
 
 void SearchPermissionsService::Shutdown() {
@@ -213,8 +216,8 @@ void SearchPermissionsService::OnDSEChanged() {
 
   PrefValue pref = GetDSEPref();
 
-  base::string16 new_dse_name = delegate_->GetDSEName();
-  base::string16 old_dse_name = pref.dse_name;
+  std::u16string new_dse_name = delegate_->GetDSEName();
+  std::u16string old_dse_name = pref.dse_name;
 
   GURL old_dse_origin(pref.dse_origin);
   GURL new_dse_origin = delegate_->GetDSEOrigin().GetURL();
@@ -225,12 +228,12 @@ void SearchPermissionsService::OnDSEChanged() {
 
   ContentSetting geolocation_setting_to_restore =
       UpdatePermissionAndReturnPrevious(
-          CONTENT_SETTINGS_TYPE_GEOLOCATION, old_dse_origin, new_dse_origin,
+          ContentSettingsType::GEOLOCATION, old_dse_origin, new_dse_origin,
           pref.geolocation_setting_to_restore, old_dse_name != new_dse_name);
   ContentSetting notifications_setting_to_restore =
       pref.notifications_setting_to_restore;
   notifications_setting_to_restore = UpdatePermissionAndReturnPrevious(
-      CONTENT_SETTINGS_TYPE_NOTIFICATIONS, old_dse_origin, new_dse_origin,
+      ContentSettingsType::NOTIFICATIONS, old_dse_origin, new_dse_origin,
       pref.notifications_setting_to_restore, old_dse_name != new_dse_name);
 
   // Write the pref for restoring the old values when the DSE changes.
@@ -275,8 +278,8 @@ ContentSetting SearchPermissionsService::UpdatePermissionAndReturnPrevious(
     ContentSetting old_dse_setting_to_restore,
     bool dse_name_changed) {
   // Remove any embargo on the URL.
-  PermissionDecisionAutoBlocker::GetForProfile(profile_)->RemoveEmbargoByUrl(
-      new_dse_origin, type);
+  PermissionDecisionAutoBlockerFactory::GetForProfile(profile_)
+      ->RemoveEmbargoAndResetCounts(new_dse_origin, type);
 
   ContentSetting dse_setting = RestoreOldSettingAndReturnPrevious(
       old_dse_origin, type, old_dse_setting_to_restore);
@@ -299,7 +302,7 @@ ContentSetting SearchPermissionsService::UpdatePermissionAndReturnPrevious(
   }
 
   // Reset the disclosure if needed.
-  if (type == CONTENT_SETTINGS_TYPE_GEOLOCATION && dse_name_changed &&
+  if (type == ContentSettingsType::GEOLOCATION && dse_name_changed &&
       dse_setting == CONTENT_SETTING_ALLOW) {
     SearchGeolocationDisclosureTabHelper::ResetDisclosure(profile_);
   }
@@ -319,11 +322,11 @@ void SearchPermissionsService::InitializeSettingsIfNeeded() {
       PrefValue pref = GetDSEPref();
       GURL old_dse_origin(pref.dse_origin);
       RestoreOldSettingAndReturnPrevious(old_dse_origin,
-                                         CONTENT_SETTINGS_TYPE_GEOLOCATION,
+                                         ContentSettingsType::GEOLOCATION,
                                          pref.geolocation_setting_to_restore);
       if (pref.notifications_setting_to_restore != CONTENT_SETTING_DEFAULT) {
         RestoreOldSettingAndReturnPrevious(
-            old_dse_origin, CONTENT_SETTINGS_TYPE_NOTIFICATIONS,
+            old_dse_origin, ContentSettingsType::NOTIFICATIONS,
             pref.notifications_setting_to_restore);
       }
       pref_service_->ClearPref(prefs::kDSEPermissionsSettings);
@@ -343,7 +346,7 @@ void SearchPermissionsService::InitializeSettingsIfNeeded() {
   // Initialize the pref for geolocation if it hasn't been initialized yet.
   if (!pref_service_->HasPrefPath(prefs::kDSEPermissionsSettings)) {
     ContentSetting geolocation_setting_to_restore =
-        GetContentSetting(dse_origin, CONTENT_SETTINGS_TYPE_GEOLOCATION);
+        GetContentSetting(dse_origin, ContentSettingsType::GEOLOCATION);
     ContentSetting dse_geolocation_setting = geolocation_setting_to_restore;
 
     bool reset_disclosure = true;
@@ -377,7 +380,7 @@ void SearchPermissionsService::InitializeSettingsIfNeeded() {
     }
 
     // Update the content setting with the auto-grants for the DSE.
-    SetContentSetting(dse_origin, CONTENT_SETTINGS_TYPE_GEOLOCATION,
+    SetContentSetting(dse_origin, ContentSettingsType::GEOLOCATION,
                       dse_geolocation_setting);
 
     if (reset_disclosure)
@@ -395,7 +398,7 @@ void SearchPermissionsService::InitializeSettingsIfNeeded() {
   PrefValue pref = GetDSEPref();
   if (pref.notifications_setting_to_restore == CONTENT_SETTING_DEFAULT) {
     ContentSetting notifications_setting_to_restore =
-        GetContentSetting(dse_origin, CONTENT_SETTINGS_TYPE_NOTIFICATIONS);
+        GetContentSetting(dse_origin, ContentSettingsType::NOTIFICATIONS);
     ContentSetting dse_notifications_setting = notifications_setting_to_restore;
     // If the user hasn't explicitly allowed or blocked notifications for the
     // DSE, initialize it to allowed.
@@ -406,7 +409,7 @@ void SearchPermissionsService::InitializeSettingsIfNeeded() {
     }
 
     // Update the content setting with the auto-grants for the DSE.
-    SetContentSetting(dse_origin, CONTENT_SETTINGS_TYPE_NOTIFICATIONS,
+    SetContentSetting(dse_origin, ContentSettingsType::NOTIFICATIONS,
                       dse_notifications_setting);
 
     // Write the pref for restoring the old values when the DSE changes.
@@ -420,7 +423,7 @@ SearchPermissionsService::PrefValue SearchPermissionsService::GetDSEPref() {
       pref_service_->GetDictionary(prefs::kDSEPermissionsSettings);
 
   PrefValue pref;
-  base::string16 dse_name;
+  std::u16string dse_name;
   std::string dse_origin;
   int geolocation_setting_to_restore;
   int notifications_setting_to_restore;
@@ -458,7 +461,7 @@ ContentSetting SearchPermissionsService::GetContentSetting(
     const GURL& origin,
     ContentSettingsType type) {
   return host_content_settings_map_->GetUserModifiableContentSetting(
-      origin, origin, type, std::string());
+      origin, origin, type);
 }
 
 void SearchPermissionsService::SetContentSetting(const GURL& origin,
@@ -473,20 +476,20 @@ void SearchPermissionsService::SetContentSetting(const GURL& origin,
   // never be changed between ALLOW<->BLOCK on Android. Do not copy this code.
   // Check with the notifications team if you need to do something like this.
   host_content_settings_map_->SetContentSettingDefaultScope(
-      origin, origin, type, std::string(), CONTENT_SETTING_DEFAULT);
+      origin, origin, type, CONTENT_SETTING_DEFAULT);
 
   // If we're restoring an ASK setting, it really implies that we should delete
   // the user-defined setting to fall back to the default.
   if (setting == CONTENT_SETTING_ASK)
     return;  // We deleted the setting above already.
 
-  host_content_settings_map_->SetContentSettingDefaultScope(
-      origin, origin, type, std::string(), setting);
+  host_content_settings_map_->SetContentSettingDefaultScope(origin, origin,
+                                                            type, setting);
 }
 
 void SearchPermissionsService::SetSearchEngineDelegateForTest(
     std::unique_ptr<SearchEngineDelegate> delegate) {
   delegate_ = std::move(delegate);
-  delegate_->SetDSEChangedCallback(base::Bind(
+  delegate_->SetDSEChangedCallback(base::BindRepeating(
       &SearchPermissionsService::OnDSEChanged, base::Unretained(this)));
 }

@@ -5,10 +5,10 @@
 #include "chrome/browser/ui/views/media_router/presentation_receiver_window_view.h"
 
 #include "base/callback.h"
-#include "base/logging.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/media_router/presentation_receiver_window_delegate.h"
@@ -18,6 +18,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/events/event.h"
 #include "ui/gfx/geometry/point.h"
@@ -25,9 +26,8 @@
 #include "ui/views/view.h"
 #include "url/gurl.h"
 
-#if defined(CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "ash/public/cpp/window_properties.h"
-#include "ash/public/interfaces/window_state_type.mojom.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/gfx/native_widget_types.h"
@@ -103,13 +103,13 @@ class PresentationReceiverWindowViewBrowserTest : public InProcessBrowserTest {
   }
 
   const gfx::Rect bounds_{100, 100};
-  std::unique_ptr<FakeReceiverDelegate> fake_delegate_ = nullptr;
+  std::unique_ptr<FakeReceiverDelegate> fake_delegate_;
   PresentationReceiverWindowView* receiver_view_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(PresentationReceiverWindowViewBrowserTest);
 };
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 IN_PROC_BROWSER_TEST_F(PresentationReceiverWindowViewBrowserTest,
                        ChromeOSHardwareFullscreenButton) {
   // Bypass ExclusiveAccessContext and default accelerator to simulate hardware
@@ -119,7 +119,7 @@ IN_PROC_BROWSER_TEST_F(PresentationReceiverWindowViewBrowserTest,
   // It waits for the location bar visibility to change rather than simply using
   // RunLoop::RunUntilIdle because in Mash, the fullscreen change takes place in
   // another process.
-  class FullscreenWaiter final : public views::ViewObserver {
+  class FullscreenWaiter final {
    public:
     enum class AwaitType {
       kOutOfFullscreen,
@@ -132,22 +132,24 @@ IN_PROC_BROWSER_TEST_F(PresentationReceiverWindowViewBrowserTest,
         : receiver_view_(receiver_view),
           await_type_(await_type),
           fullscreen_callback_(std::move(fullscreen_callback)) {
-      receiver_view_->location_bar_view()->AddObserver(this);
+      auto* location_bar_view = receiver_view_->location_bar_view();
+      subscription_ =
+          location_bar_view->AddVisibleChangedCallback(base::BindRepeating(
+              &FullscreenWaiter::OnViewVisibilityChanged,
+              base::Unretained(this), base::Unretained(location_bar_view)));
     }
-    ~FullscreenWaiter() final {
-      receiver_view_->location_bar_view()->RemoveObserver(this);
-    }
+    ~FullscreenWaiter() = default;
 
    private:
-    void OnViewVisibilityChanged(views::View* observed_view,
-                                 views::View* starting_view) override {
-      bool fullscreen = !observed_view->visible();
+    void OnViewVisibilityChanged(views::View* observed_view) {
+      bool fullscreen = !observed_view->GetVisible();
       EXPECT_EQ(fullscreen, receiver_view_->IsFullscreen());
       if (fullscreen == (await_type_ == AwaitType::kIntoFullscreen))
         std::move(fullscreen_callback_).Run();
     }
 
     PresentationReceiverWindowView* const receiver_view_;
+    base::CallbackListSubscription subscription_;
     const AwaitType await_type_;
     base::OnceClosure fullscreen_callback_;
 
@@ -163,7 +165,7 @@ IN_PROC_BROWSER_TEST_F(PresentationReceiverWindowViewBrowserTest,
     fullscreen_loop.Run();
 
     ASSERT_TRUE(receiver_view_->IsFullscreen());
-    EXPECT_FALSE(receiver_view_->location_bar_view()->visible());
+    EXPECT_FALSE(receiver_view_->location_bar_view()->GetVisible());
   }
 
   {
@@ -174,7 +176,7 @@ IN_PROC_BROWSER_TEST_F(PresentationReceiverWindowViewBrowserTest,
     receiver_view_->GetWidget()->SetFullscreen(false);
     fullscreen_loop.Run();
     ASSERT_FALSE(receiver_view_->IsFullscreen());
-    EXPECT_TRUE(receiver_view_->location_bar_view()->visible());
+    EXPECT_TRUE(receiver_view_->location_bar_view()->GetVisible());
   }
 
   // Back to fullscreen with the hardware button.
@@ -186,7 +188,7 @@ IN_PROC_BROWSER_TEST_F(PresentationReceiverWindowViewBrowserTest,
     receiver_view_->GetWidget()->SetFullscreen(true);
     fullscreen_loop.Run();
     ASSERT_TRUE(receiver_view_->IsFullscreen());
-    EXPECT_FALSE(receiver_view_->location_bar_view()->visible());
+    EXPECT_FALSE(receiver_view_->location_bar_view()->GetVisible());
   }
 }
 #endif

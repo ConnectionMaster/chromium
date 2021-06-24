@@ -94,7 +94,7 @@ class NET_EXPORT_PRIVATE QuicChromiumPacketWriter
       const quic::QuicSocketAddress& peer_address) const override;
   bool SupportsReleaseTime() const override;
   bool IsBatchMode() const override;
-  char* GetNextWriteLocation(
+  quic::QuicPacketBuffer GetNextWriteLocation(
       const quic::QuicIpAddress& self_address,
       const quic::QuicSocketAddress& peer_address) override;
   quic::WriteResult Flush() override;
@@ -126,7 +126,7 @@ class NET_EXPORT_PRIVATE QuicChromiumPacketWriter
   base::OneShotTimer retry_timer_;
 
   CompletionRepeatingCallback write_callback_;
-  base::WeakPtrFactory<QuicChromiumPacketWriter> weak_factory_;
+  base::WeakPtrFactory<QuicChromiumPacketWriter> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(QuicChromiumPacketWriter);
 };

@@ -6,6 +6,7 @@
 
 #include "base/strings/string_util.h"
 #include "components/link_header_util/link_header_util.h"
+#include "third_party/blink/public/common/web_package/signed_exchange_consts.h"
 #include "third_party/blink/renderer/platform/wtf/text/parsing_utilities.h"
 
 namespace blink {
@@ -44,6 +45,17 @@ static LinkHeader::LinkParameterName ParameterNameFromString(
     return LinkHeader::kLinkParameterImageSrcset;
   if (base::EqualsCaseInsensitiveASCII(name, "imagesizes"))
     return LinkHeader::kLinkParameterImageSizes;
+  if (base::EqualsCaseInsensitiveASCII(name, "anchor"))
+    return LinkHeader::kLinkParameterAnchor;
+
+  // "header-integrity" and "variants" and "variant-key" are used only for
+  // SignedExchangeSubresourcePrefetch.
+  if (base::EqualsCaseInsensitiveASCII(name, "header-integrity"))
+    return LinkHeader::kLinkParameterHeaderIntegrity;
+  if (base::EqualsCaseInsensitiveASCII(name, kSignedExchangeVariantsHeader))
+    return LinkHeader::kLinkParameterVariants;
+  if (base::EqualsCaseInsensitiveASCII(name, kSignedExchangeVariantKeyHeader))
+    return LinkHeader::kLinkParameterVariantKey;
   return LinkHeader::kLinkParameterUnknown;
 }
 
@@ -51,7 +63,7 @@ void LinkHeader::SetValue(LinkParameterName name, const String& value) {
   if (name == kLinkParameterRel && !rel_)
     rel_ = value.DeprecatedLower();
   else if (name == kLinkParameterAnchor)
-    is_valid_ = false;
+    anchor_ = value;
   else if (name == kLinkParameterCrossOrigin)
     cross_origin_ = value;
   else if (name == kLinkParameterAs)
@@ -68,12 +80,18 @@ void LinkHeader::SetValue(LinkParameterName name, const String& value) {
     image_srcset_ = value;
   else if (name == kLinkParameterImageSizes)
     image_sizes_ = value;
+  else if (name == kLinkParameterHeaderIntegrity)
+    header_integrity_ = value;
+  else if (name == kLinkParameterVariants)
+    variants_ = value;
+  else if (name == kLinkParameterVariantKey)
+    variant_key_ = value;
 }
 
 template <typename Iterator>
 LinkHeader::LinkHeader(Iterator begin, Iterator end) : is_valid_(true) {
   std::string url;
-  std::unordered_map<std::string, base::Optional<std::string>> params;
+  std::unordered_map<std::string, absl::optional<std::string>> params;
   is_valid_ = link_header_util::ParseLinkHeaderValue(begin, end, &url, &params);
   if (!is_valid_)
     return;
@@ -86,6 +104,13 @@ LinkHeader::LinkHeader(Iterator begin, Iterator end) : is_valid_(true) {
     std::string value = param.second.value_or("");
     SetValue(name, String(&value[0], value.length()));
   }
+  // According to Section 5.2 of RFC 5988, "anchor" parameters in Link headers
+  // must be either respected, or the entire header must be ignored:
+  // https://tools.ietf.org/html/rfc5988#section-5.2
+  // Blink uses "anchor" parameters only for SignedExchangeSubresourcePrefetch
+  // and the rel is "alternate".
+  if (anchor_.has_value() && rel_ != "alternate")
+    is_valid_ = false;
 }
 
 LinkHeaderSet::LinkHeaderSet(const String& header) {

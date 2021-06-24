@@ -5,6 +5,7 @@
 #ifndef CHROMEOS_DBUS_SMB_PROVIDER_CLIENT_H_
 #define CHROMEOS_DBUS_SMB_PROVIDER_CLIENT_H_
 
+#include <memory>
 #include <string>
 
 #include "base/callback.h"
@@ -53,43 +54,49 @@ class COMPONENT_EXPORT(CHROMEOS_DBUS) SmbProviderClient
       int32_t read_dir_token,
       const smbprovider::DirectoryEntryListProto& entries)>;
 
+  // Optional arguments to pass to Mount().
+  struct MountOptions {
+    MountOptions();
+    ~MountOptions();
+
+    std::string original_path;
+    std::string username;
+    std::string workgroup;
+    std::string account_hash;
+
+    // Enable NTLM Authentication.
+    bool ntlm_enabled = false;
+
+    // Do not attempt to connect to and authenticate the mounted share.
+    bool skip_connect = false;
+
+    // Save the password for this share if it is successfully mounted.
+    bool save_password = false;
+
+    // Use a saved password for authenticating the share.
+    bool restore_password = false;
+  };
+
   ~SmbProviderClient() override;
 
   // Factory function, creates a new instance and returns ownership.
   // For normal usage, access the singleton via DBusThreadManager::Get().
-  static SmbProviderClient* Create();
+  static std::unique_ptr<SmbProviderClient> Create();
 
   // Calls Mount. It runs OpenDirectory() on |share_path| to check that it is a
-  // valid share. |workgroup|, |username|, and |password_fd| will be used as
-  // credentials to access the mount. |callback| is called after getting (or
-  // failing to get) D-BUS response.
+  // valid share. |options.workgroup|, |options.username|, and |password_fd|
+  // will be used as credentials to access the mount. |callback| is called after
+  // getting (or failing to get) D-BUS response.
   virtual void Mount(const base::FilePath& share_path,
-                     bool ntlm_enabled,
-                     const std::string& workgroup,
-                     const std::string& username,
+                     const MountOptions& options,
                      base::ScopedFD password_fd,
                      MountCallback callback) = 0;
 
-  // Calls Remount. This attempts to remount the share at |share_path| with its
-  // original |mount_id|.
-  virtual void Remount(const base::FilePath& share_path,
-                       int32_t mount_id,
-                       bool ntlm_enabled,
-                       const std::string& workgroup,
-                       const std::string& username,
-                       base::ScopedFD password_fd,
-                       StatusCallback callback) = 0;
-
   // Calls Unmount. This removes the corresponding mount of |mount_id| from
   // the list of valid mounts. Subsequent operations on |mount_id| will fail.
-  virtual void Unmount(int32_t mount_id, StatusCallback callback) = 0;
-
-  // Calls Premount. This attempts to mount the share at |share_path|. Premount
-  // succeeds even if authentication fails and the user can provide the
-  // credentials at a later time.
-  virtual void Premount(const base::FilePath& share_path,
-                        bool ntlm_enabled,
-                        MountCallback callback) = 0;
+  virtual void Unmount(int32_t mount_id,
+                       bool remove_password,
+                       StatusCallback callback) = 0;
 
   // Calls ReadDirectory. Using the corresponding mount of |mount_id|, this
   // reads the directory on a given |directory_path| and passes the
@@ -198,8 +205,9 @@ class COMPONENT_EXPORT(CHROMEOS_DBUS) SmbProviderClient
                          ReadDirectoryCallback callback) = 0;
 
   // Calls SetupKerberos. This sets up Kerberos for the user |account_id|,
-  // fetching the user's Kerberos files from AuthPolicy. The user must be
-  // ChromAD enrolled.
+  // fetching the user's Kerberos files from AuthPolicy (if user is enrolled to
+  // ChromAD) or Kerberos. If user is enrolled to ChromAD, |account_id| is
+  // expected to be an object guid, otherwise it must be a principal name.
   virtual void SetupKerberos(const std::string& account_id,
                              SetupKerberosCallback callback) = 0;
 
@@ -267,5 +275,10 @@ class COMPONENT_EXPORT(CHROMEOS_DBUS) SmbProviderClient
 };
 
 }  // namespace chromeos
+
+// TODO(https://crbug.com/1164001): remove when move to ash
+namespace ash {
+using ::chromeos::SmbProviderClient;
+}  // namespace ash
 
 #endif  // CHROMEOS_DBUS_SMB_PROVIDER_CLIENT_H_

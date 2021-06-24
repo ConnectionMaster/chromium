@@ -11,14 +11,20 @@
 #include "base/memory/weak_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
-#include "components/autofill/core/browser/autofill_profile.h"
 #include "components/autofill/core/browser/autofill_test_utils.h"
-#include "components/autofill/core/browser/credit_card.h"
+#include "components/autofill/core/browser/data_model/autofill_profile.h"
+#include "components/autofill/core/browser/data_model/credit_card.h"
 #include "components/autofill/core/browser/test_personal_data_manager.h"
+#include "components/payments/content/payment_app_service.h"
+#include "components/payments/content/payment_app_service_factory.h"
 #include "components/payments/content/payment_request_spec.h"
 #include "components/payments/content/test_content_payment_request_delegate.h"
 #include "components/payments/core/journey_logger.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "content/public/test/browser_task_environment.h"
+#include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_web_contents_factory.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/payments/payment_request.mojom.h"
@@ -31,13 +37,18 @@ class PaymentRequestStateTest : public testing::Test,
  protected:
   PaymentRequestStateTest()
       : num_on_selected_information_changed_called_(0),
-        test_payment_request_delegate_(&test_personal_data_manager_),
-        journey_logger_(test_payment_request_delegate_.IsIncognito(),
+        test_payment_request_delegate_(/*task_executor=*/nullptr,
+                                       &test_personal_data_manager_),
+        journey_logger_(test_payment_request_delegate_.IsOffTheRecord(),
                         ukm::UkmRecorder::GetNewSourceID()),
         address_(autofill::test::GetFullProfile()),
         credit_card_visa_(autofill::test::GetCreditCard()) {
     scoped_feature_list_.InitAndDisableFeature(
         features::kServiceWorkerPaymentApps);
+
+    // Must be initialized after scoped_feature_list_ (crbug.com/1172599)
+    web_contents_ = web_contents_factory_.CreateWebContents(&context_);
+
     test_personal_data_manager_.SetAutofillCreditCardEnabled(true);
     test_personal_data_manager_.SetAutofillProfileEnabled(true);
     test_personal_data_manager_.SetAutofillWalletImportEnabled(true);
@@ -49,7 +60,7 @@ class PaymentRequestStateTest : public testing::Test,
   ~PaymentRequestStateTest() override {}
 
   // PaymentRequestState::Observer:
-  void OnGetAllPaymentInstrumentsFinished() override {}
+  void OnGetAllPaymentAppsFinished() override {}
   void OnSelectedInformationChanged() override {
     num_on_selected_information_changed_called_++;
   }
@@ -58,6 +69,7 @@ class PaymentRequestStateTest : public testing::Test,
   void OnPaymentResponseAvailable(mojom::PaymentResponsePtr response) override {
     payment_response_ = std::move(response);
   }
+  void OnPaymentResponseError(const std::string& error_message) override {}
   void OnShippingOptionIdSelected(std::string shipping_option_id) override {}
   void OnShippingAddressSelected(mojom::PaymentAddressPtr address) override {
     selected_shipping_address_ = std::move(address);
@@ -70,15 +82,19 @@ class PaymentRequestStateTest : public testing::Test,
       std::vector<mojom::PaymentMethodDataPtr> method_data) {
     if (!details->total)
       details->total = mojom::PaymentItem::New();
+    details->id = "test_id";
     // The spec will be based on the |options| and |details| passed in.
     spec_ = std::make_unique<PaymentRequestSpec>(
         std::move(options), std::move(details), std::move(method_data),
         /*observer=*/nullptr, "en-US");
+    PaymentAppServiceFactory::SetForTesting(
+        std::make_unique<PaymentAppService>(&context_));
     state_ = std::make_unique<PaymentRequestState>(
-        nullptr /* context */, GURL("https://example.com"),
-        GURL("https://example.com/pay"), spec_.get(), this, "en-US",
-        &test_personal_data_manager_, &test_payment_request_delegate_,
-        &journey_logger_);
+        web_contents_->GetMainFrame(), GURL("https://example.com"),
+        GURL("https://example.com/pay"),
+        url::Origin::Create(GURL("https://example.com")), spec_->AsWeakPtr(),
+        weak_ptr_factory_.GetWeakPtr(), "en-US", &test_personal_data_manager_,
+        &test_payment_request_delegate_, &journey_logger_);
     state_->AddObserver(this);
   }
 
@@ -99,6 +115,7 @@ class PaymentRequestStateTest : public testing::Test,
     shipping_options.push_back(std::move(option));
     mojom::PaymentDetailsPtr details = mojom::PaymentDetails::New();
     details->shipping_options = std::move(shipping_options);
+    details->id = "test_id";
     return details;
   }
 
@@ -106,7 +123,8 @@ class PaymentRequestStateTest : public testing::Test,
   std::vector<mojom::PaymentMethodDataPtr> GetMethodDataForVisa() {
     std::vector<mojom::PaymentMethodDataPtr> method_data;
     mojom::PaymentMethodDataPtr entry = mojom::PaymentMethodData::New();
-    entry->supported_method = "visa";
+    entry->supported_method = "basic-card";
+    entry->supported_networks.push_back(mojom::BasicCardNetwork::VISA);
     method_data.push_back(std::move(entry));
     return method_data;
   }
@@ -128,6 +146,10 @@ class PaymentRequestStateTest : public testing::Test,
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
+  content::BrowserTaskEnvironment task_environment_;
+  content::TestBrowserContext context_;
+  content::TestWebContentsFactory web_contents_factory_;
+  content::WebContents* web_contents_;  // Owned by `web_contents_factory_`.
   std::unique_ptr<PaymentRequestState> state_;
   std::unique_ptr<PaymentRequestSpec> spec_;
   int num_on_selected_information_changed_called_;
@@ -140,57 +162,43 @@ class PaymentRequestStateTest : public testing::Test,
   // Test data.
   autofill::AutofillProfile address_;
   autofill::CreditCard credit_card_visa_;
+  base::WeakPtrFactory<PaymentRequestStateTest> weak_ptr_factory_{this};
 };
 
 TEST_F(PaymentRequestStateTest, CanMakePayment) {
   // Default options.
   RecreateStateWithOptions(mojom::PaymentOptions::New());
 
-  // Legacy CanMakePayment returns true because the method data requires Visa,
-  // and the user has a Visa card on file.
-  state()->CanMakePayment(
-      /*legacy_mode=*/true, base::BindOnce([](bool can_make_payment) {
-        EXPECT_TRUE(can_make_payment);
-      }));
   state()->HasEnrolledInstrument(
       base::BindOnce([](bool has_enrolled_instrument) {
         EXPECT_TRUE(has_enrolled_instrument);
       }));
 
   // CanMakePayment returns true because the requested method is supported.
-  state()->CanMakePayment(/*legacy_mode=*/false,
-                          base::BindOnce([](bool can_make_payment) {
-                            EXPECT_TRUE(can_make_payment);
-                          }));
+  state()->CanMakePayment(base::BindOnce(
+      [](bool can_make_payment) { EXPECT_TRUE(can_make_payment); }));
 }
 
 TEST_F(PaymentRequestStateTest, CanMakePayment_NoEnrolledInstrument) {
   // The method data requires MasterCard.
   std::vector<mojom::PaymentMethodDataPtr> method_data;
   mojom::PaymentMethodDataPtr entry = mojom::PaymentMethodData::New();
-  entry->supported_method = "mastercard";
+  entry->supported_method = "basic-card";
+  entry->supported_networks.push_back(mojom::BasicCardNetwork::MASTERCARD);
   method_data.push_back(std::move(entry));
   RecreateStateWithOptionsAndDetails(mojom::PaymentOptions::New(),
                                      mojom::PaymentDetails::New(),
                                      std::move(method_data));
 
-  // Legacy CanMakePayment returns false because the method data requires
-  // MasterCard, and the user doesn't have such an instrument.
-  state()->CanMakePayment(
-      /*legacy_mode=*/true, base::BindOnce([](bool can_make_payment) {
-        EXPECT_FALSE(can_make_payment);
-      }));
   state()->HasEnrolledInstrument(
       base::BindOnce([](bool has_enrolled_instrument) {
         EXPECT_FALSE(has_enrolled_instrument);
       }));
 
   // CanMakePayment returns true because the requested method is supported, even
-  // though the payment instrument is not ready to pay.
-  state()->CanMakePayment(/*legacy_mode=*/false,
-                          base::BindOnce([](bool can_make_payment) {
-                            EXPECT_TRUE(can_make_payment);
-                          }));
+  // though the payment app is not ready to pay.
+  state()->CanMakePayment(base::BindOnce(
+      [](bool can_make_payment) { EXPECT_TRUE(can_make_payment); }));
 }
 
 TEST_F(PaymentRequestStateTest, CanMakePayment_UnsupportedPaymentMethod) {
@@ -202,23 +210,15 @@ TEST_F(PaymentRequestStateTest, CanMakePayment_UnsupportedPaymentMethod) {
                                      mojom::PaymentDetails::New(),
                                      std::move(method_data));
 
-  // Legacy CanMakePayment returns false because the method data requires
-  // MasterCard, and the user doesn't have such an instrument.
-  state()->CanMakePayment(
-      /*legacy_mode=*/true, base::BindOnce([](bool can_make_payment) {
-        EXPECT_FALSE(can_make_payment);
-      }));
   state()->HasEnrolledInstrument(
       base::BindOnce([](bool has_enrolled_instrument) {
         EXPECT_FALSE(has_enrolled_instrument);
       }));
 
   // CanMakePayment returns true because the requested method is supported, even
-  // though the payment instrument is not ready to pay.
-  state()->CanMakePayment(/*legacy_mode=*/false,
-                          base::BindOnce([](bool can_make_payment) {
-                            EXPECT_FALSE(can_make_payment);
-                          }));
+  // though the payment app is not ready to pay.
+  state()->CanMakePayment(base::BindOnce(
+      [](bool can_make_payment) { EXPECT_FALSE(can_make_payment); }));
 }
 
 TEST_F(PaymentRequestStateTest, CanMakePayment_OnlyBasicCard) {
@@ -231,22 +231,14 @@ TEST_F(PaymentRequestStateTest, CanMakePayment_OnlyBasicCard) {
                                      mojom::PaymentDetails::New(),
                                      std::move(method_data));
 
-  // Legacy CanMakePayment returns true because the method data supports
-  // everything, and the user has at least one instrument.
-  state()->CanMakePayment(
-      /*legacy_mode=*/true, base::BindOnce([](bool can_make_payment) {
-        EXPECT_TRUE(can_make_payment);
-      }));
   state()->HasEnrolledInstrument(
       base::BindOnce([](bool has_enrolled_instrument) {
         EXPECT_TRUE(has_enrolled_instrument);
       }));
 
   // CanMakePayment returns true because the requested method is supported.
-  state()->CanMakePayment(
-      /*legacy_mode=*/false, base::BindOnce([](bool can_make_payment) {
-        EXPECT_TRUE(can_make_payment);
-      }));
+  state()->CanMakePayment(base::BindOnce(
+      [](bool can_make_payment) { EXPECT_TRUE(can_make_payment); }));
 }
 
 TEST_F(PaymentRequestStateTest, CanMakePayment_BasicCard_SpecificAvailable) {
@@ -260,22 +252,14 @@ TEST_F(PaymentRequestStateTest, CanMakePayment_BasicCard_SpecificAvailable) {
                                      mojom::PaymentDetails::New(),
                                      std::move(method_data));
 
-  // Legacy CanMakePayment returns true because the method data supports visa,
-  // and the user has a Visa instrument.
-  state()->CanMakePayment(
-      /*legacy_mode=*/true, base::BindOnce([](bool can_make_payment) {
-        EXPECT_TRUE(can_make_payment);
-      }));
   state()->HasEnrolledInstrument(
       base::BindOnce([](bool has_enrolled_instrument) {
         EXPECT_TRUE(has_enrolled_instrument);
       }));
 
   // CanMakePayment returns true because the requested method is supported.
-  state()->CanMakePayment(
-      /*legacy_mode=*/false, base::BindOnce([](bool can_make_payment) {
-        EXPECT_TRUE(can_make_payment);
-      }));
+  state()->CanMakePayment(base::BindOnce(
+      [](bool can_make_payment) { EXPECT_TRUE(can_make_payment); }));
 }
 
 TEST_F(PaymentRequestStateTest,
@@ -290,12 +274,6 @@ TEST_F(PaymentRequestStateTest,
                                      mojom::PaymentDetails::New(),
                                      std::move(method_data));
 
-  // Legacy CanMakePayment returns false because the method data supports jcb,
-  // and the user has a JCB instrument, but it's invalid.
-  state()->CanMakePayment(
-      /*legacy_mode=*/true, base::BindOnce([](bool can_make_payment) {
-        EXPECT_FALSE(can_make_payment);
-      }));
   state()->HasEnrolledInstrument(
       base::BindOnce([](bool has_enrolled_instrument) {
         EXPECT_FALSE(has_enrolled_instrument);
@@ -303,10 +281,8 @@ TEST_F(PaymentRequestStateTest,
 
   // CanMakePayment returns true because the requested method is supported, even
   // though there is no enrolled instrument.
-  state()->CanMakePayment(
-      /*legacy_mode=*/false, base::BindOnce([](bool can_make_payment) {
-        EXPECT_TRUE(can_make_payment);
-      }));
+  state()->CanMakePayment(base::BindOnce(
+      [](bool can_make_payment) { EXPECT_TRUE(can_make_payment); }));
 }
 
 TEST_F(PaymentRequestStateTest, CanMakePayment_BasicCard_SpecificUnavailable) {
@@ -320,12 +296,6 @@ TEST_F(PaymentRequestStateTest, CanMakePayment_BasicCard_SpecificUnavailable) {
                                      mojom::PaymentDetails::New(),
                                      std::move(method_data));
 
-  // Legacy CanMakePayment returns false because the method data supports
-  // mastercard, and the user doesn't have such an instrument.
-  state()->CanMakePayment(
-      /*legacy_mode=*/true, base::BindOnce([](bool can_make_payment) {
-        EXPECT_FALSE(can_make_payment);
-      }));
   state()->HasEnrolledInstrument(
       base::BindOnce([](bool has_enrolled_instrument) {
         EXPECT_FALSE(has_enrolled_instrument);
@@ -333,10 +303,8 @@ TEST_F(PaymentRequestStateTest, CanMakePayment_BasicCard_SpecificUnavailable) {
 
   // CanMakePayment returns true because the requested method is supported, even
   // though there is no enrolled instrument.
-  state()->CanMakePayment(
-      /*legacy_mode=*/false, base::BindOnce([](bool can_make_payment) {
-        EXPECT_TRUE(can_make_payment);
-      }));
+  state()->CanMakePayment(base::BindOnce(
+      [](bool can_make_payment) { EXPECT_TRUE(can_make_payment); }));
 }
 
 TEST_F(PaymentRequestStateTest, ReadyToPay_DefaultSelections) {
@@ -376,12 +344,12 @@ TEST_F(PaymentRequestStateTest, UnsupportedCardAreNotAvailable) {
   // Default options.
   RecreateStateWithOptions(mojom::PaymentOptions::New());
 
-  // Ready to pay because the default instrument is selected and supported.
+  // Ready to pay because the default app is selected and supported.
   EXPECT_TRUE(state()->is_ready_to_pay());
 
-  // There's only one instrument available, even though there's an Amex in
+  // There's only one app available, even though there's an Amex in
   // PersonalDataManager.
-  EXPECT_EQ(1u, state()->available_instruments().size());
+  EXPECT_EQ(1u, state()->available_apps().size());
 }
 
 // Test selecting a contact info profile will make the user ready to pay.
@@ -396,7 +364,7 @@ TEST_F(PaymentRequestStateTest, ReadyToPay_ContactInfo) {
   EXPECT_TRUE(state()->is_ready_to_pay());
 
   // Unselecting contact profile.
-  state()->SetSelectedContactProfile(nullptr);
+  state()->SetSelectedContactProfile(/*profile=*/nullptr);
   EXPECT_EQ(1, num_on_selected_information_changed_called());
 
   EXPECT_FALSE(state()->is_ready_to_pay());

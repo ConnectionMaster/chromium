@@ -12,7 +12,6 @@
 
 #include "base/macros.h"
 #include "base/memory/singleton.h"
-#include "base/strings/string16.h"
 #include "chrome/browser/extensions/api/preference/preference_api.h"
 #include "components/proxy_config/proxy_prefs.h"
 
@@ -37,7 +36,8 @@ class ProxyPrefTransformer : public PrefTransformerInterface {
       std::string* error,
       bool* bad_message) override;
   std::unique_ptr<base::Value> BrowserToExtensionPref(
-      const base::Value* browser_pref) override;
+      const base::Value* browser_pref,
+      bool is_incognito_profile) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ProxyPrefTransformer);
@@ -57,7 +57,7 @@ class ProxyEventRouter {
   void OnPACScriptError(EventRouterForwarder* event_router,
                         void* profile,
                         int line_number,
-                        const base::string16& error);
+                        const std::u16string& error);
 
  private:
   friend struct base::DefaultSingletonTraits<ProxyEventRouter>;

@@ -7,21 +7,50 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/clang_coverage_buildflags.h"
+#include "base/check_op.h"
+#include "base/clang_profiling_buildflags.h"
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/i18n/icu_util.h"
-#include "base/logging.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/process/launch.h"
+#include "base/process/process_metrics.h"
+#include "base/time/time.h"
+#include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "build/build_config.h"
 #include "content/public/browser/child_process_launcher_utils.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/sandboxed_process_launcher_delegate.h"
-#include "services/service_manager/embedder/result_codes.h"
+
+#if defined(OS_MAC)
+#include "content/browser/child_process_task_port_provider_mac.h"
+#endif
 
 namespace content {
 
 using internal::ChildProcessLauncherHelper;
+
+void ChildProcessLauncherPriority::WriteIntoTrace(
+    perfetto::TracedProto<
+        perfetto::protos::pbzero::ChildProcessLauncherPriority> proto) {
+  proto->set_is_backgrounded(is_background());
+  proto->set_has_pending_views(boost_for_pending_views);
+
+#if defined(OS_ANDROID)
+  using PriorityProto = perfetto::protos::pbzero::ChildProcessLauncherPriority;
+  switch (importance) {
+    case ChildProcessImportance::IMPORTANT:
+      proto->set_importance(PriorityProto::IMPORTANCE_IMPORTANT);
+      break;
+    case ChildProcessImportance::NORMAL:
+      proto->set_importance(PriorityProto::IMPORTANCE_NORMAL);
+      break;
+    case ChildProcessImportance::MODERATE:
+      proto->set_importance(PriorityProto::IMPORTANCE_MODERATE);
+      break;
+  }
+#endif
+}
 
 #if defined(OS_ANDROID)
 bool ChildProcessLauncher::Client::CanUseWarmUpConnection() {
@@ -36,28 +65,28 @@ ChildProcessLauncher::ChildProcessLauncher(
     Client* client,
     mojo::OutgoingInvitation mojo_invitation,
     const mojo::ProcessErrorCallback& process_error_callback,
+    std::map<std::string, base::FilePath> files_to_preload,
     bool terminate_on_shutdown)
     : client_(client),
       starting_(true),
-      start_time_(base::TimeTicks::Now()),
 #if defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) ||  \
     defined(MEMORY_SANITIZER) || defined(THREAD_SANITIZER) || \
-    defined(UNDEFINED_SANITIZER) || BUILDFLAG(CLANG_COVERAGE)
-      terminate_child_on_shutdown_(false),
+    defined(UNDEFINED_SANITIZER) || BUILDFLAG(CLANG_PROFILING)
+      terminate_child_on_shutdown_(false)
 #else
-      terminate_child_on_shutdown_(terminate_on_shutdown),
+      terminate_child_on_shutdown_(terminate_on_shutdown)
 #endif
-      weak_factory_(this) {
+{
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(BrowserThread::GetCurrentThreadIdentifier(&client_thread_id_));
 
-  helper_ = new ChildProcessLauncherHelper(
-      child_process_id, client_thread_id_, std::move(command_line),
-      std::move(delegate), weak_factory_.GetWeakPtr(), terminate_on_shutdown,
+  helper_ = base::MakeRefCounted<ChildProcessLauncherHelper>(
+      child_process_id, std::move(command_line), std::move(delegate),
+      weak_factory_.GetWeakPtr(), terminate_on_shutdown,
 #if defined(OS_ANDROID)
       client_->CanUseWarmUpConnection(),
 #endif
-      std::move(mojo_invitation), process_error_callback);
+      std::move(mojo_invitation), process_error_callback,
+      std::move(files_to_preload));
   helper_->StartLaunchOnClientThread();
 }
 
@@ -89,6 +118,7 @@ void ChildProcessLauncher::Notify(
   process_ = std::move(process);
 
   if (process_.process.IsValid()) {
+    process_start_time_ = base::TimeTicks::Now();
     client_->OnProcessLaunched();
   } else {
     termination_info_.status = base::TERMINATION_STATUS_LAUNCH_FAILED;
@@ -117,19 +147,25 @@ ChildProcessTerminationInfo ChildProcessLauncher::GetChildTerminationInfo(
   if (!process_.process.IsValid()) {
     // Make sure to avoid using the default termination status if the process
     // hasn't even started yet.
-    if (IsStarting()) {
+    if (IsStarting())
       termination_info_.status = base::TERMINATION_STATUS_STILL_RUNNING;
-      termination_info_.uptime = base::TimeTicks::Now() - start_time_;
-      DCHECK_LE(base::TimeDelta::FromSeconds(0), termination_info_.uptime);
-    }
 
     // Process doesn't exist, so return the cached termination info.
     return termination_info_;
   }
 
+#if !defined(OS_ANDROID)
+  // GetTerminationInfo() invokes base::GetTerminationStatus() which reaps the
+  // zombie process info, after which it's not longer readable. This is why
+  // RecordProcessLifetimeMetrics() needs to called before that happens.
+  //
+  // Not done on Android since there sandboxed child processes run under a
+  // different user/uid, and the browser doesn't have permission to access
+  // the /proc dirs for the child processes. For the Android solution look at
+  // content/common/android/cpu_time_metrics.h.
+  RecordProcessLifetimeMetrics();
+#endif
   termination_info_ = helper_->GetTerminationInfo(process_, known_dead);
-  termination_info_.uptime = base::TimeTicks::Now() - start_time_;
-  DCHECK_LE(base::TimeDelta::FromSeconds(0), termination_info_.uptime);
 
   // POSIX: If the process crashed, then the kernel closed the socket for it and
   // so the child has already died by the time we get here. Since
@@ -151,23 +187,50 @@ bool ChildProcessLauncher::Terminate(int exit_code) {
                             GetProcess(), exit_code);
 }
 
+void ChildProcessLauncher::RecordProcessLifetimeMetrics() {
+#if defined(OS_MAC)
+  std::unique_ptr<base::ProcessMetrics> process_metrics =
+      base::ProcessMetrics::CreateProcessMetrics(
+          process_.process.Handle(),
+          ChildProcessTaskPortProvider::GetInstance());
+#else
+  std::unique_ptr<base::ProcessMetrics> process_metrics =
+      base::ProcessMetrics::CreateProcessMetrics(process_.process.Handle());
+#endif
+
+  const base::TimeDelta process_lifetime =
+      base::TimeTicks::Now() - process_start_time_;
+  const base::TimeDelta process_total_cpu_use =
+      process_metrics->GetCumulativeCPUUsage();
+
+  constexpr base::TimeDelta kShortLifetime = base::TimeDelta::FromMinutes(1);
+  if (process_lifetime <= kShortLifetime) {
+    // Bucketing chosen by looking at AverageCPU2.RendererProcess in UMA. Only a
+    // renderer at the 99.9th percentile of this metric would overflow.
+    UMA_HISTOGRAM_CUSTOM_TIMES("Renderer.TotalCPUUse.ShortLived",
+                               process_total_cpu_use,
+                               base::TimeDelta::FromMilliseconds(1),
+                               base::TimeDelta::FromSeconds(30), 100);
+  } else {
+    // Bucketing chosen by looking at AverageCPU2.RendererProcess and
+    // Renderer.ProcessLifetime values in UMA. Only a renderer at the 99th
+    // percentile of both of those values combined will overflow.
+    UMA_HISTOGRAM_CUSTOM_TIMES("Renderer.TotalCPUUse.LongLived",
+                               process_total_cpu_use,
+                               base::TimeDelta::FromMilliseconds(1),
+                               base::TimeDelta::FromHours(3), 100);
+  }
+
+  // Global measurement. Bucketing identical to LongLivedRenders.
+  UMA_HISTOGRAM_CUSTOM_TIMES("Renderer.TotalCPUUse", process_total_cpu_use,
+                             base::TimeDelta::FromMilliseconds(1),
+                             base::TimeDelta::FromHours(3), 100);
+}
+
 // static
 bool ChildProcessLauncher::TerminateProcess(const base::Process& process,
                                             int exit_code) {
   return ChildProcessLauncherHelper::TerminateProcess(process, exit_code);
-}
-
-// static
-void ChildProcessLauncher::SetRegisteredFilesForService(
-    const std::string& service_name,
-    std::map<std::string, base::FilePath> required_files) {
-  ChildProcessLauncherHelper::SetRegisteredFilesForService(
-      service_name, std::move(required_files));
-}
-
-// static
-void ChildProcessLauncher::ResetRegisteredFilesForTesting() {
-  ChildProcessLauncherHelper::ResetRegisteredFilesForTesting();
 }
 
 #if defined(OS_ANDROID)
@@ -188,9 +251,7 @@ ChildProcessLauncher::Client* ChildProcessLauncher::ReplaceClientForTest(
 
 bool ChildProcessLauncherPriority::is_background() const {
   return !visible && !has_media_stream && !boost_for_pending_views &&
-         !(has_foreground_service_worker &&
-           base::FeatureList::IsEnabled(
-               features::kServiceWorkerForegroundPriority));
+         !has_foreground_service_worker;
 }
 
 bool ChildProcessLauncherPriority::operator==(

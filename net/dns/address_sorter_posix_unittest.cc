@@ -8,8 +8,9 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/logging.h"
+#include "base/check_op.h"
 #include "base/macros.h"
+#include "base/notreached.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
 #include "net/base/test_completion_callback.h"
@@ -19,6 +20,7 @@
 #include "net/socket/socket_performance_watcher.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/socket/stream_socket.h"
+#include "net/test/test_with_task_environment.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -153,18 +155,19 @@ class TestSocketFactory : public ClientSocketFactory {
   std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList&,
       std::unique_ptr<SocketPerformanceWatcher>,
+      net::NetworkQualityEstimator*,
       NetLog*,
       const NetLogSource&) override {
     NOTIMPLEMENTED();
     return nullptr;
   }
   std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
+      SSLClientContext*,
       std::unique_ptr<StreamSocket>,
       const HostPortPair&,
-      const SSLConfig&,
-      const SSLClientSocketContext&) override {
+      const SSLConfig&) override {
     NOTIMPLEMENTED();
-    return std::unique_ptr<SSLClientSocket>();
+    return nullptr;
   }
   std::unique_ptr<ProxyClientSocket> CreateProxyClientSocket(
       std::unique_ptr<StreamSocket> stream_socket,
@@ -176,7 +179,6 @@ class TestSocketFactory : public ClientSocketFactory {
       bool using_spdy,
       NextProto negotiated_protocol,
       ProxyDelegate* proxy_delegate,
-      bool is_https_proxy,
       const NetworkTrafficAnnotationTag& traffic_annotation) override {
     NOTIMPLEMENTED();
     return nullptr;
@@ -203,7 +205,9 @@ void OnSortComplete(AddressList* result_buf,
 
 }  // namespace
 
-class AddressSorterPosixTest : public testing::Test {
+// TaskEnvironment is required to register an IPAddressObserver from the
+// constructor of AddressSorterPosix.
+class AddressSorterPosixTest : public TestWithTaskEnvironment {
  protected:
   AddressSorterPosixTest() : sorter_(&socket_factory_) {}
 

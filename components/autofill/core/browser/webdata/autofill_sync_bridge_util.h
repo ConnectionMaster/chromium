@@ -8,14 +8,16 @@
 #include <memory>
 #include <string>
 
+#include "components/sync/engine/entity_data.h"
 #include "components/sync/model/entity_change.h"
-#include "components/sync/model/entity_data.h"
 
 namespace autofill {
 
+struct AutofillOfferData;
 class AutofillProfile;
 class AutofillTable;
 class CreditCard;
+struct CreditCardCloudTokenData;
 struct PaymentsCustomerData;
 
 // Returns the specified |id| encoded in / decoded from base 64.
@@ -48,6 +50,27 @@ void SetAutofillWalletSpecificsFromPaymentsCustomerData(
     const PaymentsCustomerData& customer_data,
     sync_pb::AutofillWalletSpecifics* wallet_specifics);
 
+// Sets the field of the |wallet_specifics| based on the specified
+// |cloud_token_data|. If |enforce_utf8|, ids are encoded into UTF-8.
+void SetAutofillWalletSpecificsFromCreditCardCloudTokenData(
+    const CreditCardCloudTokenData& cloud_token_data,
+    sync_pb::AutofillWalletSpecifics* wallet_specifics,
+    bool enforce_utf8 = false);
+
+// Sets the fields of the |offer_specifics| based on the specified |offer_data|.
+void SetAutofillOfferSpecificsFromOfferData(
+    const AutofillOfferData& offer_data,
+    sync_pb::AutofillOfferSpecifics* offer_specifics);
+
+// Creates an AutofillOfferData from the specified |offer_specifics|.
+// |offer_specifics| must be valid (as per IsOfferSpecificsValid()).
+AutofillOfferData AutofillOfferDataFromOfferSpecifics(
+    const sync_pb::AutofillOfferSpecifics& offer_specifics);
+
+// Creates an AutofillProfile from the specified |address| specifics.
+AutofillProfile ProfileFromSpecifics(
+    const sync_pb::WalletPostalAddress& address);
+
 // TODO(sebsg): This should probably copy the converted state for the address
 // too.
 // Copies the metadata from the local cards (if present) to the corresponding
@@ -65,7 +88,18 @@ void PopulateWalletTypesFromSyncData(
     const ::syncer::EntityChangeList& entity_data,
     std::vector<CreditCard>* wallet_cards,
     std::vector<AutofillProfile>* wallet_addresses,
-    std::vector<PaymentsCustomerData>* customer_data);
+    std::vector<PaymentsCustomerData>* customer_data,
+    std::vector<CreditCardCloudTokenData>* cloud_token_data);
+
+// A helper function to compare two sets of data. Returns true if there is
+// any difference. It uses the Compare() of the Item class instead of comparison
+// operators and does not care about the order of items in the dataset.
+template <class Item>
+bool AreAnyItemsDifferent(const std::vector<std::unique_ptr<Item>>& old_data,
+                          const std::vector<Item>& new_data);
+
+// Returns whether the Wallet Offer |specifics| is valid data.
+bool IsOfferSpecificsValid(const sync_pb::AutofillOfferSpecifics specifics);
 
 }  // namespace autofill
 

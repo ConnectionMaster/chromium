@@ -12,6 +12,7 @@
 #include "components/infobars/core/infobar.h"
 #include "components/translate/core/browser/translate_client.h"
 #include "components/translate/core/browser/translate_driver.h"
+#include "components/translate/core/browser/translate_infobar_delegate.h"
 #include "components/translate/core/browser/translate_prefs.h"
 #include "components/translate/core/common/language_detection_details.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -38,19 +39,13 @@ class MockTranslateClient : public TranslateClient {
 
   MOCK_METHOD0(GetTranslateAcceptLanguages, TranslateAcceptLanguages*());
   MOCK_CONST_METHOD0(GetInfobarIconID, int());
-  MOCK_METHOD1(RecordTranslateEvent, void(const metrics::TranslateEventProto&));
 
 #if !defined(USE_AURA)
-  MOCK_CONST_METHOD1(CreateInfoBarMock,
-                     infobars::InfoBar*(TranslateInfoBarDelegate*));
   std::unique_ptr<infobars::InfoBar> CreateInfoBar(
       std::unique_ptr<TranslateInfoBarDelegate> delegate) const {
-    return base::WrapUnique(CreateInfoBarMock(delegate.get()));
+    return std::make_unique<infobars::InfoBar>(std::move(delegate));
   }
 #endif
-
-  MOCK_CONST_METHOD1(RecordLanguageDetectionEvent,
-                     void(const LanguageDetectionDetails&));
 
   MOCK_METHOD5(ShowTranslateUI,
                bool(translate::TranslateStep,
@@ -60,6 +55,7 @@ class MockTranslateClient : public TranslateClient {
                     bool));
   MOCK_METHOD1(IsTranslatableURL, bool(const GURL&));
   MOCK_METHOD1(ShowReportLanguageDetectionErrorUI, void(const GURL&));
+  MOCK_CONST_METHOD0(IsAutofillAssistantRunning, bool());
 
  private:
   TranslateDriver* driver_;

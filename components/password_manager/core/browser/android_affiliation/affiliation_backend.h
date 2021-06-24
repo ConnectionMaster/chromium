@@ -19,8 +19,8 @@
 #include "base/sequence_checker.h"
 #include "components/password_manager/core/browser/android_affiliation/affiliation_fetch_throttler_delegate.h"
 #include "components/password_manager/core/browser/android_affiliation/affiliation_fetcher_delegate.h"
-#include "components/password_manager/core/browser/android_affiliation/affiliation_service.h"
 #include "components/password_manager/core/browser/android_affiliation/affiliation_utils.h"
+#include "components/password_manager/core/browser/android_affiliation/android_affiliation_service.h"
 #include "components/password_manager/core/browser/android_affiliation/facet_manager_host.h"
 
 namespace base {
@@ -34,20 +34,22 @@ class Time;
 
 namespace network {
 class NetworkConnectionTracker;
-class SharedURLLoaderFactoryInfo;
+class PendingSharedURLLoaderFactory;
 }  // namespace network
 
 namespace password_manager {
 
 class AffiliationDatabase;
-class AffiliationFetcher;
+class AffiliationFetcherInterface;
+class AffiliationFetcherFactory;
 class AffiliationFetchThrottler;
 class FacetManager;
 
-// The AffiliationBackend is the part of the AffiliationService that lives on a
-// background thread suitable for performing blocking I/O. As most tasks require
-// I/O, the backend ends up doing most of the work for the AffiliationService;
-// the latter being just a thin layer that delegates most tasks to the backend.
+// The AffiliationBackend is the part of the AndroidAffiliationService that
+// lives on a background thread suitable for performing blocking I/O. As most
+// tasks require I/O, the backend ends up doing most of the work for the
+// AndroidAffiliationService; the latter being just a thin layer that delegates
+// most tasks to the backend.
 //
 // This class is not thread-safe, but it is fine to construct it on one thread
 // and then transfer it to the background thread for the rest of its life.
@@ -56,7 +58,7 @@ class AffiliationBackend : public FacetManagerHost,
                            public AffiliationFetcherDelegate,
                            public AffiliationFetchThrottlerDelegate {
  public:
-  using StrategyOnCacheMiss = AffiliationService::StrategyOnCacheMiss;
+  using StrategyOnCacheMiss = AndroidAffiliationService::StrategyOnCacheMiss;
 
   // Constructs an instance that will use |url_loader_factory| for all
   // network requests, use |task_runner| for asynchronous tasks, and will rely
@@ -70,17 +72,18 @@ class AffiliationBackend : public FacetManagerHost,
 
   // Performs the I/O-heavy part of initialization. The database used to cache
   // affiliation information locally will be opened/created at |db_path|.
-  void Initialize(std::unique_ptr<network::SharedURLLoaderFactoryInfo>
-                      url_loader_factory_info,
+  void Initialize(std::unique_ptr<network::PendingSharedURLLoaderFactory>
+                      pending_url_loader_factory,
                   network::NetworkConnectionTracker* network_connection_tracker,
                   const base::FilePath& db_path);
 
-  // Implementations for methods of the same name in AffiliationService. They
-  // are not documented here again. See affiliation_service.h for details:
+  // Implementations for methods of the same name in AndroidAffiliationService.
+  // They are not documented here again. See android_affiliation_service.h for
+  // details:
   void GetAffiliationsAndBranding(
       const FacetURI& facet_uri,
       StrategyOnCacheMiss cache_miss_strategy,
-      AffiliationService::ResultCallback callback,
+      AndroidAffiliationService::ResultCallback callback,
       const scoped_refptr<base::TaskRunner>& callback_task_runner);
   void Prefetch(const FacetURI& facet_uri, const base::Time& keep_fresh_until);
   void CancelPrefetch(const FacetURI& facet_uri,
@@ -90,6 +93,12 @@ class AffiliationBackend : public FacetManagerHost,
   // Deletes the cache database file at |db_path|, and all auxiliary files. The
   // database must be closed before calling this.
   static void DeleteCache(const base::FilePath& db_path);
+
+  // Replaces already initialized |fetcher_factory_| implemented by
+  // AffiliationFetcherFactoryImpl with a new instance of
+  // AffilationFetcherInterface.
+  void SetFetcherFactoryForTesting(
+      std::unique_ptr<AffiliationFetcherFactory> fetcher_factory);
 
  private:
   friend class AffiliationBackendTest;
@@ -120,9 +129,10 @@ class AffiliationBackend : public FacetManagerHost,
 
   // AffiliationFetcherDelegate:
   void OnFetchSucceeded(
+      AffiliationFetcherInterface* fetcher,
       std::unique_ptr<AffiliationFetcherDelegate::Result> result) override;
-  void OnFetchFailed() override;
-  void OnMalformedResponse() override;
+  void OnFetchFailed(AffiliationFetcherInterface* fetcher) override;
+  void OnMalformedResponse(AffiliationFetcherInterface* fetcher) override;
 
   // AffiliationFetchThrottlerDelegate:
   bool OnCanSendNetworkRequest() override;
@@ -148,8 +158,9 @@ class AffiliationBackend : public FacetManagerHost,
   base::Clock* clock_;
   const base::TickClock* tick_clock_;
 
+  std::unique_ptr<AffiliationFetcherFactory> fetcher_factory_;
   std::unique_ptr<AffiliationDatabase> cache_;
-  std::unique_ptr<AffiliationFetcher> fetcher_;
+  std::unique_ptr<AffiliationFetcherInterface> fetcher_;
   std::unique_ptr<AffiliationFetchThrottler> throttler_;
 
   base::Time construction_time_;
@@ -160,7 +171,7 @@ class AffiliationBackend : public FacetManagerHost,
   std::unordered_map<FacetURI, std::unique_ptr<FacetManager>, FacetURIHash>
       facet_managers_;
 
-  base::WeakPtrFactory<AffiliationBackend> weak_ptr_factory_;
+  base::WeakPtrFactory<AffiliationBackend> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(AffiliationBackend);
 };

@@ -13,9 +13,9 @@ import android.net.Uri;
 import android.nfc.NfcAdapter;
 import android.provider.Browser;
 import android.support.test.InstrumentationRegistry;
-import android.support.test.filters.SmallTest;
 
-import org.junit.After;
+import androidx.test.filters.SmallTest;
+
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -23,15 +23,16 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.IntentUtils;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.chrome.browser.ChromeActivity;
-import org.chromium.chrome.browser.ChromeSwitches;
 import org.chromium.chrome.browser.IntentHandler;
-import org.chromium.chrome.browser.ShortcutHelper;
+import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.test.ChromeActivityTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.content_public.browser.test.util.TestThreadUtils;
+import org.chromium.url.GURL;
 
 /**
  * Unit tests for {@link InstantAppsHandler}.
@@ -40,8 +41,7 @@ import org.chromium.content_public.browser.test.util.TestThreadUtils;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class InstantAppsHandlerTest {
     @Rule
-    public ChromeActivityTestRule<ChromeActivity> mActivityTestRule =
-            new ChromeActivityTestRule<>(ChromeActivity.class);
+    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
 
     private TestInstantAppsHandler mHandler;
     private Context mContext;
@@ -66,11 +66,6 @@ public class InstantAppsHandlerTest {
         editor.putBoolean("applink.app_link_enabled", true);
         editor.putBoolean("applink.chrome_default_browser", true);
         editor.apply();
-    }
-
-    @After
-    public void tearDown() throws Exception {
-        ContextUtils.getAppSharedPreferences().edit().clear().apply();
     }
 
     @Test
@@ -108,7 +103,7 @@ public class InstantAppsHandlerTest {
 
         Intent signedIntent = createViewIntent();
         signedIntent.setPackage(mContext.getPackageName());
-        IntentHandler.addTrustedIntentExtras(signedIntent);
+        IntentUtils.addTrustedIntentExtras(signedIntent);
 
         Assert.assertFalse(mHandler.handleIncomingIntent(mContext, signedIntent, false, true));
     }
@@ -117,7 +112,7 @@ public class InstantAppsHandlerTest {
     @SmallTest
     public void testInstantAppsDisabled_launchFromShortcut() {
         Intent i = createViewIntent();
-        i.putExtra(ShortcutHelper.EXTRA_SOURCE, 1);
+        i.putExtra(WebappConstants.EXTRA_SOURCE, 1);
         Assert.assertFalse(mHandler.handleIncomingIntent(mContext, i, false, true));
     }
 
@@ -169,11 +164,12 @@ public class InstantAppsHandlerTest {
     @SmallTest
     public void testHandleNavigation_startAsyncCheck() {
         TestThreadUtils.runOnUiThreadBlocking(
-                () -> Assert.assertFalse(
-                                mHandler.handleNavigation(mContext, INSTANT_APP_URL, REFERRER_URI,
-                                        mActivityTestRule.getActivity()
-                                                .getTabModelSelector()
-                                                .getCurrentTab())));
+                ()
+                        -> Assert.assertFalse(mHandler.handleNavigation(mContext,
+                                new GURL(INSTANT_APP_URL), new GURL(REFERRER_URI.toString()),
+                                mActivityTestRule.getActivity()
+                                        .getTabModelSelector()
+                                        .getCurrentTab())));
         Assert.assertFalse(mHandler.mLaunchInstantApp);
         Assert.assertTrue(mHandler.mStartedAsyncCall);
     }
@@ -211,11 +207,12 @@ public class InstantAppsHandlerTest {
         // After a banner launch, test that the next launch happens automatically
 
         TestThreadUtils.runOnUiThreadBlocking(
-                () -> Assert.assertTrue(
-                                mHandler.handleNavigation(mContext, INSTANT_APP_URL, REFERRER_URI,
-                                        mActivityTestRule.getActivity()
-                                                .getTabModelSelector()
-                                                .getCurrentTab())));
+                ()
+                        -> Assert.assertTrue(mHandler.handleNavigation(mContext,
+                                new GURL(INSTANT_APP_URL), new GURL(REFERRER_URI.toString()),
+                                mActivityTestRule.getActivity()
+                                        .getTabModelSelector()
+                                        .getCurrentTab())));
         Assert.assertFalse(mHandler.mStartedAsyncCall);
         Assert.assertTrue(mHandler.mLaunchInstantApp);
     }

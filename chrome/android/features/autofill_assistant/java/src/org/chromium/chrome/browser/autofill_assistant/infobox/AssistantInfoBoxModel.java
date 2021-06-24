@@ -4,7 +4,8 @@
 
 package org.chromium.chrome.browser.autofill_assistant.infobox;
 
-import org.chromium.base.VisibleForTesting;
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.annotations.CalledByNative;
 import org.chromium.base.annotations.JNINamespace;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -14,7 +15,7 @@ import org.chromium.ui.modelutil.PropertyModel;
  */
 @JNINamespace("autofill_assistant")
 public class AssistantInfoBoxModel extends PropertyModel {
-    @VisibleForTesting
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     public static final WritableObjectPropertyKey<AssistantInfoBox> INFO_BOX =
             new WritableObjectPropertyKey<>();
 

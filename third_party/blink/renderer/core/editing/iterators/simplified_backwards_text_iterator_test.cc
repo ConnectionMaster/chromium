@@ -35,8 +35,7 @@ class SimplifiedBackwardsTextIteratorTest : public EditingTestBase {
       is_first = false;
       builder.Append(iterator.GetTextState().GetTextForTesting());
     }
-    CString utf8 = builder.ToString().Utf8();
-    return std::string(utf8.data(), utf8.length());
+    return builder.ToString().Utf8();
   }
 };
 
@@ -154,9 +153,10 @@ TEST_F(SimplifiedBackwardsTextIteratorTest, FirstLetter) {
 
 TEST_F(SimplifiedBackwardsTextIteratorTest, SubrangeWithReplacedElements) {
   static const char* body_content =
-      "<a id=host><b id=one>one</b> not appeared <b id=two>two</b></a>";
+      "<span id=host><b slot='#one' id=one>one</b> not appeared <b slot='#two' "
+      "id=two>two</b></span>";
   const char* shadow_content =
-      "three <content select=#two></content> <content select=#one></content> "
+      "three <slot name=#two></slot> <slot name=#one></slot> "
       "zero";
   SetBodyContent(body_content);
   SetShadowContent(shadow_content, "host");
@@ -173,9 +173,10 @@ TEST_F(SimplifiedBackwardsTextIteratorTest, SubrangeWithReplacedElements) {
 
 TEST_F(SimplifiedBackwardsTextIteratorTest, characterAt) {
   const char* body_content =
-      "<a id=host><b id=one>one</b> not appeared <b id=two>two</b></a>";
+      "<span id=host><b slot='#one' id=one>one</b> not appeared <b slot='#two' "
+      "id=two>two</b></span>";
   const char* shadow_content =
-      "three <content select=#two></content> <content select=#one></content> "
+      "three <slot name=#two></slot> <slot name=#one></slot> "
       "zero";
   SetBodyContent(body_content);
   SetShadowContent(shadow_content, "host");

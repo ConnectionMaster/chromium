@@ -5,6 +5,7 @@
 #include "remoting/signaling/delegating_signal_strategy.h"
 
 #include "base/bind.h"
+#include "base/logging.h"
 #include "base/rand_util.h"
 #include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
@@ -21,8 +22,7 @@ DelegatingSignalStrategy::DelegatingSignalStrategy(
     : local_address_(local_address),
       delegate_task_runner_(base::ThreadTaskRunnerHandle::Get()),
       client_task_runner_(client_task_runner),
-      send_iq_callback_(send_iq_callback),
-      weak_factory_(this) {
+      send_iq_callback_(send_iq_callback) {
   incoming_iq_callback_ =
       base::BindRepeating(&OnIncomingMessageFromDelegate,
                           weak_factory_.GetWeakPtr(), client_task_runner_);
@@ -106,6 +106,14 @@ bool DelegatingSignalStrategy::SendStanza(
   delegate_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(send_iq_callback_, stanza->Str()));
   return true;
+}
+
+bool DelegatingSignalStrategy::SendMessage(
+    const SignalingAddress& destination_address,
+    const ftl::ChromotingMessage& message) {
+  DCHECK(client_task_runner_->BelongsToCurrentThread());
+  NOTIMPLEMENTED();
+  return false;
 }
 
 std::string DelegatingSignalStrategy::GetNextId() {

@@ -14,7 +14,7 @@ class SkPath;
 namespace gfx {
 class Point;
 class Size;
-}
+}  // namespace gfx
 
 namespace ui {
 class GestureEvent;
@@ -23,7 +23,7 @@ class Layer;
 class MouseEvent;
 class PaintContext;
 class ScrollEvent;
-}
+}  // namespace ui
 
 namespace views {
 class Widget;
@@ -49,15 +49,11 @@ class VIEWS_EXPORT NativeWidgetDelegate {
   // Returns true if the window can be activated.
   virtual bool CanActivate() const = 0;
 
+  // Returns true if the window should paint as active.
+  virtual bool ShouldPaintAsActive() const = 0;
+
   // Returns true if the native widget has been initialized.
   virtual bool IsNativeWidgetInitialized() const = 0;
-
-  // Prevents the window from being rendered as deactivated. This state is
-  // reset automatically as soon as the window becomes activated again. There is
-  // no ability to control the state through this API as this leads to sync
-  // problems.
-  virtual void SetAlwaysRenderAsActive(bool always_render_as_active) = 0;
-  virtual bool IsAlwaysRenderAsActive() const = 0;
 
   // Called when the activation state of a window has changed.
   // Returns true if this event should be handled.
@@ -97,7 +93,8 @@ class VIEWS_EXPORT NativeWidgetDelegate {
   // e.g. maximize.
   virtual void OnNativeWidgetSizeChanged(const gfx::Size& new_size) = 0;
 
-  // Called when NativeWidget changed workspaces.
+  // Called when NativeWidget changed workspaces or its visible on all
+  // workspaces state changes.
   virtual void OnNativeWidgetWorkspaceChanged() = 0;
 
   // Called when the NativeWidget changes its window state.

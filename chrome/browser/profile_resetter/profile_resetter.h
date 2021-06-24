@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -17,7 +18,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
-#include "base/strings/string16.h"
 #include "chrome/browser/profile_resetter/brandcoded_default_settings.h"
 #include "chrome/browser/search/instant_service.h"
 #include "components/search_engines/template_url_service.h"
@@ -26,7 +26,7 @@
 class Profile;
 
 namespace base {
-class CancellationFlag;
+class AtomicFlag;
 }
 
 namespace {
@@ -49,11 +49,12 @@ class ProfileResetter : public content::BrowsingDataRemover::Observer {
     PINNED_TABS = 1 << 6,
     SHORTCUTS = 1 << 7,
     NTP_CUSTOMIZATIONS = 1 << 8,
+    LANGUAGES = 1 << 9,
     // Update ALL if you add new values and check whether the type of
     // ResettableFlags needs to be enlarged.
     ALL = DEFAULT_SEARCH_ENGINE | HOMEPAGE | CONTENT_SETTINGS |
           COOKIES_AND_SITE_DATA | EXTENSIONS | STARTUP_PAGES | PINNED_TABS |
-          SHORTCUTS | NTP_CUSTOMIZATIONS
+          SHORTCUTS | NTP_CUSTOMIZATIONS | LANGUAGES
   };
 
   // Bit vector for Resettable enum.
@@ -70,7 +71,7 @@ class ProfileResetter : public content::BrowsingDataRemover::Observer {
   // settings. |default_settings| shouldn't be NULL.
   virtual void Reset(ResettableFlags resettable_flags,
                      std::unique_ptr<BrandcodedDefaultSettings> master_settings,
-                     const base::Closure& callback);
+                     base::OnceClosure callback);
 
   virtual bool IsActive() const;
 
@@ -90,9 +91,10 @@ class ProfileResetter : public content::BrowsingDataRemover::Observer {
   void ResetPinnedTabs();
   void ResetShortcuts();
   void ResetNtpCustomizations();
+  void ResetLanguages();
 
   // BrowsingDataRemover::Observer:
-  void OnBrowsingDataRemoverDone() override;
+  void OnBrowsingDataRemoverDone(uint64_t failed_data_types) override;
 
   // Callback for when TemplateURLService has loaded.
   void OnTemplateURLServiceLoaded();
@@ -106,28 +108,28 @@ class ProfileResetter : public content::BrowsingDataRemover::Observer {
   ResettableFlags pending_reset_flags_;
 
   // Called on UI thread when reset has been completed.
-  base::Closure callback_;
+  base::OnceClosure callback_;
 
   // If non-null it means removal is in progress. BrowsingDataRemover takes care
   // of deleting itself when done.
   content::BrowsingDataRemover* cookies_remover_;
 
-  std::unique_ptr<TemplateURLService::Subscription> template_url_service_sub_;
+  base::CallbackListSubscription template_url_service_subscription_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 
   // Used for resetting NTP customizations.
   InstantService* ntp_service_;
 
-  base::WeakPtrFactory<ProfileResetter> weak_ptr_factory_;
+  base::WeakPtrFactory<ProfileResetter> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ProfileResetter);
 };
 
 // Path to shortcut and command line arguments.
-typedef std::pair<base::FilePath, base::string16> ShortcutCommand;
+typedef std::pair<base::FilePath, std::wstring> ShortcutCommand;
 
-typedef base::RefCountedData<base::CancellationFlag> SharedCancellationFlag;
+typedef base::RefCountedData<base::AtomicFlag> SharedCancellationFlag;
 
 #if defined(OS_WIN)
 // On Windows returns all the shortcuts which launch Chrome and corresponding

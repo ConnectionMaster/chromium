@@ -12,9 +12,10 @@
 #include "base/gtest_prod_util.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/push_messaging/budget_database.h"
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
 #include "chrome/browser/chromeos/android_sms/android_sms_app_manager.h"
 #include "chromeos/services/multidevice_setup/public/cpp/multidevice_setup_client.h"
 #endif
@@ -23,7 +24,6 @@ class GURL;
 class Profile;
 
 namespace content {
-struct NotificationDatabaseData;
 class WebContents;
 }  // namespace content
 
@@ -41,6 +41,9 @@ class WebContents;
 // https://crbug.com/437277
 class PushMessagingNotificationManager {
  public:
+  using EnforceRequirementsCallback =
+      base::OnceCallback<void(bool did_show_generic_notification)>;
+
   explicit PushMessagingNotificationManager(Profile* profile);
   ~PushMessagingNotificationManager();
 
@@ -49,7 +52,7 @@ class PushMessagingNotificationManager {
   void EnforceUserVisibleOnlyRequirements(
       const GURL& origin,
       int64_t service_worker_registration_id,
-      base::OnceClosure message_handled_closure);
+      EnforceRequirementsCallback message_handled_callback);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(PushMessagingNotificationManagerTest, IsTabVisible);
@@ -59,12 +62,12 @@ class PushMessagingNotificationManager {
       PushMessagingNotificationManagerTest,
       SkipEnforceUserVisibleOnlyRequirementsForAndroidMessages);
 
-  void DidGetNotificationsFromDatabase(
+  void DidCountVisibleNotifications(
       const GURL& origin,
       int64_t service_worker_registration_id,
-      base::OnceClosure message_handled_closure,
+      EnforceRequirementsCallback message_handled_callback,
       bool success,
-      const std::vector<content::NotificationDatabaseData>& data);
+      int notification_count);
 
   // Checks whether |profile| is the one owning this instance,
   // |active_web_contents| exists and its main frame is visible, and the URL
@@ -75,14 +78,15 @@ class PushMessagingNotificationManager {
 
   void ProcessSilentPush(const GURL& origin,
                          int64_t service_worker_registration_id,
-                         base::OnceClosure message_handled_closure,
+                         EnforceRequirementsCallback message_handled_callback,
                          bool silent_push_allowed);
 
-  void DidWriteNotificationData(base::OnceClosure message_handled_closure,
-                                bool success,
-                                const std::string& notification_id);
+  void DidWriteNotificationData(
+      EnforceRequirementsCallback message_handled_callback,
+      bool success,
+      const std::string& notification_id);
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   bool ShouldSkipUserVisibleOnlyRequirements(const GURL& origin);
 
   void SetTestMultiDeviceSetupClient(
@@ -98,7 +102,7 @@ class PushMessagingNotificationManager {
 
   BudgetDatabase budget_database_;
 
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   chromeos::multidevice_setup::MultiDeviceSetupClient*
       test_multidevice_setup_client_ = nullptr;
 
@@ -106,7 +110,7 @@ class PushMessagingNotificationManager {
       nullptr;
 #endif
 
-  base::WeakPtrFactory<PushMessagingNotificationManager> weak_factory_;
+  base::WeakPtrFactory<PushMessagingNotificationManager> weak_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(PushMessagingNotificationManager);
 };

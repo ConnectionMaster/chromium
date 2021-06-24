@@ -8,34 +8,42 @@
 #include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/environment.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop_current.h"
+#include "base/metrics/field_trial.h"
 #include "base/process/process.h"
+#include "base/task/current_thread.h"
 #include "build/build_config.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/test_host_resolver.h"
-#include "mojo/public/cpp/bindings/binding_set.h"
+#include "crypto/sha2.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "net/base/hash_value.h"
+#include "net/base/ip_address.h"
+#include "net/cert/ev_root_ca_metadata.h"
 #include "net/cert/mock_cert_verifier.h"
 #include "net/cert/test_root_certs.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/transport_security_state.h"
 #include "net/http/transport_security_state_test_util.h"
 #include "net/nqe/network_quality_estimator.h"
+#include "net/test/cert_test_util.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/spawned_test_server/spawned_test_server.h"
 #include "net/test/test_data_directory.h"
+#include "sandbox/policy/sandbox_type.h"
 #include "services/network/cookie_manager.h"
 #include "services/network/host_resolver.h"
 #include "services/network/network_context.h"
 #include "services/network/network_service.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/mojom/network_change_manager.mojom.h"
-#include "services/service_manager/sandbox/sandbox_type.h"
+#include "services/network/public/mojom/network_service.mojom.h"
+#include "services/network/sct_auditing/sct_auditing_cache.h"
 
 #if defined(OS_ANDROID)
 #include "base/test/android/url_utils.h"
@@ -68,10 +76,12 @@ void CrashResolveHost(const std::string& host_to_crash,
 
 class NetworkServiceTestHelper::NetworkServiceTestImpl
     : public network::mojom::NetworkServiceTest,
-      public base::MessageLoopCurrent::DestructionObserver {
+      public base::CurrentThread::DestructionObserver {
  public:
   NetworkServiceTestImpl()
-      : memory_pressure_listener_(
+      : test_host_resolver_(new TestHostResolver()),
+        memory_pressure_listener_(
+            FROM_HERE,
             base::DoNothing(),
             base::BindRepeating(&NetworkServiceTestHelper::
                                     NetworkServiceTestImpl::OnMemoryPressure,
@@ -81,6 +91,16 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
       mock_cert_verifier_ = std::make_unique<net::MockCertVerifier>();
       network::NetworkContext::SetCertVerifierForTesting(
           mock_cert_verifier_.get());
+
+      // The default result may be set using a command line flag.
+      std::string default_result =
+          base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+              switches::kMockCertVerifierDefaultResultForTesting);
+      int default_result_int = 0;
+      if (!default_result.empty() &&
+          base::StringToInt(default_result, &default_result_int)) {
+        mock_cert_verifier_->set_default_result(default_result_int);
+      }
     }
   }
 
@@ -91,21 +111,33 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
   // network::mojom::NetworkServiceTest:
   void AddRules(std::vector<network::mojom::RulePtr> rules,
                 AddRulesCallback callback) override {
-    auto* host_resolver = test_host_resolver_.host_resolver();
+    // test_host_resolver_ may be empty if
+    // SetAllowNetworkAccessToHostResolutions was invoked.
+    DCHECK(test_host_resolver_);
+    auto* host_resolver = test_host_resolver_->host_resolver();
     for (const auto& rule : rules) {
       switch (rule->resolver_type) {
         case network::mojom::ResolverType::kResolverTypeFail:
           host_resolver->AddSimulatedFailure(rule->host_pattern);
           break;
-        case network::mojom::ResolverType::kResolverTypeIPLiteral:
-          host_resolver->AddIPLiteralRule(rule->host_pattern, rule->replacement,
-                                          std::string());
+        case network::mojom::ResolverType::kResolverTypeFailTimeout:
+          host_resolver->AddSimulatedTimeoutFailure(rule->host_pattern);
           break;
+        case network::mojom::ResolverType::kResolverTypeIPLiteral: {
+          net::IPAddress ip_address;
+          DCHECK(ip_address.AssignFromIPLiteral(rule->replacement));
+          host_resolver->AddRuleWithFlags(rule->host_pattern, rule->replacement,
+                                          rule->host_resolver_flags,
+                                          rule->dns_aliases);
+          break;
+        }
         case network::mojom::ResolverType::kResolverTypeDirectLookup:
           host_resolver->AllowDirectLookup(rule->host_pattern);
           break;
         default:
-          host_resolver->AddRule(rule->host_pattern, rule->replacement);
+          host_resolver->AddRuleWithFlags(rule->host_pattern, rule->replacement,
+                                          rule->host_resolver_flags,
+                                          rule->dns_aliases);
           break;
       }
     }
@@ -114,7 +146,7 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
 
   void SimulateNetworkChange(network::mojom::ConnectionType type,
                              SimulateNetworkChangeCallback callback) override {
-    DCHECK(net::NetworkChangeNotifier::HasNetworkChangeNotifier());
+    DCHECK(!net::NetworkChangeNotifier::CreateIfNeeded());
     net::NetworkChangeNotifier::NotifyObserversOfNetworkChangeForTests(
         net::NetworkChangeNotifier::ConnectionType(type));
     std::move(callback).Run();
@@ -155,19 +187,10 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
     std::move(callback).Run();
   }
 
-  void SetShouldRequireCT(ShouldRequireCT required,
-                          SetShouldRequireCTCallback callback) override {
-    if (required == NetworkServiceTest::ShouldRequireCT::RESET) {
-      net::TransportSecurityState::SetShouldRequireCTForTesting(nullptr);
-      std::move(callback).Run();
-      return;
-    }
-
-    bool ct = true;
-    if (NetworkServiceTest::ShouldRequireCT::DONT_REQUIRE == required)
-      ct = false;
-
-    net::TransportSecurityState::SetShouldRequireCTForTesting(&ct);
+  void SetRequireCT(RequireCT required,
+                    SetRequireCTCallback callback) override {
+    net::TransportSecurityState::SetRequireCTForTesting(
+        required == NetworkServiceTest::RequireCT::REQUIRE);
     std::move(callback).Run();
   }
 
@@ -181,6 +204,12 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
     } else {
       transport_security_state_source_.reset();
     }
+    std::move(callback).Run();
+  }
+
+  void SetAllowNetworkAccessToHostResolutions(
+      SetAllowNetworkAccessToHostResolutionsCallback callback) override {
+    test_host_resolver_.reset();
     std::move(callback).Run();
   }
 
@@ -198,6 +227,48 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
     std::move(callback).Run(latest_memory_pressure_level_);
   }
 
+  void GetPeerToPeerConnectionsCountChange(
+      GetPeerToPeerConnectionsCountChangeCallback callback) override {
+    uint32_t count = network::NetworkService::GetNetworkServiceForTesting()
+                         ->network_quality_estimator()
+                         ->GetPeerToPeerConnectionsCountChange();
+
+    std::move(callback).Run(count);
+  }
+
+  void GetFirstPartySetEntriesCount(
+      GetFirstPartySetEntriesCountCallback callback) override {
+    std::move(callback).Run(
+        network::NetworkService::GetNetworkServiceForTesting()
+            ->first_party_sets()
+            ->size());
+  }
+
+  void SetSCTAuditingRetryDelay(
+      absl::optional<base::TimeDelta> delay,
+      SetSCTAuditingRetryDelayCallback callback) override {
+    network::NetworkService::GetNetworkServiceForTesting()
+        ->sct_auditing_cache()
+        ->SetRetryDelayForTesting(delay);
+    std::move(callback).Run();
+  }
+
+  void GetSCTAuditingPendingReportsCount(
+      GetSCTAuditingPendingReportsCountCallback callback) override {
+    std::move(callback).Run(
+        network::NetworkService::GetNetworkServiceForTesting()
+            ->sct_auditing_cache()
+            ->GetPendingReportersForTesting()
+            ->size());
+  }
+
+  void SetSCTAuditingReportCompletionCallback(
+      SetSCTAuditingReportCompletionCallbackCallback callback) override {
+    network::NetworkService::GetNetworkServiceForTesting()
+        ->sct_auditing_cache()
+        ->SetCompletionCallbackForTesting(std::move(callback));
+  }
+
   void GetEnvironmentVariableValue(
       const std::string& name,
       GetEnvironmentVariableValueCallback callback) override {
@@ -206,18 +277,41 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
     std::move(callback).Run(value);
   }
 
-  void BindRequest(network::mojom::NetworkServiceTestRequest request) {
-    bindings_.AddBinding(this, std::move(request));
+  void Log(const std::string& message, LogCallback callback) override {
+    LOG(ERROR) << message;
+    std::move(callback).Run();
+  }
+
+  void ActivateFieldTrial(const std::string& field_trial_name) override {
+    base::FieldTrialList::FindFullName(field_trial_name);
+  }
+
+  void SetEVPolicy(const std::vector<uint8_t>& fingerprint_sha256,
+                   const std::string& policy_oid,
+                   SetEVPolicyCallback callback) override {
+    CHECK_EQ(fingerprint_sha256.size(), crypto::kSHA256Length);
+    net::SHA256HashValue fingerprint_sha256_hash;
+    memcpy(&fingerprint_sha256_hash.data, fingerprint_sha256.data(),
+           crypto::kSHA256Length);
+    ev_test_policy_ = std::make_unique<net::ScopedTestEVPolicy>(
+        net::EVRootCAMetadata::GetInstance(), fingerprint_sha256_hash,
+        policy_oid.data());
+    std::move(callback).Run();
+  }
+
+  void BindReceiver(
+      mojo::PendingReceiver<network::mojom::NetworkServiceTest> receiver) {
+    receivers_.Add(this, std::move(receiver));
     if (!registered_as_destruction_observer_) {
-      base::MessageLoopCurrentForIO::Get()->AddDestructionObserver(this);
+      base::CurrentIOThread::Get()->AddDestructionObserver(this);
       registered_as_destruction_observer_ = true;
     }
   }
 
-  // base::MessageLoopCurrent::DestructionObserver:
+  // base::CurrentThread::DestructionObserver:
   void WillDestroyCurrentMessageLoop() override {
     // Needs to be called on the IO thread.
-    bindings_.CloseAllBindings();
+    receivers_.Clear();
   }
 
  private:
@@ -227,8 +321,8 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
   }
 
   bool registered_as_destruction_observer_ = false;
-  mojo::BindingSet<network::mojom::NetworkServiceTest> bindings_;
-  TestHostResolver test_host_resolver_;
+  mojo::ReceiverSet<network::mojom::NetworkServiceTest> receivers_;
+  std::unique_ptr<TestHostResolver> test_host_resolver_;
   std::unique_ptr<net::MockCertVerifier> mock_cert_verifier_;
   std::unique_ptr<net::ScopedTransportSecurityStateSource>
       transport_security_state_source_;
@@ -236,6 +330,7 @@ class NetworkServiceTestHelper::NetworkServiceTestImpl
   base::MemoryPressureListener::MemoryPressureLevel
       latest_memory_pressure_level_ =
           base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE;
+  std::unique_ptr<net::ScopedTestEVPolicy> ev_test_policy_;
 
   DISALLOW_COPY_AND_ASSIGN(NetworkServiceTestImpl);
 };
@@ -247,18 +342,14 @@ NetworkServiceTestHelper::~NetworkServiceTestHelper() = default;
 
 void NetworkServiceTestHelper::RegisterNetworkBinders(
     service_manager::BinderRegistry* registry) {
-  if (!base::FeatureList::IsEnabled(network::features::kNetworkService))
-    return;
-
-  registry->AddInterface(
-      base::Bind(&NetworkServiceTestHelper::BindNetworkServiceTestRequest,
-                 base::Unretained(this)));
+  registry->AddInterface(base::BindRepeating(
+      &NetworkServiceTestHelper::BindNetworkServiceTestReceiver,
+      base::Unretained(this)));
 
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  service_manager::SandboxType sandbox_type =
-      service_manager::SandboxTypeFromCommandLine(*command_line);
-  if (IsUnsandboxedSandboxType(sandbox_type) ||
-      sandbox_type == service_manager::SANDBOX_TYPE_NETWORK) {
+  auto utility_sub_type =
+      command_line->GetSwitchValueASCII(switches::kUtilitySubType);
+  if (utility_sub_type == network::mojom::NetworkService::Name_) {
     // Register the EmbeddedTestServer's certs, so that any SSL connections to
     // it succeed. Only do this when file I/O is allowed in the current process.
 #if defined(OS_ANDROID)
@@ -277,9 +368,9 @@ void NetworkServiceTestHelper::RegisterNetworkBinders(
   }
 }
 
-void NetworkServiceTestHelper::BindNetworkServiceTestRequest(
-    network::mojom::NetworkServiceTestRequest request) {
-  network_service_test_impl_->BindRequest(std::move(request));
+void NetworkServiceTestHelper::BindNetworkServiceTestReceiver(
+    mojo::PendingReceiver<network::mojom::NetworkServiceTest> receiver) {
+  network_service_test_impl_->BindReceiver(std::move(receiver));
 }
 
 }  // namespace content

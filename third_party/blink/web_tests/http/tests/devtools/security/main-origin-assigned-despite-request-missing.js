@@ -4,14 +4,15 @@
 
 (async function() {
   TestRunner.addResult(`Tests that the Main Origin is assigned even if there is no matching Request.\n`);
-  await TestRunner.loadModule('security_test_runner');
+  await TestRunner.loadTestModule('security_test_runner');
   await TestRunner.showPanel('security');
 
   TestRunner.mainTarget.model(Security.SecurityModel)
       .dispatchEventToListeners(
-          Security.SecurityModel.Events.SecurityStateChanged,
-          new Security.PageSecurityState(
-              Protocol.Security.SecurityState.Secure, true, [], null));
+        Security.SecurityModel.Events.VisibleSecurityStateChanged,
+        new Security.PageVisibleSecurityState(
+          Protocol.Security.SecurityState.Neutral, /* certificateSecurityState= */ null,
+          /* safetyTipInfo= */ null, /* securityStateIssueIds= */ ['scheme-is-not-cryptographic']));
 
   const page_url = TestRunner.resourceTreeModel.mainFrame.url;
   const page_origin = Common.ParsedURL.extractOrigin(page_url);

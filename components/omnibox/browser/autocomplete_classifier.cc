@@ -8,13 +8,16 @@
 
 #include "base/auto_reset.h"
 #include "base/feature_list.h"
+#include "base/ios/ios_util.h"
 #include "build/build_config.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/omnibox/browser/document_provider.h"
+#include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "components/query_tiles/switches.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "url/gurl.h"
 
@@ -42,19 +45,31 @@ int AutocompleteClassifier::DefaultOmniboxProviders() {
       AutocompleteProvider::TYPE_KEYWORD |
 #else
       AutocompleteProvider::TYPE_CLIPBOARD |
+      AutocompleteProvider::TYPE_MOST_VISITED_SITES |
+      AutocompleteProvider::TYPE_VERBATIM_MATCH |
+#endif
+#if defined(OS_ANDROID)
+      AutocompleteProvider::TYPE_VOICE_SUGGEST |
 #endif
       AutocompleteProvider::TYPE_ZERO_SUGGEST |
+      AutocompleteProvider::TYPE_ZERO_SUGGEST_LOCAL_HISTORY |
       (base::FeatureList::IsEnabled(omnibox::kDocumentProvider)
            ? AutocompleteProvider::TYPE_DOCUMENT
+           : 0) |
+      (OmniboxFieldTrial::IsOnDeviceHeadSuggestEnabledForAnyMode()
+           ? AutocompleteProvider::TYPE_ON_DEVICE_HEAD
            : 0) |
       AutocompleteProvider::TYPE_BOOKMARK | AutocompleteProvider::TYPE_BUILTIN |
       AutocompleteProvider::TYPE_HISTORY_QUICK |
       AutocompleteProvider::TYPE_HISTORY_URL |
-      AutocompleteProvider::TYPE_SEARCH | AutocompleteProvider::TYPE_SHORTCUTS;
+      AutocompleteProvider::TYPE_SEARCH | AutocompleteProvider::TYPE_SHORTCUTS |
+      (query_tiles::features::IsEnabledQueryTilesInOmnibox()
+           ? AutocompleteProvider::TYPE_QUERY_TILE
+           : 0);
 }
 
 void AutocompleteClassifier::Classify(
-    const base::string16& text,
+    const std::u16string& text,
     bool prefer_keyword,
     bool allow_exact_keyword_match,
     metrics::OmniboxEventProto::PageClassification page_classification,
@@ -77,15 +92,17 @@ void AutocompleteClassifier::Classify(
   input.set_want_asynchronous_matches(false);
   controller_->Start(input);
   DCHECK(controller_->done());
-  const AutocompleteResult& result = controller_->result();
-  if (result.empty()) {
+
+  auto* default_match = controller_->result().default_match();
+  if (!default_match) {
     if (alternate_nav_url)
       *alternate_nav_url = GURL();
     return;
   }
 
-  DCHECK(result.default_match() != result.end());
-  *match = *result.default_match();
-  if (alternate_nav_url)
-    *alternate_nav_url = result.alternate_nav_url();
+  *match = *default_match;
+  if (alternate_nav_url) {
+    *alternate_nav_url = AutocompleteResult::ComputeAlternateNavUrl(
+        input, *match, controller_->autocomplete_provider_client());
+  }
 }

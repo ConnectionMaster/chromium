@@ -27,34 +27,32 @@
 // An idiomatic and demonstrative (albeit silly) example of this API
 // would be:
 //
-//      #include "sandbox/linux/bpf_dsl/bpf_dsl.h"
+//   #include "sandbox/linux/bpf_dsl/bpf_dsl.h"
 //
-//      using namespace sandbox::bpf_dsl;
+//   namespace dsl = sandbox::bpf_dsl;
 //
-//      class SillyPolicy : public Policy {
-//       public:
-//        SillyPolicy() {}
-//        ~SillyPolicy() override {}
-//        ResultExpr EvaluateSyscall(int sysno) const override {
-//          if (sysno == __NR_fcntl) {
-//            Arg<int> fd(0), cmd(1);
-//            Arg<unsigned long> flags(2);
-//            const uint64_t kGoodFlags = O_ACCMODE | O_NONBLOCK;
-//            return If(AllOf(fd == 0,
-//                            cmd == F_SETFL,
-//                            (flags & ~kGoodFlags) == 0),
-//                      Allow())
-//                .ElseIf(AnyOf(cmd == F_DUPFD, cmd == F_DUPFD_CLOEXEC),
-//                        Error(EMFILE))
-//                .Else(Trap(SetFlagHandler, NULL));
-//          } else {
-//            return Allow();
-//          }
-//        }
+//   class SillyPolicy : public dsl::Policy {
+//    public:
+//     SillyPolicy() = default;
+//     SillyPolicy(const SillyPolicy&) = delete;
+//     SillyPolicy& operator=(const SillyPolicy&) = delete;
+//     ~SillyPolicy() override = default;
 //
-//       private:
-//        DISALLOW_COPY_AND_ASSIGN(SillyPolicy);
-//      };
+//     dsl::ResultExpr EvaluateSyscall(int sysno) const override {
+//       if (sysno != __NR_fcntl)
+//         return dsl::Allow();
+//       dsl::Arg<int> fd(0), cmd(1);
+//       dsl::Arg<unsigned long> flags(2);
+//       constexpr uint64_t kGoodFlags = O_ACCMODE | O_NONBLOCK;
+//       return dsl::If(dsl::AllOf(fd == 0,
+//                                 cmd == F_SETFL,
+//                                 (flags & ~kGoodFlags) == 0),
+//                      dsl::Allow())
+//           .dsl::ElseIf(dsl::AnyOf(cmd == F_DUPFD, cmd == F_DUPFD_CLOEXEC),
+//                        dsl::Error(EMFILE))
+//           .dsl::Else(dsl::Trap(SetFlagHandler, nullptr));
+//     }
+//   };
 //
 // More generally, the DSL currently supports the following grammar:
 //
@@ -121,6 +119,12 @@ SANDBOX_EXPORT ResultExpr
 //   entire sandbox should be considered compromised.
 SANDBOX_EXPORT ResultExpr
     UnsafeTrap(TrapRegistry::TrapFnc trap_func, const void* aux);
+
+// UserNotify specifies that the kernel shall notify a listening process that a
+// syscall occurred. The listening process may perform the system call on
+// behalf of the sandboxed process, or may instruct the sandboxed process to
+// continue the system call.
+SANDBOX_EXPORT ResultExpr UserNotify();
 
 // BoolConst converts a bool value into a BoolExpr.
 SANDBOX_EXPORT BoolExpr BoolConst(bool value);

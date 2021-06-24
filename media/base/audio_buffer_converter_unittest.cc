@@ -41,7 +41,8 @@ class AudioBufferConverterTest : public ::testing::Test {
                        kOutChannelLayout,
                        kOutSampleRate,
                        kOutFrameSize) {
-    audio_buffer_converter_.reset(new AudioBufferConverter(output_params_));
+    audio_buffer_converter_ =
+        std::make_unique<AudioBufferConverter>(output_params_);
   }
 
   void Reset() {
@@ -49,7 +50,7 @@ class AudioBufferConverterTest : public ::testing::Test {
     output_frames_ = expected_output_frames_ = input_frames_ = 0;
   }
 
-  void AddInput(const scoped_refptr<AudioBuffer>& in) {
+  void AddInput(scoped_refptr<AudioBuffer> in) {
     if (!in->end_of_stream()) {
       input_frames_ += in->frame_count();
       expected_output_frames_ +=
@@ -57,7 +58,7 @@ class AudioBufferConverterTest : public ::testing::Test {
           (static_cast<double>(output_params_.sample_rate()) /
            in->sample_rate());
     }
-    audio_buffer_converter_->AddInput(in);
+    audio_buffer_converter_->AddInput(std::move(in));
   }
 
   void ConsumeOutput() {
@@ -209,7 +210,8 @@ TEST_F(AudioBufferConverterTest, DiscreteChannelLayout) {
       AudioParameters(AudioParameters::AUDIO_PCM_LOW_LATENCY,
                       CHANNEL_LAYOUT_DISCRETE, kOutSampleRate, 512);
   output_params_.set_channels_for_discrete(2);
-  audio_buffer_converter_.reset(new AudioBufferConverter(output_params_));
+  audio_buffer_converter_ =
+      std::make_unique<AudioBufferConverter>(output_params_);
   AddInput(MakeTestBuffer(kOutSampleRate, CHANNEL_LAYOUT_STEREO, 2, 512));
   ConsumeAllOutput();
 }
@@ -220,7 +222,8 @@ TEST_F(AudioBufferConverterTest, LargeBuffersResampling) {
                                    kOutSampleRate,
                                    2048);
 
-  audio_buffer_converter_.reset(new AudioBufferConverter(output_params_));
+  audio_buffer_converter_ =
+      std::make_unique<AudioBufferConverter>(output_params_);
   const int kInputSampleRate = 48000;
   const int kInputFrameSize = 8192;
   ASSERT_NE(kInputSampleRate, kOutSampleRate);

@@ -19,7 +19,8 @@
 
 #include "base/command_line.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
+#include "base/memory/read_only_shared_memory_region.h"
+#include "base/message_loop/message_pump_type.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/single_thread_task_runner.h"
@@ -35,12 +36,13 @@
 #include "ipc/ipc_channel_handle.h"
 #include "ipc/ipc_sync_channel.h"
 #include "ipc/ipc_sync_message_filter.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "native_client/src/public/chrome_main.h"
 #include "native_client/src/public/nacl_app.h"
 #include "native_client/src/public/nacl_desc.h"
 
-#if defined(OS_LINUX)
-#include "services/service_manager/zygote/common/common_sandbox_support_linux.h"
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+#include "content/public/common/zygote/sandbox_support_linux.h"
 #endif
 
 #if defined(OS_POSIX)
@@ -77,13 +79,7 @@ void LoadStatusCallback(int load_status) {
       static_cast<NaClErrorCode>(load_status));
 }
 
-#if defined(OS_LINUX)
-
-int CreateMemoryObject(size_t size, int executable) {
-  return service_manager::MakeSharedMemorySegmentViaIPC(size, executable);
-}
-
-#elif defined(OS_WIN)
+#if defined(OS_WIN)
 int AttachDebugExceptionHandler(const void* info, size_t info_size) {
   std::string info_string(reinterpret_cast<const char*>(info), info_size);
   bool result = false;
@@ -112,9 +108,9 @@ void SetUpIPCAdapter(
     NaClIPCAdapter::ResolveFileTokenCallback resolve_file_token_cb,
     NaClIPCAdapter::OpenResourceCallback open_resource_cb) {
   mojo::MessagePipe pipe;
-  scoped_refptr<NaClIPCAdapter> ipc_adapter(
-      new NaClIPCAdapter(pipe.handle0.release(), task_runner,
-                         resolve_file_token_cb, open_resource_cb));
+  scoped_refptr<NaClIPCAdapter> ipc_adapter(new NaClIPCAdapter(
+      pipe.handle0.release(), task_runner, std::move(resolve_file_token_cb),
+      std::move(open_resource_cb)));
   ipc_adapter->ConnectChannel();
   *handle = pipe.handle1.release();
 
@@ -160,7 +156,7 @@ NaClListener::NaClListener()
     : shutdown_event_(base::WaitableEvent::ResetPolicy::MANUAL,
                       base::WaitableEvent::InitialState::NOT_SIGNALED),
       io_thread_("NaCl_IOThread"),
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
       prereserved_sandbox_size_(0),
 #endif
 #if defined(OS_POSIX)
@@ -168,7 +164,7 @@ NaClListener::NaClListener()
 #endif
       is_started_(false) {
   io_thread_.StartWithOptions(
-      base::Thread::Options(base::MessageLoop::TYPE_IO, 0));
+      base::Thread::Options(base::MessagePumpType::IO, 0));
   DCHECK(g_listener == NULL);
   g_listener = this;
 }
@@ -218,17 +214,25 @@ class FileTokenMessageFilter : public IPC::MessageFilter {
 };
 
 void NaClListener::Listen() {
+  NaClService service(io_thread_.task_runner());
   channel_ = IPC::SyncChannel::Create(this, io_thread_.task_runner().get(),
                                       base::ThreadTaskRunnerHandle::Get(),
                                       &shutdown_event_);
   filter_ = channel_->CreateSyncMessageFilter();
   channel_->AddFilter(new FileTokenMessageFilter());
-  mojo::ScopedMessagePipeHandle channel_handle;
-  auto service = CreateNaClService(io_thread_.task_runner(), &channel_handle);
-  channel_->Init(channel_handle.release(), IPC::Channel::MODE_CLIENT, true);
+  channel_->Init(service.TakeChannelPipe().release(), IPC::Channel::MODE_CLIENT,
+                 true);
   main_task_runner_ = base::ThreadTaskRunnerHandle::Get();
   base::RunLoop().Run();
 }
+
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+// static
+int NaClListener::MakeSharedMemorySegment(size_t length, int executable) {
+  return content::SharedMemoryIPCSupport::MakeSharedMemorySegment(length,
+                                                                  executable);
+}
+#endif
 
 bool NaClListener::OnMessageReceived(const IPC::Message& msg) {
   bool handled = true;
@@ -257,7 +261,7 @@ bool NaClListener::OnOpenResource(
     prefetched_resource_files_.erase(it);
     // A pre-opened resource descriptor is available. Run the reply callback
     // and return true.
-    cb.Run(msg, file, path);
+    std::move(cb).Run(msg, file, path);
     return true;
   }
 
@@ -282,9 +286,9 @@ void NaClListener::OnAddPrefetchedResource(
   }
 }
 
-void NaClListener::OnStart(const nacl::NaClStartParams& params) {
+void NaClListener::OnStart(nacl::NaClStartParams params) {
   is_started_ = true;
-#if defined(OS_LINUX) || defined(OS_MACOSX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS) || defined(OS_APPLE)
   int urandom_fd = HANDLE_EINTR(dup(base::GetUrandomFD()));
   if (urandom_fd < 0) {
     LOG(FATAL) << "Failed to dup() the urandom FD";
@@ -294,10 +298,13 @@ void NaClListener::OnStart(const nacl::NaClStartParams& params) {
   struct NaClApp* nap = NULL;
   NaClChromeMainInit();
 
-  CHECK(base::SharedMemory::IsHandleValid(params.crash_info_shmem_handle));
-  crash_info_shmem_.reset(new base::SharedMemory(
-      params.crash_info_shmem_handle, false /* not readonly */));
-  CHECK(crash_info_shmem_->Map(nacl::kNaClCrashInfoShmemSize));
+  CHECK(params.crash_info_shmem_region.IsValid());
+  crash_info_shmem_mapping_ = params.crash_info_shmem_region.Map();
+  base::ReadOnlySharedMemoryRegion ro_shmem_region =
+      base::WritableSharedMemoryRegion::ConvertToReadOnly(
+          std::move(params.crash_info_shmem_region));
+  CHECK(crash_info_shmem_mapping_.IsValid());
+  CHECK(ro_shmem_region.IsValid());
   NaClSetFatalErrorCallback(&FatalLogHandler);
 
   nap = NaClAppCreate();
@@ -320,17 +327,18 @@ void NaClListener::OnStart(const nacl::NaClStartParams& params) {
                   NACL_CHROME_DESC_BASE + 1,
                   NaClIPCAdapter::ResolveFileTokenCallback(),
                   NaClIPCAdapter::OpenResourceCallback());
-  SetUpIPCAdapter(
-      &manifest_service_handle, io_thread_.task_runner(), nap,
-      NACL_CHROME_DESC_BASE + 2,
-      base::Bind(&NaClListener::ResolveFileToken, base::Unretained(this)),
-      base::Bind(&NaClListener::OnOpenResource, base::Unretained(this)));
+  SetUpIPCAdapter(&manifest_service_handle, io_thread_.task_runner(), nap,
+                  NACL_CHROME_DESC_BASE + 2,
+                  base::BindRepeating(&NaClListener::ResolveFileToken,
+                                      base::Unretained(this)),
+                  base::BindRepeating(&NaClListener::OnOpenResource,
+                                      base::Unretained(this)));
 
-  nacl::mojom::NaClRendererHostPtr renderer_host;
+  mojo::PendingRemote<nacl::mojom::NaClRendererHost> renderer_host;
   if (!Send(new NaClProcessHostMsg_PpapiChannelsCreated(
           browser_handle, ppapi_renderer_handle,
-          MakeRequest(&renderer_host).PassMessagePipe().release(),
-          manifest_service_handle)))
+          renderer_host.InitWithNewPipeAndPassReceiver().PassPipe().release(),
+          manifest_service_handle, ro_shmem_region)))
     LOG(FATAL) << "Failed to send IPC channel handle to NaClProcessHost.";
 
   trusted_listener_ = std::make_unique<NaClTrustedListener>(
@@ -344,8 +352,8 @@ void NaClListener::OnStart(const nacl::NaClStartParams& params) {
   args->number_of_cores = number_of_cores_;
 #endif
 
-#if defined(OS_LINUX)
-  args->create_memory_object_func = CreateMemoryObject;
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
+  args->create_memory_object_func = &MakeSharedMemorySegment;
 #endif
 
   DCHECK(params.process_type != nacl::kUnknownNaClProcessType);
@@ -408,7 +416,7 @@ void NaClListener::OnStart(const nacl::NaClStartParams& params) {
       DebugStubPortSelectedHandler;
 #endif
   args->load_status_handler_func = LoadStatusCallback;
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_CHROMEOS)
   args->prereserved_sandbox_size = prereserved_sandbox_size_;
 #endif
 
@@ -430,12 +438,12 @@ void NaClListener::OnStart(const nacl::NaClStartParams& params) {
 void NaClListener::ResolveFileToken(
     uint64_t token_lo,
     uint64_t token_hi,
-    base::Callback<void(IPC::PlatformFileForTransit, base::FilePath)> cb) {
+    NaClIPCAdapter::ResolveFileTokenReplyCallback cb) {
   if (!Send(new NaClProcessMsg_ResolveFileToken(token_lo, token_hi))) {
-    cb.Run(IPC::PlatformFileForTransit(), base::FilePath());
+    std::move(cb).Run(IPC::PlatformFileForTransit(), base::FilePath());
     return;
   }
-  resolved_cb_ = cb;
+  resolved_cb_ = std::move(cb);
 }
 
 void NaClListener::OnFileTokenResolved(
@@ -443,6 +451,6 @@ void NaClListener::OnFileTokenResolved(
     uint64_t token_hi,
     IPC::PlatformFileForTransit ipc_fd,
     base::FilePath file_path) {
-  resolved_cb_.Run(ipc_fd, file_path);
-  resolved_cb_.Reset();
+  if (resolved_cb_)
+    std::move(resolved_cb_).Run(ipc_fd, file_path);
 }

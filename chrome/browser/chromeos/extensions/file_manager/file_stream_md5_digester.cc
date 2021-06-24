@@ -9,7 +9,7 @@
 #include "base/bind.h"
 #include "base/callback.h"
 #include "net/base/net_errors.h"
-#include "storage/browser/fileapi/file_stream_reader.h"
+#include "storage/browser/file_system/file_stream_reader.h"
 
 namespace drive {
 namespace util {
@@ -58,7 +58,7 @@ void FileStreamMd5Digester::OnChunkRead(int bytes_read) {
     base::MD5Digest digest;
     base::MD5Final(&digest, &md5_context_);
     std::string result = base::MD5DigestToBase16(digest);
-    std::move(callback_).Run(result);
+    std::move(callback_).Run(std::move(result));
     return;
   }
 

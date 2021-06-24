@@ -108,14 +108,12 @@ class NodeList : public std::vector<std::unique_ptr<Node>> {
 
   static std::unique_ptr<NodeList> ParseJsonString(const uint8_t* data,
                                                    size_t size) {
-    std::unique_ptr<NodeList> nodes(new NodeList());
+    auto nodes = std::make_unique<NodeList>();
 
-    base::JSONReader reader;
-    std::unique_ptr<base::Value> value(reader.ReadDeprecated(
+    absl::optional<base::Value> value(base::JSONReader::Read(
         std::string(reinterpret_cast<const char*>(data), size)));
-    if (value) {
+    if (value)
       nodes->ParseJson(*value);
-    }
 
     return nodes;
   }
@@ -156,7 +154,7 @@ class NodeList : public std::vector<std::unique_ptr<Node>> {
       return;
     }
 
-    for (const auto& listItem : *list) {
+    for (const auto& listItem : list->GetList()) {
       std::unique_ptr<Node> node(Node::ParseJson(listItem));
       if (node) {
         push_back(std::move(node));

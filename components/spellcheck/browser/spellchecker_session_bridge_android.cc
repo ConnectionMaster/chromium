@@ -10,10 +10,10 @@
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/metrics/histogram_macros.h"
+#include "components/spellcheck/browser/android/jni_headers/SpellCheckerSessionBridge_jni.h"
 #include "components/spellcheck/common/spellcheck_result.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
-#include "jni/SpellCheckerSessionBridge_jni.h"
 
 using base::android::JavaParamRef;
 
@@ -35,7 +35,7 @@ SpellCheckerSessionBridge::~SpellCheckerSessionBridge() {
 }
 
 void SpellCheckerSessionBridge::RequestTextCheck(
-    const base::string16& text,
+    const std::u16string& text,
     RequestTextCheckCallback callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
@@ -106,7 +106,7 @@ void SpellCheckerSessionBridge::ProcessSpellCheckResults(
     base::android::ScopedJavaLocalRef<jobjectArray> suggestions_for_word_array(
         env, static_cast<jobjectArray>(
                  env->GetObjectArrayElement(suggestions_array, i)));
-    std::vector<base::string16> suggestions_for_word;
+    std::vector<std::u16string> suggestions_for_word;
     base::android::AppendJavaStringArrayToStringVector(
         env, suggestions_for_word_array, &suggestions_for_word);
     results.push_back(SpellCheckResult(SpellCheckResult::SPELLING, offsets[i],
@@ -141,7 +141,7 @@ void SpellCheckerSessionBridge::DisconnectSession() {
 }
 
 SpellCheckerSessionBridge::SpellingRequest::SpellingRequest(
-    const base::string16& text,
+    const std::u16string& text,
     RequestTextCheckCallback callback)
     : text_(text), callback_(std::move(callback)) {}
 

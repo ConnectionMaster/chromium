@@ -16,8 +16,6 @@
 
 namespace syncer {
 
-struct UserShare;
-
 // Interface for anything that wants to know when the migrator's state
 // changes.
 class MigrationObserver {
@@ -41,9 +39,7 @@ class BackendMigrator {
     REENABLING_TYPES,  // Exit criteria: OnConfigureDone for enabled types.
   };
 
-  // TODO(akalin): Remove the dependency on |user_share|.
   BackendMigrator(const std::string& name,
-                  UserShare* user_share,
                   DataTypeManager* manager,
                   const base::RepeatingClosure& reconfigure_callback,
                   const base::RepeatingClosure& migration_done_callback);
@@ -57,7 +53,7 @@ class BackendMigrator {
 
   State state() const;
 
-  // Called from ProfileSyncService to notify us of configure done.
+  // Called from SyncServiceImpl to notify us of configure done.
   // Note: We receive these notifications only when our state is not IDLE.
   void OnConfigureDone(const DataTypeManager::ConfigureResult& result);
 
@@ -80,7 +76,6 @@ class BackendMigrator {
   void OnConfigureDoneImpl(const DataTypeManager::ConfigureResult& result);
 
   const std::string name_;
-  UserShare* user_share_;
   DataTypeManager* manager_;
 
   const base::RepeatingClosure reconfigure_callback_;
@@ -92,7 +87,7 @@ class BackendMigrator {
 
   ModelTypeSet to_migrate_;
 
-  base::WeakPtrFactory<BackendMigrator> weak_ptr_factory_;
+  base::WeakPtrFactory<BackendMigrator> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(BackendMigrator);
 };

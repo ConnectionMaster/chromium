@@ -13,10 +13,11 @@
 #include "base/json/json_reader.h"
 #include "base/macros.h"
 #include "base/run_loop.h"
-#include "base/test/scoped_task_environment.h"
+#include "base/test/task_environment.h"
 #include "chromeos/network/managed_network_configuration_handler_impl.h"
 #include "chromeos/network/network_configuration_handler.h"
 #include "chromeos/network/network_profile_handler.h"
+#include "chromeos/network/network_state_handler.h"
 #include "chromeos/network/network_state_test_helper.h"
 #include "chromeos/network/onc/onc_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -27,8 +28,8 @@ namespace chromeos {
 class ProhibitedTechnologiesHandlerTest : public testing::Test {
  public:
   ProhibitedTechnologiesHandlerTest()
-      : scoped_task_environment_(
-            base::test::ScopedTaskEnvironment::MainThreadType::UI) {}
+      : task_environment_(
+            base::test::SingleThreadTaskEnvironment::MainThreadType::UI) {}
 
   void SetUp() override {
     LoginState::Initialize();
@@ -64,7 +65,7 @@ class ProhibitedTechnologiesHandlerTest : public testing::Test {
     std::unique_ptr<base::ListValue> val(new base::ListValue());
     val->AppendString("WiFi");
     global_config_disable_wifi.Set("DisableNetworkTypes", std::move(val));
-    val.reset(new base::ListValue());
+    val = std::make_unique<base::ListValue>();
     val->AppendString("WiFi");
     val->AppendString("Cellular");
     global_config_disable_wifi_and_cell.Set("DisableNetworkTypes",
@@ -110,7 +111,7 @@ class ProhibitedTechnologiesHandlerTest : public testing::Test {
       prohibited_technologies_handler_;
 
  private:
-  base::test::ScopedTaskEnvironment scoped_task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_;
   NetworkStateTestHelper helper_{false /* use_default_devices_and_services */};
 
   std::unique_ptr<NetworkConfigurationHandler> network_config_handler_;

@@ -39,7 +39,8 @@ class ChromeNativeAppWindowViewsWin : public ChromeNativeAppWindowViewsAura {
       views::Widget* widget) override;
   void InitializeDefaultWindow(
       const extensions::AppWindow::CreateParams& create_params) override;
-  views::NonClientFrameView* CreateStandardDesktopAppFrame() override;
+  std::unique_ptr<views::NonClientFrameView> CreateStandardDesktopAppFrame()
+      override;
 
   // Overridden from views::WidgetDelegate:
   bool CanMinimize() const override;
@@ -51,12 +52,12 @@ class ChromeNativeAppWindowViewsWin : public ChromeNativeAppWindowViewsAura {
   GlassAppWindowFrameViewWin* glass_frame_view_;
 
   // The Windows Application User Model ID identifying the app.
-  base::string16 app_model_id_;
+  std::wstring app_model_id_;
 
   // Whether the InitParams indicated that this window should be translucent.
   bool is_translucent_;
 
-  base::WeakPtrFactory<ChromeNativeAppWindowViewsWin> weak_ptr_factory_;
+  base::WeakPtrFactory<ChromeNativeAppWindowViewsWin> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ChromeNativeAppWindowViewsWin);
 };

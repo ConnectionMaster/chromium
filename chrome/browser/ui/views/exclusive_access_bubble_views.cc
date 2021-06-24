@@ -13,16 +13,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/views/exclusive_access_bubble_views_context.h"
 #include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
-#include "chrome/browser/ui/views/subtle_notification_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "content/public/browser/notification_service.h"
+#include "components/fullscreen_control/subtle_notification_view.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -52,28 +52,57 @@ ExclusiveAccessBubbleViews::ExclusiveAccessBubbleViews(
       bubble_first_hide_callback_(std::move(bubble_first_hide_callback)),
       animation_(new gfx::SlideAnimation(this)) {
   // Create the contents view.
+  auto content_view = std::make_unique<SubtleNotificationView>();
+  view_ = content_view.get();
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // Technically the exit fullscreen key on ChromeOS is F11 and the
+  // "Fullscreen" key on the keyboard is just translated to F11 or F4 (which
+  // is also a toggle-fullscreen command on ChromeOS). However most Chromebooks
+  // have media keys - including "fullscreen" - but not function keys, so
+  // instructing the user to "Press [F11] to exit fullscreen" isn't useful.
+  //
+  // An obvious solution might be to change the primary accelerator to the
+  // fullscreen key, but since translation to a function key is done at system
+  // level we can't actually do that. Instead we provide specific messaging for
+  // the platform here. (See crbug.com/1110468 for details.)
+  browser_fullscreen_exit_accelerator_ =
+      l10n_util::GetStringUTF16(IDS_APP_FULLSCREEN_KEY);
+#else
   ui::Accelerator accelerator(ui::VKEY_UNKNOWN, ui::EF_NONE);
   bool got_accelerator =
       bubble_view_context_->GetAcceleratorProvider()
           ->GetAcceleratorForCommandId(IDC_FULLSCREEN, &accelerator);
   DCHECK(got_accelerator);
-  view_ = new SubtleNotificationView();
   browser_fullscreen_exit_accelerator_ = accelerator.GetShortcutText();
+#endif
+
   UpdateViewContent(bubble_type_);
 
   // Initialize the popup.
   popup_ = SubtleNotificationView::CreatePopupWidget(
-      bubble_view_context_->GetBubbleParentView(), view_);
+      bubble_view_context_->GetBubbleParentView(), std::move(content_view));
+
   gfx::Size size = GetPopupRect(true).size();
   // Bounds are in screen coordinates.
   popup_->SetBounds(GetPopupRect(false));
+  // Why is this special enough to require the "security surface" level? A
+  // decision was made a long time ago to not require confirmation when a site
+  // asks to go fullscreen, and that's not changing. However, a site going
+  // fullscreen is a big security risk, allowing phishing and other UI fakery.
+  // This bubble is the only defense that Chromium can provide against this
+  // attack, so it's important to order it above everything.
+  //
+  // On some platforms, pages can put themselves into fullscreen and then
+  // trigger other elements to cover up this bubble, elements that aren't fully
+  // under Chromium's control. See https://crbug.com/927150 for an example.
+  popup_->SetZOrderLevel(ui::ZOrderLevel::kSecuritySurface);
   view_->SetBounds(0, 0, size.width(), size.height());
   popup_->AddObserver(this);
 
-  registrar_.Add(this, chrome::NOTIFICATION_FULLSCREEN_CHANGED,
-                 content::Source<FullscreenController>(
-                     bubble_view_context_->GetExclusiveAccessManager()
-                         ->fullscreen_controller()));
+  fullscreen_observation_.Observe(
+      bubble_view_context_->GetExclusiveAccessManager()
+          ->fullscreen_controller());
 
   UpdateMouseWatcher();
 }
@@ -94,6 +123,7 @@ ExclusiveAccessBubbleViews::~ExclusiveAccessBubbleViews() {
   // itself.
   popup_->Close();
   base::ThreadTaskRunnerHandle::Get()->DeleteSoon(FROM_HERE, popup_);
+  CHECK(!views::WidgetObserver::IsInObserverList());
 }
 
 void ExclusiveAccessBubbleViews::UpdateContent(
@@ -128,18 +158,31 @@ void ExclusiveAccessBubbleViews::UpdateContent(
 }
 
 void ExclusiveAccessBubbleViews::RepositionIfVisible() {
+#if defined(OS_MAC)
+  // Due to a quirk on the Mac, the popup will not be visible for a short period
+  // of time after it is shown (it's asynchronous) so if we don't check the
+  // value of the animation we'll have a stale version of the bounds when we
+  // show it and it will appear in the wrong place - typically where the window
+  // was located before going to fullscreen.
+  if (popup_->IsVisible() || animation_->GetCurrentValue() > 0.0)
+#else
   if (popup_->IsVisible())
+#endif
     UpdateBounds();
 }
 
 void ExclusiveAccessBubbleViews::HideImmediately() {
-  if (!popup_->IsVisible())
+  if (!IsShowing() && !popup_->IsVisible())
     return;
 
   RunHideCallbackIfNeeded(ExclusiveAccessBubbleHideReason::kInterrupted);
 
-  animation_->SetSlideDuration(kQuickSlideOutDurationMs);
+  animation_->SetSlideDuration(base::TimeDelta::FromMilliseconds(150));
   animation_->Hide();
+}
+
+bool ExclusiveAccessBubbleViews::IsShowing() const {
+  return animation_->is_animating() && animation_->IsShowing();
 }
 
 views::View* ExclusiveAccessBubbleViews::GetView() {
@@ -170,7 +213,7 @@ void ExclusiveAccessBubbleViews::UpdateViewContent(
     ExclusiveAccessBubbleType bubble_type) {
   DCHECK_NE(EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE, bubble_type);
 
-  base::string16 accelerator;
+  std::u16string accelerator;
   if (bubble_type ==
           EXCLUSIVE_ACCESS_BUBBLE_TYPE_BROWSER_FULLSCREEN_EXIT_INSTRUCTION ||
       bubble_type ==
@@ -179,7 +222,7 @@ void ExclusiveAccessBubbleViews::UpdateViewContent(
   } else {
     accelerator = l10n_util::GetStringUTF16(IDS_APP_ESC_KEY);
   }
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // Mac keyboards use lowercase for everything except function keys, which are
   // typically reserved for system use. Since |accelerator| is placed in a box
   // to make it look like a keyboard key it looks weird to not follow suit.
@@ -256,14 +299,14 @@ void ExclusiveAccessBubbleViews::Hide() {
   DCHECK(!IsHideTimeoutRunning());
   RunHideCallbackIfNeeded(ExclusiveAccessBubbleHideReason::kTimeout);
 
-  animation_->SetSlideDuration(kSlideOutDurationMs);
+  animation_->SetSlideDuration(base::TimeDelta::FromMilliseconds(700));
   animation_->Hide();
 }
 
 void ExclusiveAccessBubbleViews::Show() {
   if (animation_->IsShowing())
     return;
-  animation_->SetSlideDuration(kSlideInDurationMs);
+  animation_->SetSlideDuration(base::TimeDelta::FromMilliseconds(350));
   animation_->Show();
 }
 
@@ -275,11 +318,7 @@ bool ExclusiveAccessBubbleViews::CanTriggerOnMouse() const {
   return bubble_view_context_->CanTriggerOnMouse();
 }
 
-void ExclusiveAccessBubbleViews::Observe(
-    int type,
-    const content::NotificationSource& source,
-    const content::NotificationDetails& details) {
-  DCHECK_EQ(chrome::NOTIFICATION_FULLSCREEN_CHANGED, type);
+void ExclusiveAccessBubbleViews::OnFullscreenStateChanged() {
   UpdateMouseWatcher();
 }
 

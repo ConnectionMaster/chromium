@@ -11,6 +11,7 @@
 #include "base/macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "components/subresource_filter/core/common/flat/indexed_ruleset_generated.h"
+#include "components/subresource_filter/core/common/load_policy.h"
 #include "components/url_pattern_index/url_pattern_index.h"
 #include "third_party/flatbuffers/src/include/flatbuffers/flatbuffers.h"
 
@@ -81,8 +82,8 @@ class RulesetIndexer {
  private:
   flatbuffers::FlatBufferBuilder builder_;
 
-  url_pattern_index::UrlPatternIndexBuilder blacklist_;
-  url_pattern_index::UrlPatternIndexBuilder whitelist_;
+  url_pattern_index::UrlPatternIndexBuilder blocklist_;
+  url_pattern_index::UrlPatternIndexBuilder allowlist_;
   url_pattern_index::UrlPatternIndexBuilder deactivation_;
 
   // Maintains a map of domain vectors to their existing offsets, to avoid
@@ -115,18 +116,18 @@ class IndexedRulesetMatcher {
       const url::Origin& parent_document_origin,
       url_pattern_index::proto::ActivationType activation_type) const;
 
-  // Returns whether the network request to |url| of |element_type| initiated by
-  // |document_origin| is not allowed to proceed. Always returns false if the
-  // |url| is not valid or |element_type| == ELEMENT_TYPE_UNSPECIFIED.
-  bool ShouldDisallowResourceLoad(
+  // Returns the LoadPolicy for a network request to |url| of |element_type|
+  // initiated by |document_origin|. Always returns ALLOW if the  |url| is not
+  // valid or |element_type| == ELEMENT_TYPE_UNSPECIFIED.
+  LoadPolicy GetLoadPolicyForResourceLoad(
       const GURL& url,
       const FirstPartyOrigin& first_party,
       url_pattern_index::proto::ElementType element_type,
       bool disable_generic_rules) const;
 
   // Like ShouldDisallowResourceLoad, but returns the matching rule that
-  // determines whether the request should be allowed or not. Whitelist rules
-  // override blacklist rules. If no rule matches, returns nullptr.
+  // determines whether the request should be allowed or not. Allowlist rules
+  // override blocklist rules. If no rule matches, returns nullptr.
   const url_pattern_index::flat::UrlRule* MatchedUrlRule(
       const GURL& url,
       const FirstPartyOrigin& first_party,
@@ -136,8 +137,8 @@ class IndexedRulesetMatcher {
  private:
   const flat::IndexedRuleset* root_;
 
-  url_pattern_index::UrlPatternIndexMatcher blacklist_;
-  url_pattern_index::UrlPatternIndexMatcher whitelist_;
+  url_pattern_index::UrlPatternIndexMatcher blocklist_;
+  url_pattern_index::UrlPatternIndexMatcher allowlist_;
   url_pattern_index::UrlPatternIndexMatcher deactivation_;
 
   DISALLOW_COPY_AND_ASSIGN(IndexedRulesetMatcher);

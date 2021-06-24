@@ -8,12 +8,12 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/system/fake_input_device_settings.h"
-#include "chrome/browser/chromeos/system/input_device_settings.h"
+#include "chrome/browser/ash/system/fake_input_device_settings.h"
+#include "chrome/browser/ash/system/input_device_settings.h"
 #include "chrome/browser/ui/webui/chromeos/bluetooth_pairing_dialog.h"
 #include "chromeos/dbus/audio/fake_cras_audio_client.h"
 #include "chromeos/dbus/dbus_thread_manager.h"
@@ -50,27 +50,6 @@ const char kUpdatePowerSources[] = "updatePowerSources";
 const char kUpdatePowerSourceId[] = "updatePowerSourceId";
 const char kSetHasTouchpad[] = "setHasTouchpad";
 const char kSetHasMouse[] = "setHasMouse";
-
-// Define callback functions that will update the JavaScript variable
-// and the web UI.
-const char kUpdateAudioNodes[] =
-    "device_emulator.audioSettings.updateAudioNodes";
-const char kAddBluetoothDeviceJSCallback[] =
-    "device_emulator.bluetoothSettings.addBluetoothDevice";
-const char kDevicePairedFromTrayJSCallback[] =
-    "device_emulator.bluetoothSettings.devicePairedFromTray";
-const char kDeviceRemovedFromMainAdapterJSCallback[] =
-    "device_emulator.bluetoothSettings.deviceRemovedFromMainAdapter";
-const char kPairFailedJSCallback[] =
-    "device_emulator.bluetoothSettings.pairFailed";
-const char kUpdateBluetoothInfoJSCallback[] =
-    "device_emulator.bluetoothSettings.updateBluetoothInfo";
-const char kUpdatePowerPropertiesJSCallback[] =
-    "device_emulator.batterySettings.updatePowerProperties";
-const char kTouchpadExistsCallback[] =
-    "device_emulator.inputDeviceSettings.setTouchpadExists";
-const char kMouseExistsCallback[] =
-    "device_emulator.inputDeviceSettings.setMouseExists";
 
 const char kPairedPropertyName[] = "Paired";
 
@@ -112,28 +91,25 @@ class DeviceEmulatorMessageHandler::BluetoothObserver
 
 void DeviceEmulatorMessageHandler::BluetoothObserver::DeviceAdded(
     const dbus::ObjectPath& object_path) {
-  std::unique_ptr<base::DictionaryValue> device =
-      owner_->GetDeviceInfo(object_path);
+  base::Value device = owner_->GetDeviceInfo(object_path);
 
   // Request to add the device to the view's list of devices.
-  owner_->web_ui()->CallJavascriptFunctionUnsafe(kAddBluetoothDeviceJSCallback,
-                                                 *device);
+  owner_->FireWebUIListener("bluetooth-device-added", device);
 }
 
 void DeviceEmulatorMessageHandler::BluetoothObserver::DevicePropertyChanged(
     const dbus::ObjectPath& object_path,
     const std::string& property_name) {
   if (property_name == kPairedPropertyName) {
-    owner_->web_ui()->CallJavascriptFunctionUnsafe(
-        kDevicePairedFromTrayJSCallback, base::Value(object_path.value()));
+    owner_->FireWebUIListener("device-paired-from-tray",
+                              base::Value(object_path.value()));
   }
 }
 
 void DeviceEmulatorMessageHandler::BluetoothObserver::DeviceRemoved(
     const dbus::ObjectPath& object_path) {
-  owner_->web_ui()->CallJavascriptFunctionUnsafe(
-      kDeviceRemovedFromMainAdapterJSCallback,
-      base::Value(object_path.value()));
+  owner_->FireWebUIListener("device-removed-from-main-adapter",
+                            base::Value(object_path.value()));
 }
 
 class DeviceEmulatorMessageHandler::CrasAudioObserver
@@ -190,17 +166,15 @@ void DeviceEmulatorMessageHandler::PowerObserver::PowerChanged(
   power_properties.SetString("external_power_source_id",
                              proto.external_power_source_id());
 
-  owner_->web_ui()->CallJavascriptFunctionUnsafe(
-      kUpdatePowerPropertiesJSCallback, power_properties);
+  owner_->FireWebUIListener("power-properties-updated", power_properties);
 }
 
 DeviceEmulatorMessageHandler::DeviceEmulatorMessageHandler()
     : fake_bluetooth_device_client_(
           static_cast<bluez::FakeBluetoothDeviceClient*>(
               bluez::BluezDBusManager::Get()->GetBluetoothDeviceClient())),
-      fake_power_manager_client_(chromeos::FakePowerManagerClient::Get()),
-      weak_ptr_factory_(this) {
-  device::BluetoothAdapterFactory::GetAdapter(
+      fake_power_manager_client_(chromeos::FakePowerManagerClient::Get()) {
+  device::BluetoothAdapterFactory::Get()->GetAdapter(
       base::BindOnce(&DeviceEmulatorMessageHandler::BluetoothDeviceAdapterReady,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -241,44 +215,47 @@ void DeviceEmulatorMessageHandler::HandleRequestBluetoothDiscover(
 
 void DeviceEmulatorMessageHandler::HandleRequestBluetoothInfo(
     const base::ListValue* args) {
+  AllowJavascript();
   // Get a list containing paths of the devices which are connected to
   // the main adapter.
   std::vector<dbus::ObjectPath> paths =
       fake_bluetooth_device_client_->GetDevicesForAdapter(
           dbus::ObjectPath(bluez::FakeBluetoothAdapterClient::kAdapterPath));
 
-  base::ListValue devices;
   // Get each device's properties.
-  for (const dbus::ObjectPath& path : paths) {
-    std::unique_ptr<base::DictionaryValue> device = GetDeviceInfo(path);
-    devices.Append(std::move(device));
-  }
+  base::Value devices(base::Value::Type::LIST);
+  for (const dbus::ObjectPath& path : paths)
+    devices.Append(GetDeviceInfo(path));
 
-  std::unique_ptr<base::ListValue> predefined_devices =
+  base::Value predefined_devices =
       fake_bluetooth_device_client_->GetBluetoothDevicesAsDictionaries();
 
-  base::ListValue pairing_method_options;
-  pairing_method_options.AppendString(
+  base::Value pairing_method_options(base::Value::Type::LIST);
+  pairing_method_options.Append(
       bluez::FakeBluetoothDeviceClient::kPairingMethodNone);
-  pairing_method_options.AppendString(
+  pairing_method_options.Append(
       bluez::FakeBluetoothDeviceClient::kPairingMethodPinCode);
-  pairing_method_options.AppendString(
+  pairing_method_options.Append(
       bluez::FakeBluetoothDeviceClient::kPairingMethodPassKey);
 
-  base::ListValue pairing_action_options;
-  pairing_action_options.AppendString(
+  base::Value pairing_action_options(base::Value::Type::LIST);
+  pairing_action_options.Append(
       bluez::FakeBluetoothDeviceClient::kPairingActionDisplay);
-  pairing_action_options.AppendString(
+  pairing_action_options.Append(
       bluez::FakeBluetoothDeviceClient::kPairingActionRequest);
-  pairing_action_options.AppendString(
+  pairing_action_options.Append(
       bluez::FakeBluetoothDeviceClient::kPairingActionConfirmation);
-  pairing_action_options.AppendString(
+  pairing_action_options.Append(
       bluez::FakeBluetoothDeviceClient::kPairingActionFail);
 
+  base::Value info(base::Value::Type::DICTIONARY);
+  info.SetKey("predefined_devices", std::move(predefined_devices));
+  info.SetKey("devices", std::move(devices));
+  info.SetKey("pairing_method_options", std::move(pairing_method_options));
+  info.SetKey("pairing_action_options", std::move(pairing_action_options));
+
   // Send the list of devices to the view.
-  web_ui()->CallJavascriptFunctionUnsafe(
-      kUpdateBluetoothInfoJSCallback, *predefined_devices, devices,
-      pairing_method_options, pairing_action_options);
+  FireWebUIListener("bluetooth-info-updated", info);
 }
 
 void DeviceEmulatorMessageHandler::HandleRequestBluetoothPair(
@@ -292,13 +269,15 @@ void DeviceEmulatorMessageHandler::HandleRequestBluetoothPair(
   // by its device ID, which, in this case is the same as its address.
   ConnectToBluetoothDevice(props->address.value());
   if (!props->paired.value()) {
-    web_ui()->CallJavascriptFunctionUnsafe(kPairFailedJSCallback,
-                                           base::Value(path));
+    FireWebUIListener("pair-failed", base::Value(path));
   }
 }
 
 void DeviceEmulatorMessageHandler::HandleRequestAudioNodes(
     const base::ListValue* args) {
+  AllowJavascript();
+  const base::Value& callback_id = args->GetList()[0];
+
   // Get every active audio node and create a dictionary to
   // send it to JavaScript.
   base::ListValue audio_nodes;
@@ -316,7 +295,8 @@ void DeviceEmulatorMessageHandler::HandleRequestAudioNodes(
 
     audio_nodes.Append(std::move(audio_node));
   }
-  web_ui()->CallJavascriptFunctionUnsafe(kUpdateAudioNodes, audio_nodes);
+
+  ResolveJavascriptCallback(callback_id, audio_nodes);
 }
 
 void DeviceEmulatorMessageHandler::HandleInsertAudioNode(
@@ -427,7 +407,7 @@ void DeviceEmulatorMessageHandler::UpdatePowerSources(
   // Try to find the previously selected source in the list.
   const power_manager::PowerSupplyProperties_PowerSource* selected_source =
       nullptr;
-  for (const auto& val : *sources) {
+  for (const auto& val : sources->GetList()) {
     const base::DictionaryValue* dict;
     CHECK(val.GetAsDictionary(&dict));
     power_manager::PowerSupplyProperties_PowerSource* source =
@@ -553,9 +533,9 @@ void DeviceEmulatorMessageHandler::RegisterMessages() {
 }
 
 void DeviceEmulatorMessageHandler::OnJavascriptAllowed() {
-  bluetooth_observer_.reset(new BluetoothObserver(this));
-  cras_audio_observer_.reset(new CrasAudioObserver(this));
-  power_observer_.reset(new PowerObserver(this));
+  bluetooth_observer_ = std::make_unique<BluetoothObserver>(this);
+  cras_audio_observer_ = std::make_unique<CrasAudioObserver>(this);
+  power_observer_ = std::make_unique<PowerObserver>(this);
 
   system::InputDeviceSettings::Get()->TouchpadExists(
       base::BindOnce(&DeviceEmulatorMessageHandler::TouchpadExists,
@@ -596,39 +576,36 @@ std::string DeviceEmulatorMessageHandler::CreateBluetoothDeviceFromListValue(
   return props.device_path;
 }
 
-std::unique_ptr<base::DictionaryValue>
-DeviceEmulatorMessageHandler::GetDeviceInfo(
+base::Value DeviceEmulatorMessageHandler::GetDeviceInfo(
     const dbus::ObjectPath& object_path) {
   // Get the device's properties.
   bluez::FakeBluetoothDeviceClient::Properties* props =
       fake_bluetooth_device_client_->GetProperties(object_path);
-  std::unique_ptr<base::DictionaryValue> device(new base::DictionaryValue());
-  std::unique_ptr<base::ListValue> uuids(new base::ListValue);
   bluez::FakeBluetoothDeviceClient::SimulatedPairingOptions* options =
       fake_bluetooth_device_client_->GetPairingOptions(object_path);
 
-  device->SetString("path", object_path.value());
-  device->SetString("name", props->name.value());
-  device->SetString("alias", props->alias.value());
-  device->SetString("address", props->address.value());
+  base::Value device(base::Value::Type::DICTIONARY);
+  device.SetStringKey("path", object_path.value());
+  device.SetStringKey("name", props->name.value());
+  device.SetStringKey("alias", props->alias.value());
+  device.SetStringKey("address", props->address.value());
   if (options) {
-    device->SetString("pairingMethod", options->pairing_method);
-    device->SetString("pairingAuthToken", options->pairing_auth_token);
-    device->SetString("pairingAction", options->pairing_action);
+    device.SetStringKey("pairingMethod", options->pairing_method);
+    device.SetStringKey("pairingAuthToken", options->pairing_auth_token);
+    device.SetStringKey("pairingAction", options->pairing_action);
   } else {
-    device->SetString("pairingMethod", "");
-    device->SetString("pairingAuthToken", "");
-    device->SetString("pairingAction", "");
+    device.SetStringKey("pairingMethod", "");
+    device.SetStringKey("pairingAuthToken", "");
+    device.SetStringKey("pairingAction", "");
   }
-  device->SetInteger("classValue", props->bluetooth_class.value());
-  device->SetBoolean("isTrusted", props->trusted.value());
-  device->SetBoolean("incoming", false);
+  device.SetIntKey("classValue", props->bluetooth_class.value());
+  device.SetBoolKey("isTrusted", props->trusted.value());
+  device.SetBoolKey("incoming", false);
 
-  for (const std::string& uuid : props->uuids.value()) {
-    uuids->AppendString(uuid);
-  }
-
-  device->Set("uuids", std::move(uuids));
+  base::Value uuids(base::Value::Type::LIST);
+  for (const std::string& uuid : props->uuids.value())
+    uuids.Append(uuid);
+  device.SetKey("uuids", std::move(uuids));
 
   return device;
 }
@@ -652,22 +629,24 @@ void DeviceEmulatorMessageHandler::ConnectToBluetoothDevice(
         device->IsConnected());
   } else {
     // Attempt to connect to the device.
-    device->Connect(nullptr, base::DoNothing(), base::DoNothing());
+    device->Connect(nullptr, base::DoNothing());
   }
 }
 
 void DeviceEmulatorMessageHandler::TouchpadExists(bool exists) {
   if (!IsJavascriptAllowed())
     return;
-  web_ui()->CallJavascriptFunctionUnsafe(kTouchpadExistsCallback,
-                                         base::Value(exists));
+  FireWebUIListener("touchpad-exists-changed", base::Value(exists));
 }
 
 void DeviceEmulatorMessageHandler::MouseExists(bool exists) {
   if (!IsJavascriptAllowed())
     return;
-  web_ui()->CallJavascriptFunctionUnsafe(kMouseExistsCallback,
-                                         base::Value(exists));
+  FireWebUIListener("mouse-exists-changed", base::Value(exists));
+}
+
+void DeviceEmulatorMessageHandler::PointingStickExists(bool exists) {
+  // TODO(crbug.com/1114828): support fake pointing sticks.
 }
 
 }  // namespace chromeos

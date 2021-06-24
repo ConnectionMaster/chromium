@@ -32,9 +32,8 @@
 #include <unicode/ucnv_cb.h>
 
 #include "base/memory/ptr_util.h"
-#include "third_party/blink/renderer/platform/wtf/assertions.h"
+#include "base/notreached.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
-#include "third_party/blink/renderer/platform/wtf/text/cstring.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
@@ -327,7 +326,7 @@ void TextCodecICU::CreateICUConverter() const {
   DLOG_IF(ERROR, err == U_AMBIGUOUS_ALIAS_WARNING)
       << "ICU ambiguous alias warning for encoding: " << encoding_.GetName();
   if (converter_icu_)
-    ucnv_setFallback(converter_icu_, TRUE);
+    ucnv_setFallback(converter_icu_, true);
 }
 
 int TextCodecICU::DecodeToBuffer(UChar* target,
@@ -432,7 +431,7 @@ String TextCodecICU::Decode(const char* bytes,
   // ICU decodes it as U+E5E5.
   if (!strcmp(encoding_.GetName(), "GBK")) {
     if (EqualIgnoringASCIICase(encoding_.GetName(), "gb18030"))
-      resultString.Replace(0xE5E5, ideographicSpaceCharacter);
+      resultString.Replace(0xE5E5, kIdeographicSpaceCharacter);
     // Make GBK compliant to the encoding spec and align with GB18030
     resultString.Replace(0x01F9, 0xE7C8);
     // FIXME: Once https://www.w3.org/Bugs/Public/show_bug.cgi?id=28740#c3
@@ -653,8 +652,8 @@ class TextCodecInput final {
   Vector<UChar> buffer_;
 };
 
-CString TextCodecICU::EncodeInternal(const TextCodecInput& input,
-                                     UnencodableHandling handling) {
+std::string TextCodecICU::EncodeInternal(const TextCodecInput& input,
+                                         UnencodableHandling handling) {
   const UChar* source = input.begin();
   const UChar* end = input.end();
 
@@ -705,7 +704,7 @@ CString TextCodecICU::EncodeInternal(const TextCodecInput& input,
 
   DCHECK(U_SUCCESS(err));
   if (U_FAILURE(err))
-    return CString();
+    return std::string();
 
   Vector<char> result;
   wtf_size_t size = 0;
@@ -722,34 +721,34 @@ CString TextCodecICU::EncodeInternal(const TextCodecInput& input,
     size += count;
   } while (err == U_BUFFER_OVERFLOW_ERROR);
 
-  return CString(result.data(), size);
+  return std::string(result.data(), size);
 }
 
 template <typename CharType>
-CString TextCodecICU::EncodeCommon(const CharType* characters,
-                                   wtf_size_t length,
-                                   UnencodableHandling handling) {
+std::string TextCodecICU::EncodeCommon(const CharType* characters,
+                                       wtf_size_t length,
+                                       UnencodableHandling handling) {
   if (!length)
     return "";
 
   if (!converter_icu_)
     CreateICUConverter();
   if (!converter_icu_)
-    return CString();
+    return std::string();
 
   TextCodecInput input(encoding_, characters, length);
   return EncodeInternal(input, handling);
 }
 
-CString TextCodecICU::Encode(const UChar* characters,
-                             wtf_size_t length,
-                             UnencodableHandling handling) {
+std::string TextCodecICU::Encode(const UChar* characters,
+                                 wtf_size_t length,
+                                 UnencodableHandling handling) {
   return EncodeCommon(characters, length, handling);
 }
 
-CString TextCodecICU::Encode(const LChar* characters,
-                             wtf_size_t length,
-                             UnencodableHandling handling) {
+std::string TextCodecICU::Encode(const LChar* characters,
+                                 wtf_size_t length,
+                                 UnencodableHandling handling) {
   return EncodeCommon(characters, length, handling);
 }
 

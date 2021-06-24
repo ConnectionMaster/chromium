@@ -5,11 +5,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_FRAME_VIEW_AUTO_SIZE_INFO_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_FRAME_VIEW_AUTO_SIZE_INFO_H_
 
-#include "base/macros.h"
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/platform/geometry/int_size.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -18,16 +17,16 @@ class LocalFrameView;
 class FrameViewAutoSizeInfo final
     : public GarbageCollected<FrameViewAutoSizeInfo> {
  public:
-  static FrameViewAutoSizeInfo* Create(LocalFrameView* frame_view) {
-    return MakeGarbageCollected<FrameViewAutoSizeInfo>(frame_view);
-  }
-
   explicit FrameViewAutoSizeInfo(LocalFrameView*);
+  FrameViewAutoSizeInfo(const FrameViewAutoSizeInfo&) = delete;
+  FrameViewAutoSizeInfo& operator=(const FrameViewAutoSizeInfo&) = delete;
 
   void ConfigureAutoSizeMode(const IntSize& min_size, const IntSize& max_size);
-  void AutoSizeIfNeeded();
+  // Returns true if the LocalFrameView was resized.
+  bool AutoSizeIfNeeded();
+  void Clear();
 
-  void Trace(blink::Visitor*);
+  void Trace(Visitor*) const;
 
  private:
   Member<LocalFrameView> frame_view_;
@@ -40,8 +39,10 @@ class FrameViewAutoSizeInfo final
   bool in_auto_size_;
   // True if autosize has been run since m_shouldAutoSize was set.
   bool did_run_autosize_;
-
-  DISALLOW_COPY_AND_ASSIGN(FrameViewAutoSizeInfo);
+  // The number of autosize passes that have been made since the last call to
+  // Clear();
+  bool running_first_autosize_ = false;
+  uint32_t num_passes_ = 0u;
 };
 
 }  // namespace blink

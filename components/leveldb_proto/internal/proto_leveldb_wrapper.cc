@@ -109,6 +109,8 @@ bool UpdateEntriesFromTaskRunner(
     std::unique_ptr<KeyValueVector> entries_to_save,
     std::unique_ptr<KeyVector> keys_to_remove,
     const std::string& client_id) {
+  DCHECK(entries_to_save);
+  DCHECK(keys_to_remove);
   leveldb::Status status;
   bool success = database->Save(*entries_to_save, *keys_to_remove, &status);
   ProtoLevelDBWrapperMetrics::RecordUpdate(client_id, success, status);
@@ -121,6 +123,7 @@ bool UpdateEntriesWithRemoveFilterFromTaskRunner(
     const KeyFilter& delete_key_filter,
     const std::string& target_prefix,
     const std::string& client_id) {
+  DCHECK(entries_to_save);
   leveldb::Status status;
   bool success = database->UpdateWithRemoveFilter(
       *entries_to_save, delete_key_filter, target_prefix, &status);
@@ -173,14 +176,14 @@ void GetEntryFromTaskRunner(LevelDB* database,
 
 ProtoLevelDBWrapper::ProtoLevelDBWrapper(
     const scoped_refptr<base::SequencedTaskRunner>& task_runner)
-    : task_runner_(task_runner), weak_ptr_factory_(this) {
+    : task_runner_(task_runner) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
 
 ProtoLevelDBWrapper::ProtoLevelDBWrapper(
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
     LevelDB* db)
-    : task_runner_(task_runner), db_(db), weak_ptr_factory_(this) {
+    : task_runner_(task_runner), db_(db) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
 

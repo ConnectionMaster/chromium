@@ -12,20 +12,21 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_observer.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
-#include "content/public/browser/notification_observer.h"
-#include "content/public/browser/notification_registrar.h"
+#include "chrome/browser/extensions/load_error_reporter.h"
+#include "chrome/common/buildflags.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
+
+#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
+#include "extensions/browser/supervised_user_extensions_delegate.h"
+#endif  // BUILDFLAG(ENABLE_SUPERVISED_USERS)
 
 class ExtensionEnableFlowDelegate;
 
 namespace content {
 class WebContents;
-}
-
-namespace extensions {
-class ExtensionRegistry;
 }
 
 // ExtensionEnableFlow performs an UI flow to enable a disabled/terminated
@@ -35,7 +36,7 @@ class ExtensionRegistry;
 // extension is enabled already). Otherwise, a re-enable install prompt is
 // shown to user. The extension is enabled when user acknowledges it or the
 // flow is aborted when user declines it.
-class ExtensionEnableFlow : public content::NotificationObserver,
+class ExtensionEnableFlow : public extensions::LoadErrorReporter::Observer,
                             public extensions::ExtensionRegistryObserver {
  public:
   ExtensionEnableFlow(Profile* profile,
@@ -56,6 +57,11 @@ class ExtensionEnableFlow : public content::NotificationObserver,
 
   const std::string& extension_id() const { return extension_id_; }
 
+  // LoadErrorReporter::Observer:
+  void OnLoadFailure(content::BrowserContext* browser_context,
+                     const base::FilePath& file_path,
+                     const std::string& error) override;
+
  private:
   // Runs the enable flow. It starts by checking if the extension is loaded.
   // If not, it tries to reload it. If the load is asynchronous, wait for the
@@ -72,14 +78,20 @@ class ExtensionEnableFlow : public content::NotificationObserver,
   // Creates an ExtensionInstallPrompt in |prompt_|.
   void CreatePrompt();
 
+#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
+  // Called when the user dismisses the Parent Permission Dialog.
+  void OnParentPermissionDialogDone(
+      extensions::SupervisedUserExtensionsDelegate::ParentPermissionDialogResult
+          result);
+
+  // Called when the user dismisses the Extension Install Blocked By Parent
+  // Dialog.
+  void OnBlockedByParentDialogDone();
+#endif  // BUILDFLAG(ENABLE_SUPERVISED_USERS)
+
   // Starts/stops observing extension load notifications.
   void StartObserving();
   void StopObserving();
-
-  // content::NotificationObserver overrides:
-  void Observe(int type,
-               const content::NotificationSource& source,
-               const content::NotificationDetails& details) override;
 
   // extensions::ExtensionRegistryObserver overrides:
   void OnExtensionLoaded(content::BrowserContext* browser_context,
@@ -87,6 +99,8 @@ class ExtensionEnableFlow : public content::NotificationObserver,
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const extensions::Extension* extension,
                               extensions::UninstallReason reason) override;
+
+  void EnableExtension();
 
   void InstallPromptDone(ExtensionInstallPrompt::Result result);
 
@@ -96,25 +110,24 @@ class ExtensionEnableFlow : public content::NotificationObserver,
 
   // Parent web contents for ExtensionInstallPrompt that may be created during
   // the flow. Note this is mutually exclusive with |parent_window_| below.
-  content::WebContents* parent_contents_;
+  content::WebContents* parent_contents_ = nullptr;
 
   // Parent native window for ExtensionInstallPrompt. Note this is mutually
   // exclusive with |parent_contents_| above.
-  gfx::NativeWindow parent_window_;
-
-  // Called to acquire a parent window for the prompt. This is used for clients
-  // who only want to create a window if it is required.
-  base::Callback<gfx::NativeWindow(void)> window_getter_;
+  gfx::NativeWindow parent_window_ = nullptr;
 
   std::unique_ptr<ExtensionInstallPrompt> prompt_;
-  content::NotificationRegistrar registrar_;
 
   // Listen to extension load notification.
-  ScopedObserver<extensions::ExtensionRegistry,
-                 extensions::ExtensionRegistryObserver>
-      extension_registry_observer_;
+  base::ScopedObservation<extensions::ExtensionRegistry,
+                          extensions::ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
-  base::WeakPtrFactory<ExtensionEnableFlow> weak_ptr_factory_;
+  base::ScopedObservation<extensions::LoadErrorReporter,
+                          extensions::LoadErrorReporter::Observer>
+      load_error_observation_{this};
+
+  base::WeakPtrFactory<ExtensionEnableFlow> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(ExtensionEnableFlow);
 };

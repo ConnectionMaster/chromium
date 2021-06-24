@@ -40,7 +40,7 @@ enum VideoCodec {
 };
 
 // Video codec profiles. Keep in sync with mojo::VideoCodecProfile (see
-// media/mojo/interfaces/media_types.mojom), gpu::VideoCodecProfile (see
+// media/mojo/mojom/media_types.mojom), gpu::VideoCodecProfile (see
 // gpu/config/gpu_info.h), and PP_VideoDecoder_Profile (translation is performed
 // in content/renderer/pepper/ppb_video_decoder_impl.cc).
 // NOTE: These values are histogrammed over time in UMA so the values must never
@@ -79,12 +79,10 @@ enum VideoCodecProfile {
   HEVCPROFILE_MAIN10 = 17,
   HEVCPROFILE_MAIN_STILL_PICTURE = 18,
   HEVCPROFILE_MAX = HEVCPROFILE_MAIN_STILL_PICTURE,
-  DOLBYVISION_MIN = 19,
-  DOLBYVISION_PROFILE0 = DOLBYVISION_MIN,
+  DOLBYVISION_PROFILE0 = 19,
   DOLBYVISION_PROFILE4 = 20,
   DOLBYVISION_PROFILE5 = 21,
   DOLBYVISION_PROFILE7 = 22,
-  DOLBYVISION_MAX = DOLBYVISION_PROFILE7,
   THEORAPROFILE_MIN = 23,
   THEORAPROFILE_ANY = THEORAPROFILE_MIN,
   THEORAPROFILE_MAX = THEORAPROFILE_ANY,
@@ -93,17 +91,24 @@ enum VideoCodecProfile {
   AV1PROFILE_PROFILE_HIGH = 25,
   AV1PROFILE_PROFILE_PRO = 26,
   AV1PROFILE_MAX = AV1PROFILE_PROFILE_PRO,
-  VIDEO_CODEC_PROFILE_MAX = AV1PROFILE_PROFILE_PRO,
+  DOLBYVISION_PROFILE8 = 27,
+  DOLBYVISION_PROFILE9 = 28,
+  VIDEO_CODEC_PROFILE_MAX = DOLBYVISION_PROFILE9,
 };
+
+using VideoCodecLevel = uint32_t;
+constexpr VideoCodecLevel kNoVideoCodecLevel = 0;
 
 struct CodecProfileLevel {
   VideoCodec codec;
   VideoCodecProfile profile;
-  int level;
+  VideoCodecLevel level;
 };
 
 std::string MEDIA_EXPORT GetCodecName(VideoCodec codec);
 std::string MEDIA_EXPORT GetProfileName(VideoCodecProfile profile);
+std::string MEDIA_EXPORT BuildH264MimeSuffix(VideoCodecProfile profile,
+                                             uint8_t level);
 
 // ParseNewStyleVp9CodecID handles parsing of new style vp9 codec IDs per
 // proposed VP Codec ISO Media File Format Binding specification:
@@ -132,19 +137,27 @@ MEDIA_EXPORT bool ParseAVCCodecId(const std::string& codec_id,
                                   VideoCodecProfile* profile,
                                   uint8_t* level_idc);
 
-#if BUILDFLAG(ENABLE_HEVC_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_HEVC)
 MEDIA_EXPORT bool ParseHEVCCodecId(const std::string& codec_id,
                                    VideoCodecProfile* profile,
                                    uint8_t* level_idc);
 #endif
 
-#if BUILDFLAG(ENABLE_DOLBY_VISION_DEMUXING)
+#if BUILDFLAG(ENABLE_PLATFORM_DOLBY_VISION)
 MEDIA_EXPORT bool ParseDolbyVisionCodecId(const std::string& codec_id,
                                           VideoCodecProfile* profile,
                                           uint8_t* level_id);
 #endif
 
+MEDIA_EXPORT void ParseCodec(const std::string& codec_id,
+                             VideoCodec& codec,
+                             VideoCodecProfile& profile,
+                             uint8_t& level,
+                             VideoColorSpace& color_space);
 MEDIA_EXPORT VideoCodec StringToVideoCodec(const std::string& codec_id);
+
+MEDIA_EXPORT VideoCodec
+VideoCodecProfileToVideoCodec(VideoCodecProfile profile);
 
 #if BUILDFLAG(ENABLE_MSE_MPEG2TS_STREAM_PARSER)
 // Translate legacy avc1 codec ids (like avc1.66.30 or avc1.77.31) into a new

@@ -9,7 +9,8 @@
 #include <string>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/observer_list.h"
 #include "chromeos/dbus/system_clock/fake_system_clock_client.h"
@@ -51,8 +52,7 @@ class SystemClockClientImpl : public SystemClockClient {
   explicit SystemClockClientImpl(dbus::Bus* bus)
       : can_set_time_(false),
         can_set_time_initialized_(false),
-        system_clock_proxy_(nullptr),
-        weak_ptr_factory_(this) {
+        system_clock_proxy_(nullptr) {
     CHECK(bus);
     InitDBus(bus);
   }
@@ -107,8 +107,8 @@ class SystemClockClientImpl : public SystemClockClient {
         dbus::ObjectPath(system_clock::kSystemClockServicePath));
     system_clock_proxy_->ConnectToSignal(
         system_clock::kSystemClockInterface, system_clock::kSystemClockUpdated,
-        base::Bind(&SystemClockClientImpl::TimeUpdatedReceived,
-                   weak_ptr_factory_.GetWeakPtr()),
+        base::BindRepeating(&SystemClockClientImpl::TimeUpdatedReceived,
+                            weak_ptr_factory_.GetWeakPtr()),
         base::BindOnce(&SystemClockClientImpl::TimeUpdatedConnected,
                        weak_ptr_factory_.GetWeakPtr()));
     WaitForServiceToBeAvailable(
@@ -186,7 +186,7 @@ class SystemClockClientImpl : public SystemClockClient {
   dbus::ObjectProxy* system_clock_proxy_;
   base::ObserverList<Observer>::Unchecked observers_;
 
-  base::WeakPtrFactory<SystemClockClientImpl> weak_ptr_factory_;
+  base::WeakPtrFactory<SystemClockClientImpl> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(SystemClockClientImpl);
 };

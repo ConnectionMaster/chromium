@@ -17,21 +17,21 @@ Dumping CacheStorage tree:
         totalCount: 3
     cache: testCache2 - http://127.0.0.1:8000
         0, /1, default, text/plain, 0
-        1, /2, default, text/plain, 0
+        1, /2?query=19940123, default, text/plain, 0
         2, /H/22, default, text/plain, 0
         3, /L/11, default, text/plain, 0
         4, /T, default, text/javascript, 0
         totalCount: 5
     cache: testCache3 - http://127.0.0.1:8000
         0, /devtools/resources/image.png, basic, image/png, 647
-        1, /vars, default, text/plain, 0
+        1, /vars, default, text/plain, 0, Accept
         totalCount: 2
 Dumping CacheStorage tree with URL path filter string "2"
     cache: testCache1 - http://127.0.0.1:8000
         0, /2, default, text/plain, 0
         totalCount: 1
     cache: testCache2 - http://127.0.0.1:8000
-        0, /2, default, text/plain, 0
+        0, /2?query=19940123, default, text/plain, 0
         1, /H/22, default, text/plain, 0
         totalCount: 2
     cache: testCache3 - http://127.0.0.1:8000

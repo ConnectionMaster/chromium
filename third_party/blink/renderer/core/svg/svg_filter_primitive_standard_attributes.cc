@@ -21,8 +21,10 @@
 
 #include "third_party/blink/renderer/core/svg/svg_filter_primitive_standard_attributes.h"
 
-#include "third_party/blink/renderer/core/layout/svg/layout_svg_resource_filter_primitive.h"
+#include "third_party/blink/renderer/core/layout/svg/layout_svg_filter_primitive.h"
 #include "third_party/blink/renderer/core/svg/graphics/filters/svg_filter_builder.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_length.h"
+#include "third_party/blink/renderer/core/svg/svg_animated_string.h"
 #include "third_party/blink/renderer/core/svg/svg_filter_element.h"
 #include "third_party/blink/renderer/core/svg/svg_length.h"
 #include "third_party/blink/renderer/core/svg_names.h"
@@ -69,7 +71,7 @@ SVGFilterPrimitiveStandardAttributes::SVGFilterPrimitiveStandardAttributes(
   AddToPropertyMap(result_);
 }
 
-void SVGFilterPrimitiveStandardAttributes::Trace(blink::Visitor* visitor) {
+void SVGFilterPrimitiveStandardAttributes::Trace(Visitor* visitor) const {
   visitor->Trace(x_);
   visitor->Trace(y_);
   visitor->Trace(width_);
@@ -84,7 +86,7 @@ bool SVGFilterPrimitiveStandardAttributes::SetFilterEffectAttribute(
   DCHECK(attr_name == svg_names::kColorInterpolationFiltersAttr);
   DCHECK(GetLayoutObject());
   EColorInterpolation color_interpolation =
-      GetLayoutObject()->StyleRef().SvgStyle().ColorInterpolationFilters();
+      GetLayoutObject()->StyleRef().ColorInterpolationFilters();
   InterpolationSpace resolved_interpolation_space =
       SVGFilterBuilder::ResolveInterpolationSpace(color_interpolation);
   if (resolved_interpolation_space == effect->OperatingInterpolationSpace())
@@ -94,7 +96,8 @@ bool SVGFilterPrimitiveStandardAttributes::SetFilterEffectAttribute(
 }
 
 void SVGFilterPrimitiveStandardAttributes::SvgAttributeChanged(
-    const QualifiedName& attr_name) {
+    const SvgAttributeChangedParams& params) {
+  const QualifiedName& attr_name = params.name;
   if (attr_name == svg_names::kXAttr || attr_name == svg_names::kYAttr ||
       attr_name == svg_names::kWidthAttr ||
       attr_name == svg_names::kHeightAttr ||
@@ -104,14 +107,14 @@ void SVGFilterPrimitiveStandardAttributes::SvgAttributeChanged(
     return;
   }
 
-  SVGElement::SvgAttributeChanged(attr_name);
+  SVGElement::SvgAttributeChanged(params);
 }
 
 void SVGFilterPrimitiveStandardAttributes::ChildrenChanged(
     const ChildrenChange& change) {
   SVGElement::ChildrenChanged(change);
 
-  if (!change.by_parser)
+  if (!change.ByParser())
     Invalidate();
 }
 
@@ -167,36 +170,34 @@ void SVGFilterPrimitiveStandardAttributes::SetStandardAttributes(
 LayoutObject* SVGFilterPrimitiveStandardAttributes::CreateLayoutObject(
     const ComputedStyle&,
     LegacyLayout) {
-  return new LayoutSVGResourceFilterPrimitive(this);
+  return new LayoutSVGFilterPrimitive(this);
 }
 
 bool SVGFilterPrimitiveStandardAttributes::LayoutObjectIsNeeded(
     const ComputedStyle& style) const {
-  if (IsSVGFilterElement(parentNode()))
+  if (IsA<SVGFilterElement>(parentNode()))
     return SVGElement::LayoutObjectIsNeeded(style);
 
   return false;
 }
 
 void SVGFilterPrimitiveStandardAttributes::Invalidate() {
-  if (SVGFilterElement* filter = ToSVGFilterElementOrNull(parentElement()))
+  if (auto* filter = DynamicTo<SVGFilterElement>(parentElement()))
     filter->InvalidateFilterChain();
 }
 
 void SVGFilterPrimitiveStandardAttributes::PrimitiveAttributeChanged(
     const QualifiedName& attribute) {
-  if (SVGFilterElement* filter = ToSVGFilterElementOrNull(parentElement()))
+  if (auto* filter = DynamicTo<SVGFilterElement>(parentElement()))
     filter->PrimitiveAttributeChanged(*this, attribute);
 }
 
 void InvalidateFilterPrimitiveParent(SVGElement& element) {
-  Element* parent = element.parentElement();
-  if (!parent || !parent->IsSVGElement())
+  auto* svg_parent =
+      DynamicTo<SVGFilterPrimitiveStandardAttributes>(element.parentElement());
+  if (!svg_parent)
     return;
-  SVGElement& svgparent = ToSVGElement(*parent);
-  if (!IsSVGFilterPrimitiveStandardAttributes(svgparent))
-    return;
-  ToSVGFilterPrimitiveStandardAttributes(svgparent).Invalidate();
+  svg_parent->Invalidate();
 }
 
 }  // namespace blink

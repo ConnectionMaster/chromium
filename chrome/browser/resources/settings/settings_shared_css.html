@@ -1,15 +1,10 @@
-<link rel="import" href="chrome://resources/cr_elements/paper_button_style_css.html">
-<link rel="import" href="chrome://resources/cr_elements/search_highlight_style_css.html">
-<link rel="import" href="chrome://resources/cr_elements/shared_vars_css.html">
-<link rel="import" href="chrome://resources/cr_elements/shared_style_css.html">
-<link rel="import" href="settings_icons_css.html">
-<link rel="import" href="settings_vars_css.html">
-
-
-<!-- Common styles for Material Design settings. -->
-<dom-module id="settings-shared">
+  <!-- Common styles for Material Design settings. -->
   <template>
-    <style include="settings-icons paper-button-style cr-shared-style search-highlight-style">
+    <style include="cr-shared-style search-highlight-style
+<if expr='chromeos'>
+          cros-color-overrides
+</if>
+    ">
       /* Prevent action-links from being selected to avoid accidental
        * selection when trying to click it. */
       a[is=action-link] {
@@ -61,20 +56,20 @@
       }
 
       /* Special case for buttons inside of toggle-buttons. */
-      .settings-box settings-toggle-button paper-button:last-of-type {
+      .settings-box settings-toggle-button cr-button:last-of-type {
         margin-inline-end: 16px;
       }
 
       /* Space out multiple buttons in the same row. */
-      .settings-box paper-button + paper-button,
-      .settings-box paper-button + controlled-button,
+      .settings-box cr-button + cr-button,
+      .settings-box cr-button + controlled-button,
       .settings-box controlled-button + controlled-button,
-      .settings-box controlled-button + paper-button {
+      .settings-box controlled-button + cr-button {
         margin-inline-start: 8px;
       }
 
       span ~ a {
-        margin-inline-start: 4px;
+        margin-inline-start: var(--cr-subsequent-anchors-of-span-margin, 4px);
       }
 
       a[href] {
@@ -96,6 +91,7 @@
         color: var(--google-blue-500);
       }
 
+      collapse-radio-button,
       controlled-radio-button,
       cr-radio-button {
         min-height: var(--settings-row-min-height);
@@ -112,13 +108,17 @@
         outline: none;
       }
 
-      :host-context([dark]) cr-radio-group:focus {
-        background-color: var(--google-grey-800);
+      @media (prefers-color-scheme: dark) {
+        cr-radio-group:focus {
+          background-color: var(--google-grey-800);
+        }
       }
 
       /* See also: .no-min-width below. */
       .text-elide {
-        @apply --cr-text-elide;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       /* By default, flexbox children have min-width calculated to be the width
@@ -131,16 +131,24 @@
       }
 
       .header-aligned-button {
-        margin-top: 12px;  /* Align paper-button with <h2>. */
+        margin-top: 12px;  /* Align cr-button with <h2>. */
+      }
+
+      .link-wrapper {
+        align-items: center;
+        display: flex;
+        flex-grow: 1;
       }
 
       /* A list-frame is an outer container for list-items. It is intended to be
        * outside of a settings-box. A list-frame is likely to follow a
        * settings box. */
       .list-frame {
-        @apply --settings-list-frame-padding;
-        align-items: center;
         display: block;
+        padding-block-end: 0;
+        padding-block-start: 0;
+        padding-inline-end: var(--cr-section-padding);
+        padding-inline-start: var(--cr-section-indent-padding);
       }
 
       /* A list-item is intended to be contained within a list-frame. The list
@@ -185,30 +193,43 @@
         min-height: inherit;
       }
 
+      /* Link buttons use FocusOutlineManager to only show outlines when focus
+       * was triggered by keyboard. */
+      :host-context(html:not(.focus-outline-visible))
+          .list-button[is='action-link'] {
+        outline: none;
+      }
+
       /* A row with two lines of text. Often the lower line will be .secondary.
        */
       .two-line {
         min-height: var(--settings-row-two-line-min-height);
       }
 
-      /* A row with three lines of text. Often the lower lines will be
-       * .secondary. */
-      .three-line {
-        min-height: var(--settings-row-three-line-min-height);
-      }
-
       /* A settings-box is a horizontal row of text or controls within a
        * setting section (page or subpage). */
       .settings-box {
-        @apply --cr-section;
+        align-items: center;
+        border-top: var(--cr-separator-line);
+        display: flex;
+        min-height: var(--cr-section-min-height);
+        padding: 0 var(--cr-section-padding);
+      }
+
+      .settings-box.no-padding {
+        padding: 0;
+      }
+
+      .settings-box.no-padding .margin-matches-padding {
+        margin: 0 var(--cr-section-padding);
+      }
+
+      .settings-box.no-padding > .link-wrapper {
+        padding: 0 var(--cr-section-padding);
       }
 
       .settings-box.two-line {
         min-height: var(--settings-row-two-line-min-height);
-      }
-
-      .settings-box.three-line {
-        min-height: var(--settings-row-three-line-min-height);
       }
 
       .settings-box-text {
@@ -248,17 +269,19 @@
       /* A settings-box that is embedded in another settings-box (e.g. a control
        * that is associated with a toggle button). */
       .settings-box.embedded {
-        padding-inline-start: var(--settings-box-row-indent);
+        padding-inline-start: var(--cr-section-indent-padding);
       }
 
       /* The lower line of text in a two-line row. */
+      /* TODO: Remove and merge with .cr-secondary-text. */
       .secondary {
-        @apply --cr-secondary-text;
+        color: var(--cr-secondary-text-color);
+        font-weight: 400;
       }
 
       /* The |:empty| CSS selector only works when there is no whitespace.
-       * E.g. <div>[[foo]]</div> will be |:empty| when foo == ""; and
-       * <div> [[foo]] </div> will not be |:empty| when foo == "". Ensure there
+       * E.g. <div>[[foo]]</div> will be |:empty| when foo === ""; and
+       * <div> [[foo]] </div> will not be |:empty| when foo === "". Ensure there
        * is no extra whitespace when the contents of .secondary may be "".
        */
       .secondary:empty {
@@ -316,9 +339,13 @@
       .separator {
         border-inline-start: var(--cr-separator-line);
         flex-shrink: 0;
-        /* Match paper-button's default height. */
+        /* Match cr-button's default height. */
         height: 32px;
         margin: 0 16px;
+      }
+
+      .settings-box.no-padding > .link-wrapper ~ .separator {
+        margin: 0;
       }
 
       .column-header {
@@ -346,4 +373,3 @@
       }
     </style>
   </template>
-</dom-module>

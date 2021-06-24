@@ -6,11 +6,13 @@
 
 #include <memory>
 
+#include "base/check.h"
 #include "base/json/json_writer.h"
-#include "base/logging.h"
+#include "base/notreached.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/values.h"
-#import "ios/chrome/browser/crash_report/breakpad_helper.h"
+#import "components/previous_session_info/previous_session_info.h"
+#import "ios/chrome/browser/crash_report/crash_helper.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
 #error "This file requires ARC support."
@@ -24,36 +26,35 @@ const int kMaximumBreakpadValueSize = 255;
 }
 
 @implementation CrashReportMultiParameter {
-  NSString* crashReportKey_;
-  std::unique_ptr<base::DictionaryValue> dictionary_;
+  crash_reporter::CrashKeyString<256>* _key;
+  std::unique_ptr<base::DictionaryValue> _dictionary;
 }
 
-- (instancetype)initWithKey:(NSString*)key {
+- (instancetype)initWithKey:(crash_reporter::CrashKeyString<256>&)key {
   if ((self = [super init])) {
-    DCHECK([key length] && ([key length] <= kMaximumBreakpadValueSize));
-    dictionary_.reset(new base::DictionaryValue());
-    crashReportKey_ = [key copy];
+    _dictionary.reset(new base::DictionaryValue());
+    _key = &key;
   }
   return self;
 }
 
 - (void)removeValue:(NSString*)key {
-  dictionary_->Remove(base::SysNSStringToUTF8(key).c_str(), nullptr);
+  _dictionary->Remove(base::SysNSStringToUTF8(key).c_str(), nullptr);
   [self updateCrashReport];
 }
 
 - (void)setValue:(NSString*)key withValue:(int)value {
-  dictionary_->SetInteger(base::SysNSStringToUTF8(key).c_str(), value);
+  _dictionary->SetInteger(base::SysNSStringToUTF8(key).c_str(), value);
   [self updateCrashReport];
 }
 
 - (void)incrementValue:(NSString*)key {
   int value;
   std::string utf8_string = base::SysNSStringToUTF8(key);
-  if (dictionary_->GetInteger(utf8_string.c_str(), &value)) {
-    dictionary_->SetInteger(utf8_string.c_str(), value + 1);
+  if (_dictionary->GetInteger(utf8_string.c_str(), &value)) {
+    _dictionary->SetInteger(utf8_string.c_str(), value + 1);
   } else {
-    dictionary_->SetInteger(utf8_string.c_str(), 1);
+    _dictionary->SetInteger(utf8_string.c_str(), 1);
   }
   [self updateCrashReport];
 }
@@ -61,11 +62,11 @@ const int kMaximumBreakpadValueSize = 255;
 - (void)decrementValue:(NSString*)key {
   int value;
   std::string utf8_string = base::SysNSStringToUTF8(key);
-  if (dictionary_->GetInteger(utf8_string.c_str(), &value)) {
+  if (_dictionary->GetInteger(utf8_string.c_str(), &value)) {
     if (value <= 1) {
-      dictionary_->Remove(utf8_string.c_str(), nullptr);
+      _dictionary->Remove(utf8_string.c_str(), nullptr);
     } else {
-      dictionary_->SetInteger(utf8_string.c_str(), value - 1);
+      _dictionary->SetInteger(utf8_string.c_str(), value - 1);
     }
     [self updateCrashReport];
   }
@@ -73,16 +74,12 @@ const int kMaximumBreakpadValueSize = 255;
 
 - (void)updateCrashReport {
   std::string stateAsJson;
-  base::JSONWriter::Write(*dictionary_.get(), &stateAsJson);
+  base::JSONWriter::Write(*_dictionary.get(), &stateAsJson);
   if (stateAsJson.length() > kMaximumBreakpadValueSize) {
     NOTREACHED();
     return;
   }
-  breakpad_helper::AddReportParameter(
-      crashReportKey_,
-      [NSString stringWithCString:stateAsJson.c_str()
-                         encoding:[NSString defaultCStringEncoding]],
-      true);
+  _key->Set(stateAsJson);
 }
 
 @end

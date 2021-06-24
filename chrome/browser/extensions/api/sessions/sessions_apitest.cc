@@ -8,15 +8,16 @@
 #include <utility>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
 #include "base/command_line.h"
+#include "base/cxx17_backports.h"
 #include "base/memory/ptr_util.h"
 #include "base/path_service.h"
-#include "base/stl_util.h"
 #include "base/strings/pattern.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/bind_test_util.h"
+#include "base/test/bind.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/sessions/sessions_api.h"
 #include "chrome/browser/extensions/api/tabs/tabs_api.h"
 #include "chrome/browser/extensions/extension_apitest.h"
@@ -27,7 +28,7 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_browser_process.h"
-#include "components/sync/base/hash_util.h"
+#include "components/sync/base/client_tag_hash.h"
 #include "components/sync/engine/data_type_activation_response.h"
 #include "components/sync/model/data_type_activation_request.h"
 #include "components/sync/model/model_type_controller_delegate.h"
@@ -35,11 +36,12 @@
 #include "components/sync/test/engine/mock_model_type_worker.h"
 #include "components/sync_sessions/session_store.h"
 #include "components/sync_sessions/session_sync_service.h"
+#include "content/public/test/browser_test.h"
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/common/extension_builder.h"
 
-#if defined(OS_CHROMEOS)
-#include "chromeos/constants/chromeos_switches.h"
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/constants/ash_switches.h"
 #endif
 
 namespace utils = extension_function_test_utils;
@@ -144,8 +146,9 @@ testing::AssertionResult CheckSessionModels(const base::ListValue& devices,
   return testing::AssertionSuccess();
 }
 
-std::string TagHashFromSpecifics(const sync_pb::SessionSpecifics& specifics) {
-  return syncer::GenerateSyncableHash(
+syncer::ClientTagHash TagHashFromSpecifics(
+    const sync_pb::SessionSpecifics& specifics) {
+  return syncer::ClientTagHash::FromUnhashed(
       syncer::SESSIONS, sync_sessions::SessionStore::GetClientTag(specifics));
 }
 
@@ -172,7 +175,7 @@ class ExtensionSessionsTest : public InProcessBrowserTest {
 };
 
 void ExtensionSessionsTest::SetUpCommandLine(base::CommandLine* command_line) {
-#if defined(OS_CHROMEOS)
+#if BUILDFLAG(IS_CHROMEOS_ASH)
   command_line->AppendSwitch(
       chromeos::switches::kIgnoreUserProfileMappingForTests);
 #endif
@@ -185,7 +188,7 @@ void ExtensionSessionsTest::SetUpOnMainThread() {
 void ExtensionSessionsTest::CreateTestExtension() {
   extension_ = ExtensionBuilder("Test")
                    .AddPermissions({"sessions", "tabs"})
-                   .SetLocation(Manifest::INTERNAL)
+                   .SetLocation(mojom::ManifestLocation::kInternal)
                    .Build();
 }
 
@@ -193,7 +196,7 @@ void ExtensionSessionsTest::CreateSessionModels() {
   syncer::DataTypeActivationRequest request;
   request.error_handler = base::DoNothing();
   request.cache_guid = kTestCacheGuid;
-  request.authenticated_account_id = "SomeAccountId";
+  request.authenticated_account_id = CoreAccountId("SomeAccountId");
 
   sync_sessions::SessionSyncService* service =
       SessionSyncServiceFactory::GetForProfile(browser()->profile());
@@ -233,18 +236,19 @@ void ExtensionSessionsTest::CreateSessionModels() {
     // sessions (anything older than 14 days), so we cannot use
     // MockModelTypeWorker's convenience functions, which internally use very
     // old timestamps.
-    auto header_entity_data = std::make_unique<syncer::EntityData>();
-    header_entity_data->client_tag_hash =
+    syncer::EntityData header_entity_data;
+    header_entity_data.client_tag_hash =
         TagHashFromSpecifics(header_entity.session());
-    header_entity_data->id = "FakeId:" + header_entity_data->client_tag_hash;
-    header_entity_data->specifics = header_entity;
-    header_entity_data->creation_time =
+    header_entity_data.id =
+        "FakeId:" + header_entity_data.client_tag_hash.value();
+    header_entity_data.specifics = header_entity;
+    header_entity_data.creation_time =
         time_now - base::TimeDelta::FromSeconds(index);
-    header_entity_data->modification_time = header_entity_data->creation_time;
+    header_entity_data.modification_time = header_entity_data.creation_time;
 
-    auto header_update = std::make_unique<syncer::UpdateResponseData>();
-    header_update->entity = std::move(header_entity_data);
-    header_update->response_version = 1;
+    syncer::UpdateResponseData header_update;
+    header_update.entity = std::move(header_entity_data);
+    header_update.response_version = 1;
     syncer::UpdateResponseDataList updates;
     updates.push_back(std::move(header_update));
     worker.UpdateFromServer(std::move(updates));
@@ -294,9 +298,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionSessionsTest, GetDevicesListEmpty) {
   EXPECT_EQ(0u, devices->GetSize());
 }
 
-// Flaky timeout: http://crbug.com/278372
-IN_PROC_BROWSER_TEST_F(ExtensionSessionsTest,
-                       DISABLED_RestoreForeignSessionWindow) {
+IN_PROC_BROWSER_TEST_F(ExtensionSessionsTest, RestoreForeignSessionWindow) {
   CreateSessionModels();
 
   std::unique_ptr<base::DictionaryValue> restored_window_session(
@@ -357,8 +359,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionSessionsTest, GetRecentlyClosedIncognito) {
 
 // http://crbug.com/251199
 IN_PROC_BROWSER_TEST_F(ExtensionApiTest, DISABLED_SessionsApis) {
-  ASSERT_TRUE(RunExtensionSubtest("sessions",
-                                  "sessions.html")) << message_;
+  ASSERT_TRUE(RunExtensionTest("sessions", {.page_url = "sessions.html"}))
+      << message_;
 }
 
 }  // namespace extensions

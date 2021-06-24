@@ -15,10 +15,13 @@
 #include "base/files/file_util.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
+#include "base/numerics/clamped_math.h"
 #include "base/sequenced_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/task/post_task.h"
+#include "base/task/thread_pool.h"
 #include "base/values.h"
 #include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_entry.h"
@@ -40,7 +43,7 @@ scoped_refptr<base::SequencedTaskRunner> CreateFileTaskRunner() {
   //
   // These intentionally block shutdown to ensure the log file has finished
   // being written.
-  return base::CreateSequencedTaskRunnerWithTraits(
+  return base::ThreadPool::CreateSequencedTaskRunner(
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
 }
@@ -107,7 +110,7 @@ void AppendToFileThenDelete(const base::FilePath& source_path,
 
   // Now that it has been copied, delete the source file.
   source_file.reset();
-  base::DeleteFile(source_path, false);
+  base::DeleteFile(source_path);
 }
 
 base::FilePath SiblingInprogressDirectory(const base::FilePath& log_path) {
@@ -198,7 +201,7 @@ class FileNetLogObserver::FileWriter {
   // If max_event_file_size == kNoLimit, then no limit is enforced.
   FileWriter(const base::FilePath& log_path,
              const base::FilePath& inprogress_dir_path,
-             base::Optional<base::File> pre_existing_log_file,
+             absl::optional<base::File> pre_existing_log_file,
              uint64_t max_event_file_size,
              size_t total_num_event_files,
              scoped_refptr<base::SequencedTaskRunner> task_runner);
@@ -330,17 +333,19 @@ class FileNetLogObserver::FileWriter {
 std::unique_ptr<FileNetLogObserver> FileNetLogObserver::CreateBounded(
     const base::FilePath& log_path,
     uint64_t max_total_size,
+    NetLogCaptureMode capture_mode,
     std::unique_ptr<base::Value> constants) {
   return CreateInternal(log_path, SiblingInprogressDirectory(log_path),
-                        base::nullopt, max_total_size, kDefaultNumFiles,
-                        std::move(constants));
+                        absl::nullopt, max_total_size, kDefaultNumFiles,
+                        capture_mode, std::move(constants));
 }
 
 std::unique_ptr<FileNetLogObserver> FileNetLogObserver::CreateUnbounded(
     const base::FilePath& log_path,
+    NetLogCaptureMode capture_mode,
     std::unique_ptr<base::Value> constants) {
-  return CreateInternal(log_path, base::FilePath(), base::nullopt, kNoLimit,
-                        kDefaultNumFiles, std::move(constants));
+  return CreateInternal(log_path, base::FilePath(), absl::nullopt, kNoLimit,
+                        kDefaultNumFiles, capture_mode, std::move(constants));
 }
 
 std::unique_ptr<FileNetLogObserver>
@@ -348,19 +353,23 @@ FileNetLogObserver::CreateBoundedPreExisting(
     const base::FilePath& inprogress_dir_path,
     base::File output_file,
     uint64_t max_total_size,
+    NetLogCaptureMode capture_mode,
     std::unique_ptr<base::Value> constants) {
   return CreateInternal(base::FilePath(), inprogress_dir_path,
-                        base::make_optional<base::File>(std::move(output_file)),
-                        max_total_size, kDefaultNumFiles, std::move(constants));
+                        absl::make_optional<base::File>(std::move(output_file)),
+                        max_total_size, kDefaultNumFiles, capture_mode,
+                        std::move(constants));
 }
 
 std::unique_ptr<FileNetLogObserver>
 FileNetLogObserver::CreateUnboundedPreExisting(
     base::File output_file,
+    NetLogCaptureMode capture_mode,
     std::unique_ptr<base::Value> constants) {
   return CreateInternal(base::FilePath(), base::FilePath(),
-                        base::make_optional<base::File>(std::move(output_file)),
-                        kNoLimit, kDefaultNumFiles, std::move(constants));
+                        absl::make_optional<base::File>(std::move(output_file)),
+                        kNoLimit, kDefaultNumFiles, capture_mode,
+                        std::move(constants));
 }
 
 FileNetLogObserver::~FileNetLogObserver() {
@@ -375,9 +384,8 @@ FileNetLogObserver::~FileNetLogObserver() {
   file_task_runner_->DeleteSoon(FROM_HERE, file_writer_.release());
 }
 
-void FileNetLogObserver::StartObserving(NetLog* net_log,
-                                        NetLogCaptureMode capture_mode) {
-  net_log->AddObserver(this, capture_mode);
+void FileNetLogObserver::StartObserving(NetLog* net_log) {
+  net_log->AddObserver(this, capture_mode_);
 }
 
 void FileNetLogObserver::StopObserving(std::unique_ptr<base::Value> polled_data,
@@ -385,9 +393,9 @@ void FileNetLogObserver::StopObserving(std::unique_ptr<base::Value> polled_data,
   net_log()->RemoveObserver(this);
 
   base::OnceClosure bound_flush_then_stop =
-      base::Bind(&FileNetLogObserver::FileWriter::FlushThenStop,
-                 base::Unretained(file_writer_.get()), write_queue_,
-                 base::Passed(&polled_data));
+      base::BindOnce(&FileNetLogObserver::FileWriter::FlushThenStop,
+                     base::Unretained(file_writer_.get()), write_queue_,
+                     std::move(polled_data));
 
   // Note that PostTaskAndReply() requires a non-null closure.
   if (!optional_callback.is_null()) {
@@ -402,7 +410,7 @@ void FileNetLogObserver::StopObserving(std::unique_ptr<base::Value> polled_data,
 void FileNetLogObserver::OnAddEntry(const NetLogEntry& entry) {
   std::unique_ptr<std::string> json(new std::string);
 
-  *json = SerializeNetLogValueToJson(*entry.ToValue());
+  *json = SerializeNetLogValueToJson(entry.ToValue());
 
   size_t queue_size = write_queue_->AddEntryToQueue(std::move(json));
 
@@ -422,18 +430,20 @@ std::unique_ptr<FileNetLogObserver> FileNetLogObserver::CreateBoundedForTests(
     const base::FilePath& log_path,
     uint64_t max_total_size,
     size_t total_num_event_files,
+    NetLogCaptureMode capture_mode,
     std::unique_ptr<base::Value> constants) {
   return CreateInternal(log_path, SiblingInprogressDirectory(log_path),
-                        base::nullopt, max_total_size, total_num_event_files,
-                        std::move(constants));
+                        absl::nullopt, max_total_size, total_num_event_files,
+                        capture_mode, std::move(constants));
 }
 
 std::unique_ptr<FileNetLogObserver> FileNetLogObserver::CreateInternal(
     const base::FilePath& log_path,
     const base::FilePath& inprogress_dir_path,
-    base::Optional<base::File> pre_existing_log_file,
+    absl::optional<base::File> pre_existing_log_file,
     uint64_t max_total_size,
     size_t total_num_event_files,
+    NetLogCaptureMode capture_mode,
     std::unique_ptr<base::Value> constants) {
   DCHECK_GT(total_num_event_files, 0u);
 
@@ -460,27 +470,47 @@ std::unique_ptr<FileNetLogObserver> FileNetLogObserver::CreateInternal(
       log_path, inprogress_dir_path, std::move(pre_existing_log_file),
       max_event_file_size, total_num_event_files, file_task_runner));
 
-  scoped_refptr<WriteQueue> write_queue(new WriteQueue(max_total_size * 2));
+  uint64_t write_queue_memory_max =
+      base::MakeClampedNum<uint64_t>(max_total_size) * 2;
 
-  return std::unique_ptr<FileNetLogObserver>(
-      new FileNetLogObserver(file_task_runner, std::move(file_writer),
-                             std::move(write_queue), std::move(constants)));
+  return base::WrapUnique(new FileNetLogObserver(
+      file_task_runner, std::move(file_writer),
+      base::WrapRefCounted(new WriteQueue(write_queue_memory_max)),
+      capture_mode, std::move(constants)));
 }
 
 FileNetLogObserver::FileNetLogObserver(
     scoped_refptr<base::SequencedTaskRunner> file_task_runner,
     std::unique_ptr<FileWriter> file_writer,
     scoped_refptr<WriteQueue> write_queue,
+    NetLogCaptureMode capture_mode,
     std::unique_ptr<base::Value> constants)
     : file_task_runner_(std::move(file_task_runner)),
       write_queue_(std::move(write_queue)),
-      file_writer_(std::move(file_writer)) {
+      file_writer_(std::move(file_writer)),
+      capture_mode_(capture_mode) {
   if (!constants)
-    constants = GetNetConstants();
+    constants = base::Value::ToUniquePtrValue(GetNetConstants());
+
+  DCHECK(!constants->FindKey("logCaptureMode"));
+  constants->SetStringKey("logCaptureMode", CaptureModeToString(capture_mode));
   file_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&FileNetLogObserver::FileWriter::Initialize,
                                 base::Unretained(file_writer_.get()),
                                 std::move(constants)));
+}
+
+std::string FileNetLogObserver::CaptureModeToString(NetLogCaptureMode mode) {
+  switch (mode) {
+    case NetLogCaptureMode::kDefault:
+      return "Default";
+    case NetLogCaptureMode::kIncludeSensitive:
+      return "IncludeSensitive";
+    case NetLogCaptureMode::kEverything:
+      return "Everything";
+  }
+  NOTREACHED();
+  return "UNKNOWN";
 }
 
 FileNetLogObserver::WriteQueue::WriteQueue(uint64_t memory_max)
@@ -515,7 +545,7 @@ FileNetLogObserver::WriteQueue::~WriteQueue() = default;
 FileNetLogObserver::FileWriter::FileWriter(
     const base::FilePath& log_path,
     const base::FilePath& inprogress_dir_path,
-    base::Optional<base::File> pre_existing_log_file,
+    absl::optional<base::File> pre_existing_log_file,
     uint64_t max_event_file_size,
     size_t total_num_event_files,
     scoped_refptr<base::SequencedTaskRunner> task_runner)
@@ -622,13 +652,13 @@ void FileNetLogObserver::FileWriter::DeleteAllFiles() {
 
   if (IsBounded()) {
     current_event_file_.Close();
-    base::DeleteFile(inprogress_dir_path_, true);
+    base::DeletePathRecursively(inprogress_dir_path_);
   }
 
   // Only delete |final_log_file_| if it was created internally.
   // (If it was provided as a base::File by the caller, don't try to delete it).
   if (!final_log_path_.empty())
-    base::DeleteFile(final_log_path_, false);
+    base::DeleteFile(final_log_path_);
 }
 
 void FileNetLogObserver::FileWriter::FlushThenStop(
@@ -757,7 +787,7 @@ void FileNetLogObserver::FileWriter::StitchFinalLogFile() {
 
   // Delete the inprogress directory (and anything that may still be left inside
   // it).
-  base::DeleteFile(inprogress_dir_path_, true);
+  base::DeletePathRecursively(inprogress_dir_path_);
 }
 
 void FileNetLogObserver::FileWriter::CreateInprogressDirectory() {
@@ -795,7 +825,7 @@ void FileNetLogObserver::FileWriter::CreateInprogressDirectory() {
       "If logging was interrupted, you can stitch a NetLog file out of the\n"
       ".inprogress directory manually using:\n"
       "\n"
-      "https://chromium.googlesource.com/chromium/src/+/master/net/tools/"
+      "https://chromium.googlesource.com/chromium/src/+/main/net/tools/"
       "stitch_net_log_files.py\n");
 }
 

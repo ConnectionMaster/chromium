@@ -23,13 +23,12 @@ const char kSmartLockFeatureName[] = "easy_unlock";
 
 RemoteDeviceLifeCycleImpl::RemoteDeviceLifeCycleImpl(
     chromeos::multidevice::RemoteDeviceRef remote_device,
-    base::Optional<chromeos::multidevice::RemoteDeviceRef> local_device,
+    absl::optional<chromeos::multidevice::RemoteDeviceRef> local_device,
     chromeos::secure_channel::SecureChannelClient* secure_channel_client)
     : remote_device_(remote_device),
       local_device_(local_device),
       secure_channel_client_(secure_channel_client),
-      state_(RemoteDeviceLifeCycle::State::STOPPED),
-      weak_ptr_factory_(this) {}
+      state_(RemoteDeviceLifeCycle::State::STOPPED) {}
 
 RemoteDeviceLifeCycleImpl::~RemoteDeviceLifeCycleImpl() {}
 
@@ -81,6 +80,7 @@ void RemoteDeviceLifeCycleImpl::TransitionToState(
 void RemoteDeviceLifeCycleImpl::FindConnection() {
   connection_attempt_ = secure_channel_client_->ListenForConnectionFromDevice(
       remote_device_, *local_device_, kSmartLockFeatureName,
+      chromeos::secure_channel::ConnectionMedium::kBluetoothLowEnergy,
       chromeos::secure_channel::ConnectionPriority::kHigh);
   connection_attempt_->SetDelegate(this);
 
@@ -90,7 +90,7 @@ void RemoteDeviceLifeCycleImpl::FindConnection() {
 void RemoteDeviceLifeCycleImpl::CreateMessenger() {
   DCHECK(state_ == RemoteDeviceLifeCycle::State::AUTHENTICATING);
 
-  messenger_.reset(new MessengerImpl(std::move(channel_)));
+  messenger_ = std::make_unique<MessengerImpl>(std::move(channel_));
   messenger_->AddObserver(this);
 
   TransitionToState(RemoteDeviceLifeCycle::State::SECURE_CHANNEL_ESTABLISHED);
@@ -111,6 +111,9 @@ void RemoteDeviceLifeCycleImpl::OnConnectionAttemptFailure(
                     << " stopped because Bluetooth is not available.";
     TransitionToState(RemoteDeviceLifeCycle::State::STOPPED);
   } else {
+    // TODO(crbug.com/991644): Improve the name AUTHENTICATION_FAILED (it can
+    // encompass errors other than authentication failures) and create a metric
+    // with buckets corresponding to the ConnectionAttemptFailureReason.
     PA_LOG(ERROR) << "Failed to authenticate with remote device: "
                   << remote_device_.GetTruncatedDeviceIdForLogs()
                   << ", for reason: " << reason << ". Giving up.";
@@ -135,7 +138,10 @@ void RemoteDeviceLifeCycleImpl::OnConnection(
 
 void RemoteDeviceLifeCycleImpl::OnDisconnected() {
   DCHECK(state_ == RemoteDeviceLifeCycle::State::SECURE_CHANNEL_ESTABLISHED);
+
+  messenger_->RemoveObserver(this);
   messenger_.reset();
+
   FindConnection();
 }
 

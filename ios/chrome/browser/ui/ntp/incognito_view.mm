@@ -4,23 +4,25 @@
 
 #import "ios/chrome/browser/ui/ntp/incognito_view.h"
 
+#include "base/ios/ns_range.h"
+#include "components/content_settings/core/common/features.h"
 #include "components/google/core/common/google_util.h"
 #include "components/strings/grit/components_strings.h"
 #include "ios/chrome/browser/application_context.h"
+#import "ios/chrome/browser/drag_and_drop/url_drag_drop_handler.h"
 #import "ios/chrome/browser/ui/toolbar/public/toolbar_constants.h"
 #import "ios/chrome/browser/ui/toolbar/public/toolbar_utils.h"
 #include "ios/chrome/browser/ui/util/rtl_geometry.h"
 #include "ios/chrome/browser/ui/util/ui_util.h"
 #import "ios/chrome/browser/ui/util/uikit_ui_util.h"
+#import "ios/chrome/browser/url_loading/url_loading_browser_agent.h"
 #import "ios/chrome/browser/url_loading/url_loading_params.h"
-#import "ios/chrome/browser/url_loading/url_loading_service.h"
 #import "ios/chrome/common/string_util.h"
-#import "ios/chrome/common/ui_util/constraints_ui_util.h"
-#import "ios/third_party/material_components_ios/src/components/Buttons/src/MaterialButtons.h"
-#import "ios/third_party/material_components_ios/src/components/Palettes/src/MaterialPalettes.h"
-#import "ios/third_party/material_components_ios/src/components/Typography/src/MaterialTypography.h"
-#import "ios/web/public/navigation_manager.h"
-#include "ios/web/public/referrer.h"
+#import "ios/chrome/common/ui/colors/dynamic_color_util.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/web/public/navigation/navigation_manager.h"
+#include "ios/web/public/navigation/referrer.h"
 #import "net/base/mac/url_conversions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
@@ -38,12 +40,10 @@ const CGFloat kStackViewImageSpacing = 22.0;
 const CGFloat kLayoutGuideVerticalMargin = 8.0;
 const CGFloat kLayoutGuideMinHeight = 12.0;
 
-const int kLinkColor = 0x3A8FFF;
-
 // The URL for the the Learn More page shown on incognito new tab.
 // Taken from ntp_resource_cache.cc.
 const char kLearnMoreIncognitoUrl[] =
-    "https://www.google.com/support/chrome/bin/answer.py?answer=95464";
+    "https://support.google.com/chrome/?p=incognito";
 
 GURL GetUrlWithLang(const GURL& url) {
   std::string locale = GetApplicationContext()->GetApplicationLocale();
@@ -59,7 +59,7 @@ UIFont* TitleFont() {
 
 // Returns the color to use for body text.
 UIColor* BodyTextColor() {
-  return [UIColor colorWithWhite:1.0 alpha:0.7];
+  return [UIColor colorNamed:kTextSecondaryColor];
 }
 
 // Returns a font, scaled to the current dynamic type settings, that is suitable
@@ -99,23 +99,27 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
       stringByTrimmingCharactersInSet:[NSCharacterSet
                                           whitespaceAndNewlineCharacterSet]];
 
-  NSRange emphasisRange;
-  listString =
-      ParseStringWithTag(listString, &emphasisRange, @"<em>", @"</em>");
+  const StringWithTag parsedString =
+      ParseStringWithTag(listString, @"<em>", @"</em>");
+
   NSMutableAttributedString* attributedText =
-      [[NSMutableAttributedString alloc] initWithString:listString];
+      [[NSMutableAttributedString alloc] initWithString:parsedString.string];
   [attributedText addAttribute:NSFontAttributeName
                          value:BodyFont()
                          range:NSMakeRange(0, attributedText.length)];
-  if (emphasisRange.location != NSNotFound) {
+  if (parsedString.range != NSMakeRange(NSNotFound, 0)) {
     [attributedText addAttribute:NSFontAttributeName
                            value:BoldBodyFont()
-                           range:emphasisRange];
+                           range:parsedString.range];
   }
   return attributedText;
 }
 
 }  // namespace
+
+@interface IncognitoView () <URLDropDelegate>
+
+@end
 
 @implementation IncognitoView {
   UIView* _containerView;
@@ -127,8 +131,7 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
   UILayoutGuide* _bottomUnsafeAreaGuide;
   UILayoutGuide* _bottomUnsafeAreaGuideInSuperview;
 
-  // Height constraints for adding margins for the toolbars.
-  NSLayoutConstraint* _topToolbarMarginHeight;
+  // Height constraint for adding margins for the bottom toolbar.
   NSLayoutConstraint* _bottomToolbarMarginHeight;
 
   // Constraint ensuring that |containerView| is at least as high as the
@@ -139,14 +142,21 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
   NSArray<NSLayoutConstraint*>* _superViewConstraints;
 
   // The UrlLoadingService associated with this view.
-  UrlLoadingService* _urlLoadingService;  // weak
-}
+  UrlLoadingBrowserAgent* _URLLoader;  // weak
 
+  // Handles drop interactions for this view.
+  URLDragDropHandler* _dragDropHandler;
+}
 - (instancetype)initWithFrame:(CGRect)frame
-            urlLoadingService:(UrlLoadingService*)urlLoadingService {
+                    URLLoader:(UrlLoadingBrowserAgent*)URLLoader {
   self = [super initWithFrame:frame];
   if (self) {
-    _urlLoadingService = urlLoadingService;
+    _URLLoader = URLLoader;
+
+      _dragDropHandler = [[URLDragDropHandler alloc] init];
+      _dragDropHandler.dropDelegate = self;
+      [self addInteraction:[[UIDropInteraction alloc]
+                               initWithDelegate:_dragDropHandler]];
 
     self.alwaysBounceVertical = YES;
     // The bottom safe area is taken care of with the bottomUnsafeArea guides.
@@ -167,11 +177,14 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
     [_containerView addSubview:_stackView];
 
     // Incognito image.
-    UIImageView* incognitoImage = [[UIImageView alloc]
-        initWithImage:[UIImage imageNamed:@"incognito_icon"]];
-    [_stackView addArrangedSubview:incognitoImage];
+    UIImage* incognitoImage = [[UIImage imageNamed:@"incognito_icon"]
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    UIImageView* incognitoImageView =
+        [[UIImageView alloc] initWithImage:incognitoImage];
+    incognitoImageView.tintColor = [UIColor colorNamed:kTextPrimaryColor];
+    [_stackView addArrangedSubview:incognitoImageView];
     [_stackView setCustomSpacing:kStackViewImageSpacing
-                       afterView:incognitoImage];
+                       afterView:incognitoImageView];
 
     [self addTextSections];
 
@@ -184,38 +197,34 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
     [_containerView addLayoutGuide:bottomGuide];
     [_containerView addLayoutGuide:_bottomUnsafeAreaGuide];
 
-    // Those layout guide are used to prevent the content from being displayed
-    // below the toolbars.
+    // This layout guide is used to prevent the content from being displayed
+    // below the bottom toolbar.
     UILayoutGuide* bottomToolbarMarginGuide = [[UILayoutGuide alloc] init];
-    UILayoutGuide* topToolbarMarginGuide = [[UILayoutGuide alloc] init];
     [_containerView addLayoutGuide:bottomToolbarMarginGuide];
-    [_containerView addLayoutGuide:topToolbarMarginGuide];
 
     _bottomToolbarMarginHeight =
         [bottomToolbarMarginGuide.heightAnchor constraintEqualToConstant:0];
-    _topToolbarMarginHeight =
-        [topToolbarMarginGuide.heightAnchor constraintEqualToConstant:0];
     // Updates the constraints to the correct value.
     [self updateToolbarMargins];
 
     [self addSubview:_containerView];
 
     [NSLayoutConstraint activateConstraints:@[
-      // Position the two toolbar margin guides between the two guides used to
-      // have the correct centering margin.
+      // Position the stack view's top at some margin under from the container
+      // top.
       [topGuide.topAnchor constraintEqualToAnchor:_containerView.topAnchor],
-      [topToolbarMarginGuide.topAnchor
-          constraintEqualToAnchor:topGuide.bottomAnchor
-                         constant:kLayoutGuideVerticalMargin],
+      [_stackView.topAnchor constraintEqualToAnchor:topGuide.bottomAnchor
+                                           constant:kLayoutGuideVerticalMargin],
+
+      // Position the stack view's bottom guide at some margin from the
+      // container bottom.
       [bottomGuide.topAnchor
           constraintEqualToAnchor:bottomToolbarMarginGuide.bottomAnchor
                          constant:kLayoutGuideVerticalMargin],
       [_containerView.bottomAnchor
           constraintEqualToAnchor:bottomGuide.bottomAnchor],
 
-      // Position the stack view between the two toolbar margin guides.
-      [topToolbarMarginGuide.bottomAnchor
-          constraintEqualToAnchor:_stackView.topAnchor],
+      // Position the stack view above the bottom toolbar margin guide.
       [bottomToolbarMarginGuide.topAnchor
           constraintEqualToAnchor:_stackView.bottomAnchor],
 
@@ -245,7 +254,6 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
 
       // Activate the height constraints.
       _bottomToolbarMarginHeight,
-      _topToolbarMarginHeight,
 
       // Set a minimum top margin and make the bottom guide twice as tall as the
       // top guide.
@@ -327,21 +335,22 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
   _visibleDataLabel.textColor = bodyTextColor;
 }
 
+#pragma mark - URLDropDelegate
+
+- (BOOL)canHandleURLDropInView:(UIView*)view {
+  return YES;
+}
+
+- (void)view:(UIView*)view didDropURL:(const GURL&)URL atPoint:(CGPoint)point {
+  _URLLoader->Load(UrlLoadParams::InCurrentTab(URL));
+}
+
 #pragma mark - Private
 
 // Updates the height of the margins for the top and bottom toolbars.
 - (void)updateToolbarMargins {
-  if (IsRegularXRegularSizeClass(self)) {
-    _topToolbarMarginHeight.constant = 0;
-  } else {
-    CGFloat topInset = self.safeAreaInsets.top;
-    _topToolbarMarginHeight.constant =
-        topInset + ToolbarExpandedHeight(
-                       self.traitCollection.preferredContentSizeCategory);
-  }
-
   if (IsSplitToolbarMode(self)) {
-    _bottomToolbarMarginHeight.constant = kAdaptiveToolbarHeight;
+    _bottomToolbarMarginHeight.constant = kSecondaryToolbarHeight;
   } else {
     _bottomToolbarMarginHeight.constant = 0;
   }
@@ -349,15 +358,15 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
 
 // Triggers a navigation to the help page.
 - (void)learnMoreButtonPressed {
-  _urlLoadingService->Load(UrlLoadParams::InCurrentTab(
+  _URLLoader->Load(UrlLoadParams::InCurrentTab(
       GetUrlWithLang(GURL(kLearnMoreIncognitoUrl))));
 }
 
 // Adds views containing the text of the incognito page to |_stackView|.
 - (void)addTextSections {
-  UIColor* titleTextColor = [UIColor whiteColor];
+  UIColor* titleTextColor = [UIColor colorNamed:kTextPrimaryColor];
   UIColor* bodyTextColor = BodyTextColor();
-  UIColor* linkTextColor = UIColorFromRGB(kLinkColor);
+  UIColor* linkTextColor = [UIColor colorNamed:kBlueColor];
 
   // Title.
   UILabel* titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
@@ -375,10 +384,12 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
   subtitleLabel.font = BodyFont();
   subtitleLabel.textColor = bodyTextColor;
   subtitleLabel.numberOfLines = 0;
-  subtitleLabel.text = l10n_util::GetNSString(IDS_NEW_TAB_OTR_SUBTITLE);
+  subtitleLabel.text =
+      l10n_util::GetNSString(IDS_NEW_TAB_OTR_SUBTITLE_WITH_READING_LIST);
   subtitleLabel.adjustsFontForContentSizeCategory = YES;
 
   UIButton* learnMoreButton = [UIButton buttonWithType:UIButtonTypeCustom];
+  learnMoreButton.accessibilityTraits = UIAccessibilityTraitLink;
   [learnMoreButton
       setTitle:l10n_util::GetNSString(IDS_NEW_TAB_OTR_LEARN_MORE_LINK)
       forState:UIControlStateNormal];
@@ -388,6 +399,10 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
   [learnMoreButton addTarget:self
                       action:@selector(learnMoreButtonPressed)
             forControlEvents:UIControlEventTouchUpInside];
+  if (@available(iOS 13.4, *)) {
+      // TODO(crbug.com/1075616): Style as a link rather than a button.
+      learnMoreButton.pointerInteractionEnabled = YES;
+  }
 
   UIStackView* subtitleStackView = [[UIStackView alloc]
       initWithArrangedSubviews:@[ subtitleLabel, learnMoreButton ]];

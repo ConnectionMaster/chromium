@@ -9,7 +9,7 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
-#include "jni/IntentHelper_jni.h"
+#include "chrome/android/chrome_jni_headers/IntentHelper_jni.h"
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF16ToJavaString;
@@ -18,11 +18,11 @@ using base::android::ScopedJavaLocalRef;
 namespace chrome {
 namespace android {
 
-void SendEmail(const base::string16& d_email,
-               const base::string16& d_subject,
-               const base::string16& d_body,
-               const base::string16& d_chooser_title,
-               const base::string16& d_file_to_attach) {
+void SendEmail(const std::u16string& d_email,
+               const std::u16string& d_subject,
+               const std::u16string& d_body,
+               const std::u16string& d_chooser_title,
+               const std::u16string& d_file_to_attach) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jstring> j_email = ConvertUTF16ToJavaString(env, d_email);
   ScopedJavaLocalRef<jstring> j_subject =
@@ -34,11 +34,6 @@ void SendEmail(const base::string16& d_email,
       ConvertUTF16ToJavaString(env, d_file_to_attach);
   Java_IntentHelper_sendEmail(env, j_email, j_subject, j_body, j_chooser_title,
                               j_file_to_attach);
-}
-
-void OpenDateAndTimeSettings() {
-  JNIEnv* env = AttachCurrentThread();
-  Java_IntentHelper_openDateAndTimeSettings(env);
 }
 
 }  // namespace android

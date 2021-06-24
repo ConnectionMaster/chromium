@@ -7,11 +7,11 @@
 #include <string>
 
 #include "base/feature_list.h"
-#include "components/feature_engagement/internal/configuration.h"
 #include "components/feature_engagement/internal/event_model.h"
 #include "components/feature_engagement/internal/never_availability_model.h"
 #include "components/feature_engagement/internal/noop_display_lock_controller.h"
 #include "components/feature_engagement/internal/proto/feature_event.pb.h"
+#include "components/feature_engagement/public/configuration.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace feature_engagement {
@@ -28,13 +28,19 @@ class NeverTestEventModel : public EventModel {
  public:
   NeverTestEventModel() = default;
 
-  void Initialize(const OnModelInitializationFinished& callback,
+  void Initialize(OnModelInitializationFinished callback,
                   uint32_t current_day) override {}
 
   bool IsReady() const override { return true; }
 
   const Event* GetEvent(const std::string& event_name) const override {
     return nullptr;
+  }
+
+  uint32_t GetEventCount(const std::string& event_name,
+                         uint32_t current_day,
+                         uint32_t window_size) const override {
+    return 0;
   }
 
   void IncrementEvent(const std::string& event_name, uint32_t day) override {}

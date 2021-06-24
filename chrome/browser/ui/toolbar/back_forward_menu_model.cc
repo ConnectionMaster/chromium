@@ -7,11 +7,11 @@
 #include <stddef.h>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
+#include "base/callback_helpers.h"
+#include "base/containers/contains.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/numerics/ranges.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "components/favicon_base/favicon_types.h"
 #include "components/grit/components_scaled_resources.h"
@@ -31,6 +32,7 @@
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "ui/base/accelerators/menu_label_accelerator_util.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/models/image_model.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/gfx/text_elider.h"
@@ -48,7 +50,7 @@ BackForwardMenuModel::BackForwardMenuModel(Browser* browser,
                                            ModelType model_type)
     : browser_(browser), model_type_(model_type) {}
 
-BackForwardMenuModel::~BackForwardMenuModel() {}
+BackForwardMenuModel::~BackForwardMenuModel() = default;
 
 bool BackForwardMenuModel::HasIcons() const {
   return true;
@@ -67,6 +69,11 @@ int BackForwardMenuModel::GetItemCount() const {
 
   if (chapter_stops)
     items += chapter_stops + 1;  // Chapter stops also need a separator.
+
+  // If the current mode is incognito, "Show Full History" should not be
+  // visible.
+  if (!ShouldShowFullHistoryBeVisible())
+    return items;
 
   // If the menu is not empty, add two positions in the end
   // for a separator and a "Show Full History" item.
@@ -87,23 +94,22 @@ int BackForwardMenuModel::GetCommandIdAt(int index) const {
   return index;
 }
 
-base::string16 BackForwardMenuModel::GetLabelAt(int index) const {
+std::u16string BackForwardMenuModel::GetLabelAt(int index) const {
   // Return label "Show Full History" for the last item of the menu.
-  if (index == GetItemCount() - 1)
+  if (ShouldShowFullHistoryBeVisible() && index == GetItemCount() - 1)
     return l10n_util::GetStringUTF16(IDS_HISTORY_SHOWFULLHISTORY_LINK);
 
   // Return an empty string for a separator.
   if (IsSeparator(index))
-    return base::string16();
+    return std::u16string();
 
   // Return the entry title, escaping any '&' characters and eliding it if it's
   // super long.
   NavigationEntry* entry = GetNavigationEntry(index);
-  base::string16 menu_text(entry->GetTitleForDisplay());
+  std::u16string menu_text(entry->GetTitleForDisplay());
   menu_text = ui::EscapeMenuLabelAmpersands(menu_text);
-  menu_text =
-      gfx::ElideText(menu_text, gfx::FontList(), kMaxBackForwardMenuWidth,
-                     gfx::ELIDE_TAIL, gfx::Typesetter::NATIVE);
+  menu_text = gfx::ElideText(menu_text, gfx::FontList(),
+                             kMaxBackForwardMenuWidth, gfx::ELIDE_TAIL);
 
   return menu_text;
 }
@@ -127,22 +133,29 @@ int BackForwardMenuModel::GetGroupIdAt(int index) const {
   return false;
 }
 
-bool BackForwardMenuModel::GetIconAt(int index, gfx::Image* icon) {
+ui::ImageModel BackForwardMenuModel::GetIconAt(int index) const {
   if (!ItemHasIcon(index))
-    return false;
+    return ui::ImageModel();
 
-  if (index == GetItemCount() - 1) {
-    *icon = ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(
-        IDR_HISTORY_FAVICON);
+  // Return icon of "Show Full History" for the last item of the menu.
+  if (ShouldShowFullHistoryBeVisible() && index == GetItemCount() - 1) {
+    return ui::ImageModel::FromImage(
+        ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(
+            IDR_HISTORY_FAVICON));
   } else {
     NavigationEntry* entry = GetNavigationEntry(index);
-    *icon = entry->GetFavicon().image;
-    if (!entry->GetFavicon().valid && menu_model_delegate()) {
-      FetchFavicon(entry);
+    content::FaviconStatus fav_icon = entry->GetFavicon();
+    if (!fav_icon.valid && menu_model_delegate()) {
+      // FetchFavicon is not const because it caches the result, but GetIconAt
+      // is const because it is not be apparent to outside observers that an
+      // internal change is taking place. Compared to spreading const in
+      // unintuitive places (e.g. making menu_model_delegate() const but
+      // returning a non-const while sprinkling virtual on member variables),
+      // this const_cast is the lesser evil.
+      const_cast<BackForwardMenuModel*>(this)->FetchFavicon(entry);
     }
+    return ui::ImageModel::FromImage(fav_icon.image);
   }
-
-  return true;
 }
 
 ui::ButtonMenuItemModel* BackForwardMenuModel::GetButtonMenuItemAt(
@@ -166,11 +179,11 @@ void BackForwardMenuModel::ActivatedAt(int index, int event_flags) {
   DCHECK(!IsSeparator(index));
 
   // Execute the command for the last item: "Show Full History".
-  if (index == GetItemCount() - 1) {
+  if (ShouldShowFullHistoryBeVisible() && index == GetItemCount() - 1) {
     base::RecordComputedAction(BuildActionName("ShowFullHistory", -1));
-    ShowSingletonTabOverwritingNTP(
-        browser_, GetSingletonTabNavigateParams(
-                      browser_, GURL(chrome::kChromeUIHistoryURL)));
+    NavigateParams params(GetSingletonTabNavigateParams(
+        browser_, GURL(chrome::kChromeUIHistoryURL)));
+    ShowSingletonTabOverwritingNTP(browser_, &params);
     return;
   }
 
@@ -192,11 +205,8 @@ void BackForwardMenuModel::ActivatedAt(int index, int event_flags) {
 
   WindowOpenDisposition disposition =
       ui::DispositionFromEventFlags(event_flags);
-  if (!chrome::NavigateToIndexWithDisposition(browser_,
-                                              controller_index,
-                                              disposition)) {
-    NOTREACHED();
-  }
+  chrome::NavigateToIndexWithDisposition(browser_, controller_index,
+                                         disposition);
 }
 
 void BackForwardMenuModel::MenuWillShow() {
@@ -227,7 +237,7 @@ bool BackForwardMenuModel::IsSeparator(int index) const {
 void BackForwardMenuModel::FetchFavicon(NavigationEntry* entry) {
   // If the favicon has already been requested for this menu, don't do
   // anything.
-  if (base::ContainsKey(requested_favicons_, entry->GetUniqueID()))
+  if (base::Contains(requested_favicons_, entry->GetUniqueID()))
     return;
 
   requested_favicons_.insert(entry->GetUniqueID());
@@ -239,9 +249,8 @@ void BackForwardMenuModel::FetchFavicon(NavigationEntry* entry) {
 
   favicon_service->GetFaviconImageForPageURL(
       entry->GetURL(),
-      base::Bind(&BackForwardMenuModel::OnFavIconDataAvailable,
-                 base::Unretained(this),
-                 entry->GetUniqueID()),
+      base::BindOnce(&BackForwardMenuModel::OnFavIconDataAvailable,
+                     base::Unretained(this), entry->GetUniqueID()),
       &cancelable_task_tracker_);
 }
 
@@ -277,7 +286,7 @@ void BackForwardMenuModel::OnFavIconDataAvailable(
   entry->GetFavicon().url = image_result.icon_url;
   entry->GetFavicon().image = image_result.image;
   if (menu_model_delegate()) {
-    menu_model_delegate()->OnIconChanged(model_index);
+    menu_model_delegate()->OnIconChanged(GetCommandIdAt(model_index));
   }
 }
 
@@ -388,7 +397,7 @@ bool BackForwardMenuModel::ItemHasIcon(int index) const {
   return index < GetItemCount() && !IsSeparator(index);
 }
 
-base::string16 BackForwardMenuModel::GetShowFullHistoryLabel() const {
+std::u16string BackForwardMenuModel::GetShowFullHistoryLabel() const {
   return l10n_util::GetStringUTF16(IDS_HISTORY_SHOWFULLHISTORY_LINK);
 }
 
@@ -429,11 +438,11 @@ int BackForwardMenuModel::MenuIndexToNavEntryIndex(int index) const {
 NavigationEntry* BackForwardMenuModel::GetNavigationEntry(int index) const {
   int controller_index = MenuIndexToNavEntryIndex(index);
   NavigationController& controller = GetWebContents()->GetController();
-  if (controller_index >= 0 && controller_index < controller.GetEntryCount())
-    return controller.GetEntryAtIndex(controller_index);
 
-  NOTREACHED();
-  return nullptr;
+  DCHECK_GE(controller_index, 0);
+  DCHECK_LT(controller_index, controller.GetEntryCount());
+
+  return controller.GetEntryAtIndex(controller_index);
 }
 
 std::string BackForwardMenuModel::BuildActionName(
@@ -451,4 +460,10 @@ std::string BackForwardMenuModel::BuildActionName(
     metric_string += base::NumberToString(index + 1);
   }
   return metric_string;
+}
+
+bool BackForwardMenuModel::ShouldShowFullHistoryBeVisible() const {
+  return !browser_->profile()->IsOffTheRecord() ||
+         !base::FeatureList::IsEnabled(
+             features::kUpdateHistoryEntryPointsInIncognito);
 }

@@ -10,7 +10,6 @@
 
 #include "base/bind.h"
 #include "base/callback.h"
-#include "base/logging.h"
 #include "components/offline_pages/core/prefetch/prefetch_network_request_factory.h"
 #include "components/offline_pages/core/prefetch/prefetch_types.h"
 #include "components/offline_pages/core/prefetch/store/prefetch_store.h"
@@ -104,9 +103,7 @@ const int SentGetOperationCleanupTask::kMaxGetOperationAttempts = 3;
 SentGetOperationCleanupTask::SentGetOperationCleanupTask(
     PrefetchStore* prefetch_store,
     PrefetchNetworkRequestFactory* request_factory)
-    : prefetch_store_(prefetch_store),
-      request_factory_(request_factory),
-      weak_ptr_factory_(this) {}
+    : prefetch_store_(prefetch_store), request_factory_(request_factory) {}
 
 SentGetOperationCleanupTask::~SentGetOperationCleanupTask() {}
 

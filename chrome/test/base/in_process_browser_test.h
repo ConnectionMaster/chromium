@@ -6,34 +6,37 @@
 #define CHROME_TEST_BASE_IN_PROCESS_BROWSER_TEST_H_
 
 #include <memory>
+#include <string>
 
-#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_base.h"
-#include "storage/browser/quota/quota_settings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/page_transition_types.h"
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "ui/base/test/scoped_fake_full_keyboard_access.h"
 #endif
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "chrome/browser/chromeos/full_restore/app_launch_handler.h"
+#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
 namespace base {
 
 class CommandLine;
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 namespace mac {
 class ScopedNSAutoreleasePool;
 }  // namespace mac
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
 #if defined(OS_WIN)
 namespace win {
@@ -49,10 +52,11 @@ class ViewsDelegate;
 #endif  // defined(TOOLKIT_VIEWS)
 
 class Browser;
+class MainThreadStackSamplingProfiler;
 class Profile;
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 class ScopedBundleSwizzlerMac;
-#endif  // defined(OS_MACOSX)
+#endif  // defined(OS_MAC)
 
 // Base class for tests that bring up Browser instances.
 // Writing tests with InProcessBrowserTest is slightly different than that of
@@ -70,6 +74,10 @@ class ScopedBundleSwizzlerMac;
 //   SetUpOnMainThread(), SetUpInProcessBrowserTestFixture(), and other related
 //   methods for a cleaner alternative).
 //
+// To include the default implementation of RunTestOnMainThread() and TestBody()
+// for Gtests, it's also necessary to include the file
+// "content/public/test/browser_test.h"
+//
 // The following hook methods are called in sequence before BrowserMain(), so
 // no browser has been created yet. They are mainly for setting up the
 // environment for running the browser.
@@ -78,7 +86,7 @@ class ScopedBundleSwizzlerMac;
 // . SetUpUserDataDirectory()
 //
 // Default command line switches are added in the default implementation of
-// SetUpDefaultCommandLine(). Addtional command line switches can be simply
+// SetUpDefaultCommandLine(). Additional command line switches can be simply
 // appended in SetUpCommandLine() without the need to invoke
 // InProcessBrowserTest::SetUpCommandLine(). If a test needs to change the
 // default command line, it can override SetUpDefaultCommandLine(), where it
@@ -116,14 +124,16 @@ class ScopedBundleSwizzlerMac;
 class InProcessBrowserTest : public content::BrowserTestBase {
  public:
   InProcessBrowserTest();
+
 #if defined(TOOLKIT_VIEWS)
-  using DelegateCallback =
-      base::OnceCallback<std::unique_ptr<views::ViewsDelegate>()>;
-  // |viewsDelegateCallback| is used for tests that want to use a derived class
-  // of ViewsDelegate to observe or modify things like window placement and
-  // Widget params.
-  explicit InProcessBrowserTest(DelegateCallback viewsDelegateCallback);
-#endif  // defined(TOOLKIT_VIEWS)
+  // |views_delegate| is used for tests that want to use a derived class of
+  // ViewsDelegate to observe or modify things like window placement and Widget
+  // params.
+  explicit InProcessBrowserTest(
+      std::unique_ptr<views::ViewsDelegate> views_delegate);
+#endif
+  InProcessBrowserTest(const InProcessBrowserTest&) = delete;
+  InProcessBrowserTest& operator=(const InProcessBrowserTest&) = delete;
   ~InProcessBrowserTest() override;
 
   // Configures everything for an in process browser test, then invokes
@@ -144,10 +154,24 @@ class InProcessBrowserTest : public content::BrowserTestBase {
     global_browser_set_up_function_ = set_up_function;
   }
 
- protected:
+  // Counts the number of "PRE_" prefixes in the test name. This is used to
+  // differentiate between different PRE tests in browser test constructors
+  // and setup functions.
+  static size_t GetTestPreCount();
+
   // Returns the browser created by BrowserMain().
+  // If no browser is created in BrowserMain(), this will return nullptr unless
+  // another browser instance is created at a later time and
+  // SelectFirstBrowser() is called.
   Browser* browser() const { return browser_; }
 
+  // Set |browser_| to the first browser on the browser list.
+  // Call this when your test subclass wants to access a non-null browser
+  // instance through browser() but browser creation is delayed until after
+  // PreRunTestOnMainThread().
+  void SelectFirstBrowser();
+
+ protected:
   // Closes the given browser and waits for it to release all its resources.
   void CloseBrowserSynchronously(Browser* browser);
 
@@ -195,6 +219,9 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // BrowserTestBase:
   void PreRunTestOnMainThread() override;
   void PostRunTestOnMainThread() override;
+#if defined(OS_MAC)
+  void CreatedBrowserMainParts(content::BrowserMainParts* parts) override;
+#endif
 
   // Ensures that no devtools are open, and then opens the devtools.
   void OpenDevToolsWindow(content::WebContents* web_contents);
@@ -213,6 +240,14 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // is omitted, the currently active profile will be used.
   Browser* CreateIncognitoBrowser(Profile* profile = nullptr);
 
+#if !defined(OS_ANDROID) && !BUILDFLAG(IS_CHROMEOS_ASH)
+  // Similar to |CreateBrowser|, but creates a Guest browser.
+  // To create a ChromeOS Guest user session, you need to add proper switches to
+  // commandline while setting up the test. For an example see
+  // AppListClientGuestModeBrowserTest::SetUpCommandLine.
+  Browser* CreateGuestBrowser();
+#endif
+
   // Creates a browser for a popup window with a single tab (about:blank), waits
   // for the tab to finish loading, and shows the browser.
   Browser* CreateBrowserForPopup(Profile* profile);
@@ -225,22 +260,23 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // the navigation to complete, and show the browser's window.
   void AddBlankTabAndShow(Browser* browser);
 
-#if !defined OS_MACOSX
+#if !defined OS_MAC && !BUILDFLAG(IS_CHROMEOS_LACROS)
   // Return a CommandLine object that is used to relaunch the browser_test
   // binary as a browser process. This function is deliberately not defined on
   // the Mac because re-using an existing browser process when launching from
   // the command line isn't a concept that we support on the Mac; AppleEvents
   // are the Mac solution for the same need. Any test based on these functions
-  // doesn't apply to the Mac.
+  // doesn't apply to the Mac. Likewise, Lacros is always launched by ash, and
+  // not by the the process restarting itself.
   base::CommandLine GetCommandLineForRelaunch();
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
   // Returns the autorelease pool in use inside RunTestOnMainThreadLoop().
   base::mac::ScopedNSAutoreleasePool* AutoreleasePool() const {
     return autorelease_pool_;
   }
-#endif  // OS_MACOSX
+#endif  // OS_MAC
 
   // Returns the test data path used by the embedded test server.
   base::FilePath GetChromeTestDataDir() const;
@@ -253,18 +289,31 @@ class InProcessBrowserTest : public content::BrowserTestBase {
     open_about_blank_on_browser_launch_ = value;
   }
 
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  void set_launch_browser_for_testing(
+      std::unique_ptr<chromeos::full_restore::ScopedLaunchBrowserForTesting>
+          launch_browser_for_testing) {
+    launch_browser_for_testing_ = std::move(launch_browser_for_testing);
+  }
+#endif
+
+  // Runs scheduled layouts on all Widgets using
+  // Widget::LayoutRootViewIfNecessary(). No-op outside of Views.
+  void RunScheduledLayouts();
+
  private:
-  // Creates a user data directory for the test if one is needed. Returns true
-  // if successful.
-  virtual bool CreateUserDataDirectory() WARN_UNUSED_RESULT;
+  void Initialize();
 
   // Quits all open browsers and waits until there are no more browsers.
   void QuitBrowsers();
 
   static SetUpBrowserFunction* global_browser_set_up_function_;
 
-  // Browser created in BrowserMain().
-  Browser* browser_;
+  // Usually references the browser created in BrowserMain().
+  // If no browser is created in BrowserMain(), then |browser_| will remain
+  // nullptr unless SelectFirstBrowser() is called after the creation of the
+  // first browser instance at a later time.
+  Browser* browser_ = nullptr;
 
   // Used to run the process until the BrowserProcess signals the test to quit.
   std::unique_ptr<base::RunLoop> run_loop_;
@@ -274,13 +323,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   base::ScopedTempDir temp_user_data_dir_;
 
   // True if we should exit the tests after the last browser instance closes.
-  bool exit_when_last_browser_closes_;
+  bool exit_when_last_browser_closes_ = true;
 
   // True if the about:blank tab should be opened when the browser is launched.
-  bool open_about_blank_on_browser_launch_;
-
-  // We use hardcoded quota settings to have a consistent testing environment.
-  storage::QuotaSettings quota_settings_;
+  bool open_about_blank_on_browser_launch_ = true;
 
   // Use a default download directory to make sure downloads don't end up in the
   // system default location.
@@ -288,8 +334,8 @@ class InProcessBrowserTest : public content::BrowserTestBase {
 
   base::test::ScopedFeatureList scoped_feature_list_;
 
-#if defined(OS_MACOSX)
-  base::mac::ScopedNSAutoreleasePool* autorelease_pool_;
+#if defined(OS_MAC)
+  base::mac::ScopedNSAutoreleasePool* autorelease_pool_ = nullptr;
   std::unique_ptr<ScopedBundleSwizzlerMac> bundle_swizzler_;
 
   // Enable fake full keyboard access by default, so that tests don't depend on
@@ -297,7 +343,7 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // more consistent with other platforms, where most views are focusable by
   // default.
   ui::test::ScopedFakeFullKeyboardAccess faked_full_keyboard_access_;
-#endif  // OS_MACOSX
+#endif  // OS_MAC
 
 #if defined(OS_WIN)
   std::unique_ptr<base::win::ScopedCOMInitializer> com_initializer_;
@@ -306,6 +352,21 @@ class InProcessBrowserTest : public content::BrowserTestBase {
 #if defined(TOOLKIT_VIEWS)
   std::unique_ptr<views::ViewsDelegate> views_delegate_;
 #endif
+
+  std::unique_ptr<MainThreadStackSamplingProfiler> sampling_profiler_;
+
+#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // ChromeOS does not create a browser by default when the full restore feature
+  // is enabled. However almost all existing browser tests assume a browser is
+  // created. Add ScopedLaunchBrowserForTesting to force creating a browser for
+  // testing, when the full restore feature is enabled.
+  std::unique_ptr<chromeos::full_restore::ScopedLaunchBrowserForTesting>
+      launch_browser_for_testing_;
+#endif
 };
+
+// When including either in_process_browser_test.h or android_browser_test.h
+// depending on the platform, use this type alias as the test base class.
+using PlatformBrowserTest = InProcessBrowserTest;
 
 #endif  // CHROME_TEST_BASE_IN_PROCESS_BROWSER_TEST_H_

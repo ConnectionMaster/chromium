@@ -7,17 +7,20 @@
 
 #include "base/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/weak_ptr.h"
-#include "base/optional.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "chromeos/dbus/kerberos/fake_kerberos_client.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
 #include "dbus/object_proxy.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/cros_system_api/dbus/kerberos/dbus-constants.h"
 
 namespace chromeos {
 namespace {
+
+KerberosClient* g_instance = nullptr;
 
 // Tries to parse a proto message from |response| into |proto|.
 // Returns false if |response| is nullptr or the message cannot be parsed.
@@ -37,10 +40,15 @@ bool ParseProto(dbus::Response* response,
   return true;
 }
 
-KerberosClient* g_instance = nullptr;
+void OnSignalConnected(const std::string& interface_name,
+                       const std::string& signal_name,
+                       bool success) {
+  DCHECK_EQ(interface_name, kerberos::kKerberosInterface);
+  DCHECK(success);
+}
 
-// "Real" implementation of KerberosClient taking to the Kerberos daemon on the
-// Chrome OS side.
+// "Real" implementation of KerberosClient talking to the Kerberos daemon on
+// the Chrome OS side.
 class KerberosClientImpl : public KerberosClient {
  public:
   KerberosClientImpl() = default;
@@ -58,9 +66,27 @@ class KerberosClientImpl : public KerberosClient {
                     std::move(callback));
   }
 
+  void ClearAccounts(const kerberos::ClearAccountsRequest& request,
+                     ClearAccountsCallback callback) override {
+    CallProtoMethod(kerberos::kClearAccountsMethod, request,
+                    std::move(callback));
+  }
+
+  void ListAccounts(const kerberos::ListAccountsRequest& request,
+                    ListAccountsCallback callback) override {
+    CallProtoMethod(kerberos::kListAccountsMethod, request,
+                    std::move(callback));
+  }
+
   void SetConfig(const kerberos::SetConfigRequest& request,
                  SetConfigCallback callback) override {
     CallProtoMethod(kerberos::kSetConfigMethod, request, std::move(callback));
+  }
+
+  void ValidateConfig(const kerberos::ValidateConfigRequest& request,
+                      ValidateConfigCallback callback) override {
+    CallProtoMethod(kerberos::kValidateConfigMethod, request,
+                    std::move(callback));
   }
 
   void AcquireKerberosTgt(const kerberos::AcquireKerberosTgtRequest& request,
@@ -91,8 +117,19 @@ class KerberosClientImpl : public KerberosClient {
         kerberos::kKerberosInterface, kerberos::kKerberosFilesChangedSignal,
         base::BindRepeating(&KerberosClientImpl::OnKerberosFilesChanged,
                             weak_factory_.GetWeakPtr()),
-        base::BindOnce(&KerberosClientImpl::OnKerberosFilesChangedConnected,
-                       weak_factory_.GetWeakPtr()));
+        base::BindOnce(&OnSignalConnected));
+  }
+
+  void ConnectToKerberosTicketExpiringSignal(
+      KerberosTicketExpiringCallback callback) override {
+    DCHECK(callback);
+    kerberos_ticket_expiring_callback_ = callback;
+
+    proxy_->ConnectToSignal(
+        kerberos::kKerberosInterface, kerberos::kKerberosTicketExpiringSignal,
+        base::BindRepeating(&KerberosClientImpl::OnKerberosTicketExpiring,
+                            weak_factory_.GetWeakPtr()),
+        base::BindOnce(&OnSignalConnected));
   }
 
   void OnKerberosFilesChanged(dbus::Signal* signal) {
@@ -111,15 +148,21 @@ class KerberosClientImpl : public KerberosClient {
     kerberos_files_changed_callback_.Run(principal_name);
   }
 
-  void OnKerberosFilesChangedConnected(const std::string& interface_name,
-                                       const std::string& signal_name,
-                                       bool success) {
-    DCHECK_EQ(interface_name, kerberos::kKerberosInterface);
-    DCHECK_EQ(signal_name, kerberos::kKerberosFilesChangedSignal);
-    DCHECK(success);
-  }
+  void OnKerberosTicketExpiring(dbus::Signal* signal) {
+    DCHECK_EQ(signal->GetInterface(), kerberos::kKerberosInterface);
+    DCHECK_EQ(signal->GetMember(), kerberos::kKerberosTicketExpiringSignal);
 
-  TestInterface* GetTestInterface() override { return nullptr; }
+    dbus::MessageReader signal_reader(signal);
+    std::string principal_name;
+    if (!signal_reader.PopString(&principal_name)) {
+      LOG(ERROR)
+          << "Failed to read principal name for KerberosTicketExpiring signal";
+      return;
+    }
+
+    DCHECK(kerberos_ticket_expiring_callback_);
+    kerberos_ticket_expiring_callback_.Run(principal_name);
+  }
 
   void Init(dbus::Bus* bus) {
     proxy_ =
@@ -128,6 +171,8 @@ class KerberosClientImpl : public KerberosClient {
   }
 
  private:
+  TestInterface* GetTestInterface() override { return nullptr; }
+
   // Calls kerberosd's |method_name| method, passing in |request| as input. Once
   // the (asynchronous) call finishes, |callback| is called with the response
   // proto (on the same thread as this call).
@@ -178,8 +223,9 @@ class KerberosClientImpl : public KerberosClient {
   // D-Bus proxy for the Kerberos daemon, not owned.
   dbus::ObjectProxy* proxy_ = nullptr;
 
-  // Callback for the KerberosFilesChanged signal.
+  // Signal callbacks.
   KerberosFilesChangedCallback kerberos_files_changed_callback_;
+  KerberosTicketExpiringCallback kerberos_ticket_expiring_callback_;
 
   base::WeakPtrFactory<KerberosClientImpl> weak_factory_{this};
   DISALLOW_COPY_AND_ASSIGN(KerberosClientImpl);

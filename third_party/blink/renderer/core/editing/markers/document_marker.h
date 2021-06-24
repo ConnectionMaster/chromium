@@ -23,11 +23,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_MARKERS_DOCUMENT_MARKER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_MARKERS_DOCUMENT_MARKER_H_
 
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/heap/handle.h"
-#include "third_party/blink/renderer/platform/wtf/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector_traits.h"
 
@@ -36,8 +35,7 @@ namespace blink {
 // A range of a node within a document that is "marked", such as the range of a
 // misspelled word. It optionally includes a description that could be displayed
 // in the user interface.
-class CORE_EXPORT DocumentMarker
-    : public GarbageCollectedFinalized<DocumentMarker> {
+class CORE_EXPORT DocumentMarker : public GarbageCollected<DocumentMarker> {
  public:
   enum MarkerTypeIndex {
     kSpellingMarkerIndex = 0,
@@ -46,6 +44,8 @@ class CORE_EXPORT DocumentMarker
     kCompositionMarkerIndex,
     kActiveSuggestionMarkerIndex,
     kSuggestionMarkerIndex,
+    kTextFragmentMarkerIndex,
+    kHighlightMarkerIndex,
     kMarkerTypeIndexesCount
   };
 
@@ -56,6 +56,8 @@ class CORE_EXPORT DocumentMarker
     kComposition = 1 << kCompositionMarkerIndex,
     kActiveSuggestion = 1 << kActiveSuggestionMarkerIndex,
     kSuggestion = 1 << kSuggestionMarkerIndex,
+    kTextFragment = 1 << kTextFragmentMarkerIndex,
+    kHighlight = 1 << kHighlightMarkerIndex
   };
 
   class MarkerTypesIterator
@@ -123,6 +125,8 @@ class CORE_EXPORT DocumentMarker
     static MarkerTypes Spelling() { return MarkerTypes(kSpelling); }
     static MarkerTypes TextMatch() { return MarkerTypes(kTextMatch); }
     static MarkerTypes Suggestion() { return MarkerTypes(kSuggestion); }
+    static MarkerTypes TextFragment() { return MarkerTypes(kTextFragment); }
+    static MarkerTypes Highlight() { return MarkerTypes(kHighlight); }
 
     bool Contains(MarkerType type) const { return mask_ & type; }
     bool Intersects(const MarkerTypes& types) const {
@@ -143,6 +147,8 @@ class CORE_EXPORT DocumentMarker
     unsigned mask_;
   };
 
+  DocumentMarker(const DocumentMarker&) = delete;
+  DocumentMarker& operator=(const DocumentMarker&) = delete;
   virtual ~DocumentMarker();
 
   virtual MarkerType GetType() const = 0;
@@ -154,7 +160,7 @@ class CORE_EXPORT DocumentMarker
     unsigned end_offset;
   };
 
-  base::Optional<MarkerOffsets> ComputeOffsetsAfterShift(
+  absl::optional<MarkerOffsets> ComputeOffsetsAfterShift(
       unsigned offset,
       unsigned old_length,
       unsigned new_length) const;
@@ -165,7 +171,7 @@ class CORE_EXPORT DocumentMarker
   void SetEndOffset(unsigned offset) { end_offset_ = offset; }
   void ShiftOffsets(int delta);
 
-  virtual void Trace(Visitor* visitor) {}
+  virtual void Trace(Visitor* visitor) const {}
 
  protected:
   DocumentMarker(unsigned start_offset, unsigned end_offset);
@@ -173,8 +179,6 @@ class CORE_EXPORT DocumentMarker
  private:
   unsigned start_offset_;
   unsigned end_offset_;
-
-  DISALLOW_COPY_AND_ASSIGN(DocumentMarker);
 };
 
 using DocumentMarkerVector = HeapVector<Member<DocumentMarker>>;

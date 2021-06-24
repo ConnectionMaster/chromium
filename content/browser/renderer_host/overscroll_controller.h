@@ -7,12 +7,12 @@
 
 #include "base/compiler_specific.h"
 #include "base/macros.h"
-#include "base/optional.h"
 #include "base/time/time.h"
 #include "cc/input/overscroll_behavior.h"
 #include "content/common/content_export.h"
-#include "third_party/blink/public/platform/web_gesture_event.h"
-#include "third_party/blink/public/platform/web_input_event.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/blink/public/common/input/web_gesture_event.h"
+#include "third_party/blink/public/common/input/web_input_event.h"
 #include "ui/events/blink/did_overscroll_params.h"
 
 namespace content {
@@ -61,13 +61,11 @@ class CONTENT_EXPORT OverscrollController {
 
   // This must be called when the ACK for any event comes in. This updates the
   // overscroll gesture status as appropriate.
-  // Virtual for testing.
-  virtual void ReceivedEventACK(const blink::WebInputEvent& event,
-                                bool processed);
+  void ReceivedEventACK(const blink::WebInputEvent& event, bool processed);
 
   OverscrollMode overscroll_mode() const { return overscroll_mode_; }
 
-  void set_delegate(OverscrollControllerDelegate* delegate) {
+  void set_delegate(base::WeakPtr<OverscrollControllerDelegate> delegate) {
     delegate_ = delegate;
   }
 
@@ -161,7 +159,7 @@ class CONTENT_EXPORT OverscrollController {
 
   // The delegate that receives the overscroll updates. The delegate is not
   // owned by this controller.
-  OverscrollControllerDelegate* delegate_ = nullptr;
+  base::WeakPtr<OverscrollControllerDelegate> delegate_;
 
   // A inertial scroll (fling) event may complete an overscroll gesture and
   // navigate to a new page or cancel the overscroll animation. In both cases
@@ -186,7 +184,7 @@ class CONTENT_EXPORT OverscrollController {
   // cases. So we only process 0.3 second inertial events then cancel the
   // overscroll if it is not completed yet.
   // Timestamp for the first inertial event (fling) in current stream.
-  base::Optional<base::TimeTicks> first_inertial_event_time_;
+  absl::optional<base::TimeTicks> first_inertial_event_time_;
 
   DISALLOW_COPY_AND_ASSIGN(OverscrollController);
 };

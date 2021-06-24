@@ -29,15 +29,14 @@ namespace {
 // Retrieves the file system path of the profile name.
 base::FilePath GetProfilePath(const base::DictionaryValue& root,
                               const std::string& profile_name) {
-  base::string16 path16;
+  std::u16string path16;
   std::string is_relative;
   if (!root.GetStringASCII(profile_name + ".IsRelative", &is_relative) ||
       !root.GetString(profile_name + ".Path", &path16))
     return base::FilePath();
 
 #if defined(OS_WIN)
-  base::ReplaceSubstringsAfterOffset(
-      &path16, 0, base::ASCIIToUTF16("/"), base::ASCIIToUTF16("\\"));
+  base::ReplaceSubstringsAfterOffset(&path16, 0, u"/", u"\\");
 #endif
   base::FilePath path = base::FilePath::FromUTF16Unsafe(path16);
 
@@ -50,54 +49,56 @@ base::FilePath GetProfilePath(const base::DictionaryValue& root,
   return path;
 }
 
-// Checks if the named profile is the default profile.
-bool IsDefaultProfile(const base::DictionaryValue& root,
-                      const std::string& profile_name) {
-  std::string is_default;
-  root.GetStringASCII(profile_name + ".Default", &is_default);
-  return is_default == "1";
-}
-
 } // namespace
 
-base::FilePath GetFirefoxProfilePath() {
+std::vector<FirefoxDetail> GetFirefoxDetails(
+    const std::string& firefox_install_id) {
   base::FilePath ini_file = GetProfilesINI();
   std::string content;
   base::ReadFileToString(ini_file, &content);
   DictionaryValueINIParser ini_parser;
   ini_parser.Parse(content);
-  return GetFirefoxProfilePathFromDictionary(ini_parser.root());
+  return GetFirefoxDetailsFromDictionary(ini_parser.root(), firefox_install_id);
 }
 
-base::FilePath GetFirefoxProfilePathFromDictionary(
-    const base::DictionaryValue& root) {
-  std::vector<std::string> profiles;
+std::vector<FirefoxDetail> GetFirefoxDetailsFromDictionary(
+    const base::DictionaryValue& root,
+    const std::string& firefox_install_id) {
+  std::vector<FirefoxDetail> profile_details;
+
   for (int i = 0; ; ++i) {
     std::string current_profile = base::StringPrintf("Profile%d", i);
-    if (root.HasKey(current_profile)) {
-      profiles.push_back(current_profile);
-    } else {
-      // Profiles are continuously numbered. So we exit when we can't
+    if (!root.HasKey(current_profile)) {
+      // Profiles are contiguously numbered. So we exit when we can't
       // find the i-th one.
       break;
     }
+
+    std::u16string path;
+    if (!root.GetString(current_profile + ".Path", &path))
+      continue;
+
+    FirefoxDetail details;
+    details.path = GetProfilePath(root, current_profile);
+    std::u16string name;
+    root.GetString(current_profile + ".Name", &name);
+    // Make the profile name more presentable by replacing dashes with spaces.
+    base::ReplaceChars(name, u"-", u" ", &name);
+    details.name = name;
+    profile_details.push_back(details);
   }
 
-  if (profiles.empty())
-    return base::FilePath();
+  // If there is only one profile, set the name as a blank string.
+  // The name is only used to disambiguate profiles in the profile selection UI,
+  // which is only useful when there are multiple profiles.
+  if (profile_details.size() == 1) {
+    profile_details[0].name = std::u16string();
+  }
 
-  // When multiple profiles exist, the path to the default profile is returned,
-  // since the other profiles are used mostly by developers for testing.
-  for (std::vector<std::string>::const_iterator it = profiles.begin();
-       it != profiles.end(); ++it)
-    if (IsDefaultProfile(root, *it))
-      return GetProfilePath(root, *it);
-
-  // If no default profile is found, the path to Profile0 will be returned.
-  return GetProfilePath(root, profiles.front());
+  return profile_details;
 }
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 // Find the "*.app" component of the path and build up from there.
 // The resulting path will be .../Firefox.app/Contents/MacOS.
 // We do this because we don't trust LastAppDir to always be
@@ -130,7 +131,7 @@ bool ComposeMacAppPath(const std::string& path_from_file,
              << "installation path: missing /*.app/ directory.";
   return false;
 }
-#endif  // OS_MACOSX
+#endif  // OS_MAC
 
 bool GetFirefoxVersionAndPathFromProfile(const base::FilePath& profile_path,
                                          int* version,
@@ -157,15 +158,15 @@ bool GetFirefoxVersionAndPathFromProfile(const base::FilePath& profile_path,
         // UTF-8, what does Firefox do?  If it puts raw bytes in the
         // file, we could go straight from bytes -> filepath;
         // otherwise, we're out of luck here.
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
         // Extract path from "LastAppDir=/actual/path"
         size_t separator_pos = line.find_first_of('=');
         const std::string& path_from_ini = line.substr(separator_pos + 1);
         if (!ComposeMacAppPath(path_from_ini, app_path))
           return false;
-#else  // !OS_MACOSX
+#else  // !OS_MAC
         *app_path = base::FilePath::FromUTF8Unsafe(line.substr(equal + 1));
-#endif  // OS_MACOSX
+#endif  // OS_MAC
       }
     }
   }
@@ -297,7 +298,7 @@ std::string GetPrefsJsValue(const std::string& content,
 //   ID={ec8030f7-c20a-464f-9b0e-13a3a9e97384}
 //   .........................................
 // In this example the function returns "Iceweasel" (or a localized equivalent).
-base::string16 GetFirefoxImporterName(const base::FilePath& app_path) {
+std::u16string GetFirefoxImporterName(const base::FilePath& app_path) {
   const base::FilePath app_ini_file = app_path.AppendASCII("application.ini");
   std::string branding_name;
   if (base::PathExists(app_ini_file)) {
@@ -312,7 +313,7 @@ base::string16 GetFirefoxImporterName(const base::FilePath& app_path) {
         in_app_section = true;
       } else if (in_app_section) {
         if (base::StartsWith(line, name_attr, base::CompareCase::SENSITIVE)) {
-          line.substr(name_attr.size()).CopyToString(&branding_name);
+          branding_name = std::string(line.substr(name_attr.size()));
           break;
         }
         if (line.length() > 0 && line[0] == '[') {

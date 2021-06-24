@@ -5,10 +5,10 @@
 #ifndef IOS_CHROME_BROWSER_UI_MATERIAL_COMPONENTS_CHROME_APP_BAR_VIEW_CONTROLLER_H_
 #define IOS_CHROME_BROWSER_UI_MATERIAL_COMPONENTS_CHROME_APP_BAR_VIEW_CONTROLLER_H_
 
-#import "ios/third_party/material_components_ios/src/components/AppBar/src/MDCAppBarViewController.h"
+#import <MaterialComponents/MDCAppBarViewController.h>
 
 // Used as substitute to MDCAppBarViewController to prevent default behavior of
-// managing accessiblity dismiss gesture itself. Usually the view controller or
+// managing accessibility dismiss gesture itself. Usually the view controller or
 // its navigation controller has logic that handles it.
 @interface ChromeAppBarViewController : MDCAppBarViewController
 @end

@@ -12,9 +12,9 @@
 namespace ui_devtools {
 
 DOMAgentMac::DOMAgentMac() {}
+
 DOMAgentMac::~DOMAgentMac() {
-  for (views::Widget* widget : roots_)
-    widget->RemoveObserver(this);
+  CHECK(!IsInObserverList());
 }
 
 protocol::Response DOMAgentMac::enable() {
@@ -26,6 +26,9 @@ protocol::Response DOMAgentMac::enable() {
 protocol::Response DOMAgentMac::disable() {
   views::NativeWidgetMac::SetInitNativeWidgetCallback(
       base::RepeatingCallback<void(views::NativeWidgetMac*)>());
+  for (views::Widget* widget : roots_)
+    widget->RemoveObserver(this);
+  roots_.clear();
   return DOMAgent::disable();
 }
 
@@ -42,6 +45,7 @@ std::vector<UIElement*> DOMAgentMac::CreateChildrenForRoot() {
 }
 
 void DOMAgentMac::OnWidgetDestroying(views::Widget* widget) {
+  widget->RemoveObserver(this);
   roots_.erase(std::find(roots_.begin(), roots_.end(), widget), roots_.end());
 }
 
@@ -51,6 +55,7 @@ void DOMAgentMac::OnNativeWidgetAdded(views::NativeWidgetMac* native_widget) {
   roots_.push_back(widget);
   UIElement* widget_element = new WidgetElement(widget, this, element_root());
   element_root()->AddChild(widget_element);
+  widget->AddObserver(this);
 }
 
 std::unique_ptr<protocol::DOM::Node> DOMAgentMac::BuildTreeForWindow(

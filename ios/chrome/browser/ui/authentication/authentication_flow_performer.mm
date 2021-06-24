@@ -7,18 +7,21 @@
 #include <memory>
 
 #include "base/bind.h"
+#include "base/check_op.h"
 #include "base/ios/block_types.h"
-#include "base/logging.h"
 #include "base/metrics/user_metrics.h"
+#include "base/notreached.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/core/browser/signin_pref_names.h"
+#include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
-#include "components/unified_consent/feature.h"
 #include "google_apis/gaia/gaia_auth_util.h"
+#include "google_apis/gaia/gaia_urls.h"
 #include "ios/chrome/browser/browser_state/chrome_browser_state.h"
+#include "ios/chrome/browser/main/browser.h"
 #include "ios/chrome/browser/signin/authentication_service.h"
 #include "ios/chrome/browser/signin/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/constants.h"
@@ -31,11 +34,12 @@
 #import "ios/chrome/browser/ui/commands/browsing_data_commands.h"
 #import "ios/chrome/browser/ui/settings/import_data_table_view_controller.h"
 #import "ios/chrome/browser/ui/settings/settings_navigation_controller.h"
+#import "ios/chrome/browser/web_state_list/web_state_list.h"
 #include "ios/chrome/grit/ios_chromium_strings.h"
 #include "ios/chrome/grit/ios_strings.h"
 #include "ios/public/provider/chrome/browser/chrome_browser_provider.h"
 #import "ios/public/provider/chrome/browser/signin/chrome_identity.h"
-#include "services/identity/public/cpp/identity_manager.h"
+#import "ios/web/public/web_state.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if !defined(__has_feature) || !__has_feature(objc_arc)
@@ -87,26 +91,20 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
   return self;
 }
 
-- (void)cancelAndDismiss {
+- (void)cancelAndDismissAnimated:(BOOL)animated {
   [_alertCoordinator executeCancelHandler];
   [_alertCoordinator stop];
   if (_navigationController) {
-    [_navigationController settingsWillBeDismissed];
+    [_navigationController cleanUpSettings];
     _navigationController = nil;
-    [[_delegate presentingViewController] dismissViewControllerAnimated:NO
-                                                             completion:nil];
+    [_delegate dismissPresentingViewControllerAnimated:animated completion:nil];
   }
   [self stopWatchdogTimer];
 }
 
-- (void)commitSyncForBrowserState:(ios::ChromeBrowserState*)browserState {
-  if (unified_consent::IsUnifiedConsentFeatureEnabled()) {
-    SyncSetupServiceFactory::GetForBrowserState(browserState)
-        ->CommitSyncChanges();
-  } else {
-    SyncSetupServiceFactory::GetForBrowserState(browserState)
-        ->PreUnityCommitChanges();
-  }
+- (void)commitSyncForBrowserState:(ChromeBrowserState*)browserState {
+  SyncSetupServiceFactory::GetForBrowserState(browserState)
+      ->CommitSyncChanges();
 }
 
 - (void)startWatchdogTimerForManagedStatus {
@@ -125,7 +123,7 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
   _watchdogTimer->Start(
       FROM_HERE,
       base::TimeDelta::FromSeconds(kAuthenticationFlowTimeoutSeconds),
-      base::Bind(onTimeout));
+      base::BindOnce(onTimeout));
 }
 
 - (BOOL)stopWatchdogTimer {
@@ -137,13 +135,14 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
   return NO;
 }
 
-- (void)fetchManagedStatus:(ios::ChromeBrowserState*)browserState
+- (void)fetchManagedStatus:(ChromeBrowserState*)browserState
                forIdentity:(ChromeIdentity*)identity {
-  if (gaia::ExtractDomainName(gaia::CanonicalizeEmail(
-          base::SysNSStringToUTF8(identity.userEmail))) == "gmail.com") {
-    // Do nothing for @gmail.com addresses as they can't have a hosted domain.
-    // This avoids waiting for this step to complete (and a network call).
-    [_delegate didFetchManagedStatus:nil];
+  ios::ChromeIdentityService* identityService =
+      ios::GetChromeBrowserProvider()->GetChromeIdentityService();
+  NSString* hostedDomain =
+      identityService->GetCachedHostedDomainForIdentity(identity);
+  if (hostedDomain) {
+    [_delegate didFetchManagedStatus:hostedDomain];
     return;
   }
 
@@ -161,7 +160,7 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 
 - (void)handleGetHostedDomain:(NSString*)hostedDomain
                         error:(NSError*)error
-                 browserState:(ios::ChromeBrowserState*)browserState {
+                 browserState:(ChromeBrowserState*)browserState {
   if (![self stopWatchdogTimer]) {
     // Watchdog timer has already fired, don't notify the delegate.
     return;
@@ -175,28 +174,31 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 
 - (void)signInIdentity:(ChromeIdentity*)identity
       withHostedDomain:(NSString*)hostedDomain
-        toBrowserState:(ios::ChromeBrowserState*)browserState {
+        toBrowserState:(ChromeBrowserState*)browserState {
   AuthenticationServiceFactory::GetForBrowserState(browserState)
-      ->SignIn(identity, base::SysNSStringToUTF8(hostedDomain));
+      ->SignIn(identity);
 }
 
-- (void)signOutBrowserState:(ios::ChromeBrowserState*)browserState {
+- (void)signOutBrowserState:(ChromeBrowserState*)browserState {
+  __weak __typeof(_delegate) weakDelegate = _delegate;
   AuthenticationServiceFactory::GetForBrowserState(browserState)
-      ->SignOut(signin_metrics::USER_CLICKED_SIGNOUT_SETTINGS, ^{
-        [_delegate didSignOut];
-      });
+      ->SignOut(signin_metrics::USER_CLICKED_SIGNOUT_SETTINGS,
+                /*force_clear_browsing_data=*/false, ^{
+                  [weakDelegate didSignOut];
+                });
 }
 
-- (void)signOutImmediatelyFromBrowserState:
-    (ios::ChromeBrowserState*)browserState {
+- (void)signOutImmediatelyFromBrowserState:(ChromeBrowserState*)browserState {
   AuthenticationServiceFactory::GetForBrowserState(browserState)
-      ->SignOut(signin_metrics::ABORT_SIGNIN, nil);
+      ->SignOut(signin_metrics::ABORT_SIGNIN,
+                /*force_clear_browsing_data=*/false, nil);
 }
 
 - (void)promptSwitchFromManagedEmail:(NSString*)managedEmail
                     withHostedDomain:(NSString*)hostedDomain
                              toEmail:(NSString*)toEmail
-                      viewController:(UIViewController*)viewController {
+                      viewController:(UIViewController*)viewController
+                             browser:(Browser*)browser {
   DCHECK(!_alertCoordinator);
   NSString* title = l10n_util::GetNSString(IDS_IOS_MANAGED_SWITCH_TITLE);
   NSString* subtitle = l10n_util::GetNSStringF(
@@ -209,6 +211,7 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 
   _alertCoordinator =
       [[AlertCoordinator alloc] initWithBaseViewController:viewController
+                                                   browser:browser
                                                      title:title
                                                    message:subtitle];
 
@@ -241,8 +244,10 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 }
 
 - (void)promptMergeCaseForIdentity:(ChromeIdentity*)identity
-                      browserState:(ios::ChromeBrowserState*)browserState
+                           browser:(Browser*)browser
                     viewController:(UIViewController*)viewController {
+  DCHECK(browser);
+  ChromeBrowserState* browserState = browser->GetBrowserState();
   BOOL isSignedIn = YES;
   NSString* lastSignedInEmail =
       [AuthenticationServiceFactory::GetForBrowserState(browserState)
@@ -256,54 +261,87 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 
   if (AuthenticationServiceFactory::GetForBrowserState(browserState)
           ->IsAuthenticatedIdentityManaged()) {
-    identity::IdentityManager* identity_manager =
+    signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForBrowserState(browserState);
-    base::Optional<AccountInfo> primary_account_info =
-        identity_manager->FindExtendedAccountInfoForAccount(
-            identity_manager->GetPrimaryAccountInfo());
-    DCHECK(primary_account_info);
+    AccountInfo primary_account_info =
+        identity_manager->FindExtendedAccountInfo(
+            identity_manager->GetPrimaryAccountInfo(
+                signin::ConsentLevel::kSync));
+    DCHECK(!primary_account_info.IsEmpty());
     NSString* hostedDomain =
-        base::SysUTF8ToNSString(primary_account_info->hosted_domain);
+        base::SysUTF8ToNSString(primary_account_info.hosted_domain);
     [self promptSwitchFromManagedEmail:lastSignedInEmail
                       withHostedDomain:hostedDomain
                                toEmail:[identity userEmail]
-                        viewController:viewController];
+                        viewController:viewController
+                               browser:browser];
     return;
   }
-  _navigationController =
-      [SettingsNavigationController newImportDataController:browserState
-                                                   delegate:self
-                                         importDataDelegate:self
-                                                  fromEmail:lastSignedInEmail
-                                                    toEmail:[identity userEmail]
-                                                 isSignedIn:isSignedIn];
-  [_navigationController setShouldCommitSyncChangesOnDismissal:NO];
-  [[_delegate presentingViewController]
-      presentViewController:_navigationController
-                   animated:YES
-                 completion:nil];
+  _navigationController = [SettingsNavigationController
+      importDataControllerForBrowser:browser
+                            delegate:self
+                  importDataDelegate:self
+                           fromEmail:lastSignedInEmail
+                             toEmail:[identity userEmail]
+                          isSignedIn:isSignedIn];
+  [_delegate presentViewController:_navigationController
+                          animated:YES
+                        completion:nil];
 }
 
-- (void)clearData:(ios::ChromeBrowserState*)browserState
-       dispatcher:(id<BrowsingDataCommands>)dispatcher {
-  DCHECK(!AuthenticationServiceFactory::GetForBrowserState(browserState)
-              ->GetAuthenticatedUserEmail());
+- (void)clearDataFromBrowser:(Browser*)browser
+              commandHandler:(id<BrowsingDataCommands>)handler {
+  DCHECK(browser);
+  ChromeBrowserState* browserState = browser->GetBrowserState();
 
-  [dispatcher
-      removeBrowsingDataForBrowserState:browserState
-                             timePeriod:browsing_data::TimePeriod::ALL_TIME
-                             removeMask:BrowsingDataRemoveMask::REMOVE_ALL
-                        completionBlock:^{
-                          [_delegate didClearData];
-                        }];
+  DCHECK(!AuthenticationServiceFactory::GetForBrowserState(browserState)
+              ->IsAuthenticated());
+
+  // Workaround for crbug.com/1003578
+  //
+  // During the Chrome sign-in flow, if the user chooses to clear the cookies
+  // when switching their primary account, then the following actions take
+  // place (in the following order):
+  //   1. All cookies are cleared.
+  //   2. The user is signed in to Chrome (aka the primary account set)
+  //   2.a. All requests to Gaia page will include Mirror header.
+  //   2.b. Account reconcilor will rebuild the Gaia cookies having the Chrome
+  //      primary account as the Gaia default web account.
+  //
+  // The Gaia sign-in webpage monitors changes to its cookies and reloads the
+  // page whenever they change. Reloading the webpage while the cookies are
+  // cleared and just before they are rebuilt seems to confuse WKWebView that
+  // ends up with a nil URL, which in turns translates in about:blank URL shown
+  // in the Omnibox.
+  //
+  // This CL works around this issue by waiting for 1 second between steps 1
+  // and 2 above to allow the WKWebView to initiate the reload after the
+  // cookies are cleared.
+  WebStateList* webStateList = browser->GetWebStateList();
+  web::WebState* activeWebState = webStateList->GetActiveWebState();
+  bool activeWebStateHasGaiaOrigin =
+      activeWebState && (activeWebState->GetVisibleURL().GetOrigin() ==
+                         GaiaUrls::GetInstance()->gaia_url());
+  int64_t dispatchDelaySecs = activeWebStateHasGaiaOrigin ? 1 : 0;
+  __weak __typeof(_delegate) weakDelegate = _delegate;
+  [handler removeBrowsingDataForBrowserState:browserState
+                                  timePeriod:browsing_data::TimePeriod::ALL_TIME
+                                  removeMask:BrowsingDataRemoveMask::REMOVE_ALL
+                             completionBlock:^{
+                               dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                                            dispatchDelaySecs *
+                                                                NSEC_PER_SEC),
+                                              dispatch_get_main_queue(), ^{
+                                                [weakDelegate didClearData];
+                                              });
+                             }];
 }
 
 - (BOOL)shouldHandleMergeCaseForIdentity:(ChromeIdentity*)identity
-                            browserState:
-                                (ios::ChromeBrowserState*)browserState {
-  std::string lastSignedInAccountId =
-      browserState->GetPrefs()->GetString(prefs::kGoogleServicesLastAccountId);
-  std::string currentSignedInAccountId =
+                            browserState:(ChromeBrowserState*)browserState {
+  CoreAccountId lastSignedInAccountId = CoreAccountId::FromString(
+      browserState->GetPrefs()->GetString(prefs::kGoogleServicesLastAccountId));
+  CoreAccountId currentSignedInAccountId =
       IdentityManagerFactory::GetForBrowserState(browserState)
           ->PickAccountIdForAccount(
               base::SysNSStringToUTF8([identity gaiaID]),
@@ -325,8 +363,8 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 }
 
 - (void)showManagedConfirmationForHostedDomain:(NSString*)hostedDomain
-                                viewController:
-                                    (UIViewController*)viewController {
+                                viewController:(UIViewController*)viewController
+                                       browser:(Browser*)browser {
   DCHECK(!_alertCoordinator);
   NSString* title = l10n_util::GetNSString(IDS_IOS_MANAGED_SIGNIN_TITLE);
   NSString* subtitle = l10n_util::GetNSStringF(
@@ -337,6 +375,7 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 
   _alertCoordinator =
       [[AlertCoordinator alloc] initWithBaseViewController:viewController
+                                                   browser:browser
                                                      title:title
                                                    message:subtitle];
 
@@ -369,10 +408,11 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 
 - (void)showAuthenticationError:(NSError*)error
                  withCompletion:(ProceduralBlock)callback
-                 viewController:(UIViewController*)viewController {
+                 viewController:(UIViewController*)viewController
+                        browser:(Browser*)browser {
   DCHECK(!_alertCoordinator);
 
-  _alertCoordinator = ErrorCoordinatorNoItem(error, viewController);
+  _alertCoordinator = ErrorCoordinatorNoItem(error, viewController, browser);
 
   __weak AuthenticationFlowPerformer* weakSelf = self;
   __weak AlertCoordinator* weakAlert = _alertCoordinator;
@@ -424,9 +464,8 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
     strongSelf->_navigationController = nil;
     [[strongSelf delegate] didChooseClearDataPolicy:shouldClearData];
   };
-  [_navigationController settingsWillBeDismissed];
-  [[_delegate presentingViewController] dismissViewControllerAnimated:YES
-                                                           completion:block];
+  [_navigationController cleanUpSettings];
+  [_delegate dismissPresentingViewControllerAnimated:YES completion:block];
 }
 
 #pragma mark - SettingsNavigationControllerDelegate
@@ -442,12 +481,19 @@ const int64_t kAuthenticationFlowTimeoutSeconds = 10;
     strongSelf->_navigationController = nil;
     [[strongSelf delegate] didChooseCancel];
   };
-  [_navigationController settingsWillBeDismissed];
-  [[_delegate presentingViewController] dismissViewControllerAnimated:YES
-                                                           completion:block];
+  [_navigationController cleanUpSettings];
+  [_delegate dismissPresentingViewControllerAnimated:YES completion:block];
 }
 
-- (id<ApplicationCommands, BrowserCommands>)dispatcherForSettings {
+- (void)settingsWasDismissed {
+  base::RecordAction(base::UserMetricsAction("Signin_ImportDataPrompt_Cancel"));
+  [self.delegate didChooseCancel];
+  [_navigationController cleanUpSettings];
+  _navigationController = nil;
+}
+
+- (id<ApplicationCommands, BrowserCommands, BrowsingDataCommands>)
+    handlerForSettings {
   NOTREACHED();
   return nil;
 }

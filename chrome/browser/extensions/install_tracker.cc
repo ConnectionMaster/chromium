@@ -9,19 +9,18 @@
 #include "chrome/browser/extensions/install_tracker_factory.h"
 #include "content/public/browser/notification_service.h"
 #include "extensions/browser/extension_prefs.h"
-#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/pref_names.h"
 
 namespace extensions {
 
 InstallTracker::InstallTracker(content::BrowserContext* browser_context,
-                               extensions::ExtensionPrefs* prefs)
-    : extension_registry_observer_(this) {
+                               extensions::ExtensionPrefs* prefs) {
   registrar_.Add(this,
                  extensions::NOTIFICATION_EXTENSION_UPDATE_DISABLED,
                  content::Source<content::BrowserContext>(browser_context));
-  extension_registry_observer_.Add(ExtensionRegistry::Get(browser_context));
+  extension_registry_observation_.Observe(
+      ExtensionRegistry::Get(browser_context));
 
   // Prefs may be null in tests.
   if (prefs) {
@@ -32,7 +31,8 @@ InstallTracker::InstallTracker(content::BrowserContext* browser_context,
     pref_change_registrar_.Init(prefs->pref_service());
     pref_change_registrar_.Add(
         pref_names::kExtensions,
-        base::Bind(&InstallTracker::OnAppsReordered, base::Unretained(this)));
+        base::BindRepeating(&InstallTracker::OnAppsReordered,
+                            base::Unretained(this)));
   }
 }
 

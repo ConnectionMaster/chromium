@@ -8,7 +8,7 @@
 #include "base/compiler_specific.h"
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
-#include "base/optional.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gl/gl_export.h"
 
 namespace gl {
@@ -28,27 +28,17 @@ class GL_EXPORT ScopedMakeCurrent {
   ScopedMakeCurrent(gl::GLContext* context, gl::GLSurface* surface);
   ~ScopedMakeCurrent();
 
+  // Returns whether the |context_| is current.
+  bool IsContextCurrent() { return is_context_current_; }
+
  private:
   scoped_refptr<gl::GLContext> previous_context_;
   scoped_refptr<gl::GLSurface> previous_surface_;
   scoped_refptr<gl::GLContext> context_;
   scoped_refptr<gl::GLSurface> surface_;
+  bool is_context_current_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(ScopedMakeCurrent);
-};
-
-// This behaves similarly to ScopedMakeCurrent, except that it releases the
-// current context on creation and restores it on destruction.
-class GL_EXPORT ScopedReleaseCurrent {
- public:
-  ScopedReleaseCurrent();
-  ~ScopedReleaseCurrent();
-
- private:
-  scoped_refptr<gl::GLContext> previous_context_;
-  scoped_refptr<gl::GLSurface> previous_surface_;
-
-  DISALLOW_COPY_AND_ASSIGN(ScopedReleaseCurrent);
 };
 
 }  // namespace ui

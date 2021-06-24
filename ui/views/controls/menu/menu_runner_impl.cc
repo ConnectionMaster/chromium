@@ -5,10 +5,13 @@
 #include "ui/views/controls/menu/menu_runner_impl.h"
 
 #include <memory>
+#include <utility>
 
 #include "build/build_config.h"
+#include "ui/accessibility/platform/ax_platform_node_base.h"
 #include "ui/native_theme/native_theme.h"
-#include "ui/views/controls/button/menu_button.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/button/menu_button_controller.h"
 #include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/controls/menu/menu_delegate.h"
 #include "ui/views/controls/menu/menu_item_view.h"
@@ -23,10 +26,54 @@
 #include "ui/events/x/events_x_utils.h"  // nogncheck
 #endif
 
+#if defined(USE_OZONE)
+#include "ui/base/ui_base_features.h"
+#include "ui/events/event_constants.h"
+#include "ui/ozone/public/ozone_platform.h"
+#include "ui/ozone/public/platform_menu_utils.h"
+#endif
+
 namespace views {
+
+namespace {
+
+// This should be called after the menu has closed, to fire a focus event on
+// the previously focused node in the parent widget, if one exists.
+void FireFocusAfterMenuClose(base::WeakPtr<Widget> widget) {
+  if (widget) {
+    FocusManager* focus_manager = widget->GetFocusManager();
+    if (focus_manager && focus_manager->GetFocusedView()) {
+      focus_manager->GetFocusedView()
+          ->GetViewAccessibility()
+          .FireFocusAfterMenuClose();
+    }
+  }
+}
+
+#if defined(USE_X11) || defined(USE_OZONE)
+bool IsAltPressed() {
+#if defined(USE_OZONE)
+  if (features::IsUsingOzonePlatform()) {
+    const auto* const platorm_menu_utils =
+        ui::OzonePlatform::GetInstance()->GetPlatformMenuUtils();
+    if (platorm_menu_utils)
+      return (platorm_menu_utils->GetCurrentKeyModifiers() & ui::EF_ALT_DOWN) !=
+             0;
+  }
+#endif
+#if defined(USE_X11)
+  return ui::IsAltPressed();
+#else
+  return false;
+#endif
+}
+#endif  // defined(USE_X11) || degined(USE_OZONE)
+
+}  // namespace
+
 namespace internal {
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_MAC)
 MenuRunnerImplInterface* MenuRunnerImplInterface::Create(
     ui::MenuModel* menu_model,
     int32_t run_types,
@@ -42,8 +89,7 @@ MenuRunnerImpl::MenuRunnerImpl(MenuItemView* menu)
       delete_after_run_(false),
       for_drop_(false),
       controller_(nullptr),
-      owns_controller_(false),
-      weak_factory_(this) {}
+      owns_controller_(false) {}
 
 bool MenuRunnerImpl::IsRunning() const {
   return running_;
@@ -72,7 +118,7 @@ void MenuRunnerImpl::Release() {
       // Release is invoked when MenuRunner is destroyed. Assume this is
       // happening because the object referencing the menu has been destroyed
       // and the menu button is no longer valid.
-      controller_->Cancel(MenuController::EXIT_DESTROYED);
+      controller_->Cancel(MenuController::ExitType::kDestroyed);
       return;
     }
   }
@@ -81,10 +127,11 @@ void MenuRunnerImpl::Release() {
 }
 
 void MenuRunnerImpl::RunMenuAt(Widget* parent,
-                               MenuButton* button,
+                               MenuButtonController* button_controller,
                                const gfx::Rect& bounds,
                                MenuAnchorPosition anchor,
-                               int32_t run_types) {
+                               int32_t run_types,
+                               gfx::NativeView native_view_for_gestures) {
   closing_event_time_ = base::TimeTicks();
   if (running_) {
     // Ignore requests to show the menu while it's already showing. MenuItemView
@@ -96,7 +143,7 @@ void MenuRunnerImpl::RunMenuAt(Widget* parent,
   if (controller) {
     if ((run_types & MenuRunner::IS_NESTED) != 0) {
       if (controller->for_drop()) {
-        controller->CancelAll();
+        controller->Cancel(MenuController::ExitType::kAll);
         controller = nullptr;
       } else {
         // Only nest the delegate when not cancelling drag-and-drop. When
@@ -106,7 +153,7 @@ void MenuRunnerImpl::RunMenuAt(Widget* parent,
       }
     } else {
       // There's some other menu open and we're not nested. Cancel the menu.
-      controller->CancelAll();
+      controller->Cancel(MenuController::ExitType::kAll);
       if ((run_types & MenuRunner::FOR_DROP) == 0) {
         // We can't open another menu, otherwise the message loop would become
         // twice nested. This isn't necessarily a problem, but generally isn't
@@ -130,12 +177,13 @@ void MenuRunnerImpl::RunMenuAt(Widget* parent,
   }
   DCHECK((run_types & MenuRunner::COMBOBOX) == 0 ||
          (run_types & MenuRunner::EDITABLE_COMBOBOX) == 0);
+  using ComboboxType = MenuController::ComboboxType;
   if (run_types & MenuRunner::COMBOBOX)
-    controller->set_combobox_type(MenuController::kReadonlyCombobox);
+    controller->set_combobox_type(ComboboxType::kReadonly);
   else if (run_types & MenuRunner::EDITABLE_COMBOBOX)
-    controller->set_combobox_type(MenuController::kEditableCombobox);
+    controller->set_combobox_type(ComboboxType::kEditable);
   else
-    controller->set_combobox_type(MenuController::kNotACombobox);
+    controller->set_combobox_type(ComboboxType::kNone);
   controller->set_send_gesture_events_to_owner(
       (run_types & MenuRunner::SEND_GESTURE_EVENTS_TO_OWNER) != 0);
   controller->set_use_touchable_layout(
@@ -143,16 +191,17 @@ void MenuRunnerImpl::RunMenuAt(Widget* parent,
   controller_ = controller->AsWeakPtr();
   menu_->set_controller(controller_.get());
   menu_->PrepareForRun(owns_controller_, has_mnemonics,
-                       !for_drop_ && ShouldShowMnemonics(button, run_types));
+                       !for_drop_ && ShouldShowMnemonics(run_types));
 
-  controller->Run(parent, button, menu_, bounds, anchor,
+  controller->Run(parent, button_controller, menu_, bounds, anchor,
                   (run_types & MenuRunner::CONTEXT_MENU) != 0,
-                  (run_types & MenuRunner::NESTED_DRAG) != 0);
+                  (run_types & MenuRunner::NESTED_DRAG) != 0,
+                  native_view_for_gestures);
 }
 
 void MenuRunnerImpl::Cancel() {
   if (running_)
-    controller_->Cancel(MenuController::EXIT_ALL);
+    controller_->Cancel(MenuController::ExitType::kAll);
 }
 
 base::TimeTicks MenuRunnerImpl::GetClosingEventTime() const {
@@ -162,8 +211,14 @@ base::TimeTicks MenuRunnerImpl::GetClosingEventTime() const {
 void MenuRunnerImpl::OnMenuClosed(NotifyType type,
                                   MenuItemView* menu,
                                   int mouse_event_flags) {
-  if (controller_)
+  base::WeakPtr<Widget> parent_widget;
+  if (controller_) {
     closing_event_time_ = controller_->closing_event_time();
+    // Get a pointer to the parent widget before destroying the menu.
+    if (controller_->owner())
+      parent_widget = controller_->owner()->GetWeakPtr();
+  }
+
   menu_->RemoveEmptyMenus();
   menu_->set_controller(nullptr);
 
@@ -177,6 +232,7 @@ void MenuRunnerImpl::OnMenuClosed(NotifyType type,
   // destroyed.
   menu_->DestroyAllMenuHosts();
   if (delete_after_run_) {
+    FireFocusAfterMenuClose(parent_widget);
     delete this;
     return;
   }
@@ -193,6 +249,7 @@ void MenuRunnerImpl::OnMenuClosed(NotifyType type,
     if (ref && type == NOTIFY_DELEGATE)
       menu_->GetDelegate()->OnMenuClosed(menu);
   }
+  FireFocusAfterMenuClose(parent_widget);
 }
 
 void MenuRunnerImpl::SiblingMenuCreated(MenuItemView* menu) {
@@ -202,19 +259,18 @@ void MenuRunnerImpl::SiblingMenuCreated(MenuItemView* menu) {
 
 MenuRunnerImpl::~MenuRunnerImpl() {
   delete menu_;
-  for (auto i = sibling_menus_.begin(); i != sibling_menus_.end(); ++i)
-    delete *i;
+  for (auto* sibling_menu : sibling_menus_)
+    delete sibling_menu;
 }
 
-bool MenuRunnerImpl::ShouldShowMnemonics(MenuButton* button,
-                                         int32_t run_types) {
+bool MenuRunnerImpl::ShouldShowMnemonics(int32_t run_types) {
   bool show_mnemonics = run_types & MenuRunner::SHOULD_SHOW_MNEMONICS;
   // Show mnemonics if the button has focus or alt is pressed.
 #if defined(OS_WIN)
   show_mnemonics |= ui::win::IsAltPressed();
-#elif defined(USE_X11)
-  show_mnemonics |= ui::IsAltPressed();
-#elif defined(OS_MACOSX)
+#elif defined(USE_X11) || defined(USE_OZONE)
+  show_mnemonics |= IsAltPressed();
+#elif defined(OS_MAC)
   show_mnemonics = false;
 #endif
   return show_mnemonics;

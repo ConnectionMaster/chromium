@@ -49,6 +49,10 @@ public class WebApkServiceConnectionManager {
         /** WebAPK IBinder interface. */
         private IBinder mBinder;
 
+        public Connection(WebApkServiceConnectionManager manager) {
+            mConnectionManager = manager;
+        }
+
         public IBinder getService() {
             return mBinder;
         }
@@ -57,8 +61,8 @@ public class WebApkServiceConnectionManager {
             mCallbacks.add(callback);
         }
 
-        public Connection(WebApkServiceConnectionManager manager) {
-            mConnectionManager = manager;
+        public boolean didAllCallbacksRun() {
+            return mCallbacks.isEmpty();
         }
 
         @Override
@@ -78,7 +82,7 @@ public class WebApkServiceConnectionManager {
         }
     }
 
-    private static final String TAG = "cr_WebApkService";
+    private static final String TAG = "WebApkService";
 
     /** The category of the service to connect to. */
     private String mCategory;
@@ -109,6 +113,14 @@ public class WebApkServiceConnectionManager {
         if (mConnections.isEmpty() && mNumPendingPostedTasks == 0) {
             destroyTaskRunner();
         }
+    }
+
+    /** Returns whether the callbacks for all of the {@link #connect()} calls have been run. */
+    public boolean didAllConnectCallbacksRun() {
+        for (Connection connection : mConnections.values()) {
+            if (!connection.didAllCallbacksRun()) return false;
+        }
+        return true;
     }
 
     /**
@@ -236,7 +248,6 @@ public class WebApkServiceConnectionManager {
     private void destroyTaskRunner() {
         if (mTaskRunner == null) return;
 
-        mTaskRunner.destroy();
         mTaskRunner = null;
     }
 }

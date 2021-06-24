@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/win/windows_version.h"
 
@@ -92,7 +93,7 @@ bool HeapFlags(HANDLE handle, DWORD* flags) {
 }
 
 HANDLE FindCsrPortHeap() {
-  if (base::win::GetVersion() < base::win::VERSION_WIN10) {
+  if (base::win::GetVersion() < base::win::Version::WIN10) {
     // This functionality has not been verified on versions before Win10.
     return nullptr;
   }

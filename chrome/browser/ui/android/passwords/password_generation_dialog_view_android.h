@@ -7,9 +7,10 @@
 
 #include <jni.h>
 
+#include <string>
+
 #include "base/android/scoped_java_ref.h"
-#include "base/strings/string16.h"
-#include "chrome/browser/password_manager/password_generation_dialog_view_interface.h"
+#include "chrome/browser/password_manager/android/password_generation_dialog_view_interface.h"
 
 class PasswordGenerationController;
 
@@ -26,7 +27,11 @@ class PasswordGenerationDialogViewAndroid
   ~PasswordGenerationDialogViewAndroid() override;
 
   // Called to show the dialog. |password| is the generated password.
-  void Show(base::string16& password) override;
+  void Show(
+      std::u16string& password,
+      base::WeakPtr<password_manager::PasswordManagerDriver>
+          target_frame_driver,
+      autofill::password_generation::PasswordGenerationType type) override;
 
   // Called from Java via JNI.
   void PasswordAccepted(JNIEnv* env,
@@ -44,6 +49,14 @@ class PasswordGenerationDialogViewAndroid
   // The corresponding java object.
   base::android::ScopedJavaGlobalRef<jobject> java_object_;
 
+  // The driver corresponding to the frame for which the generation request was
+  // made. Used to ensure that the accepted password message is sent back to the
+  // same frame.
+  base::WeakPtr<password_manager::PasswordManagerDriver> target_frame_driver_;
+
+  // Whether the dialog was shown for manual generation or not. Used for
+  // metrics.
+  autofill::password_generation::PasswordGenerationType generation_type_;
   DISALLOW_COPY_AND_ASSIGN(PasswordGenerationDialogViewAndroid);
 };
 

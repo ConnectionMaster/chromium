@@ -6,16 +6,17 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "base/bind.h"
-#include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
 #include "base/logging.h"
+#include "base/numerics/ranges.h"
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
-#include "chromecast/media/cma/base/decoder_buffer_base.h"
-#include "jni/AudioSinkAudioTrackImpl_jni.h"
+#include "chromecast/media/api/decoder_buffer_base.h"
+#include "chromecast/media/cma/backend/android/audio_track_jni_headers/AudioSinkAudioTrackImpl_jni.h"
 #include "media/base/audio_bus.h"
 
 #define RUN_ON_FEEDER_THREAD(callback, ...)                               \
@@ -66,18 +67,21 @@ bool AudioSinkAndroidAudioTrackImpl::GetSessionIds(int* media_id,
 
 // static
 int64_t AudioSinkAndroidAudioTrackImpl::GetMinimumBufferedTime(
+    int num_channels,
     int samples_per_second) {
   return Java_AudioSinkAudioTrackImpl_getMinimumBufferedTime(
-      base::android::AttachCurrentThread(), samples_per_second);
+      base::android::AttachCurrentThread(), num_channels, samples_per_second);
 }
 
 AudioSinkAndroidAudioTrackImpl::AudioSinkAndroidAudioTrackImpl(
     AudioSinkAndroid::Delegate* delegate,
+    int num_channels,
     int input_samples_per_second,
     bool primary,
     const std::string& device_id,
     AudioContentType content_type)
     : delegate_(delegate),
+      num_channels_(num_channels),
       input_samples_per_second_(input_samples_per_second),
       primary_(primary),
       device_id_(device_id),
@@ -92,10 +96,12 @@ AudioSinkAndroidAudioTrackImpl::AudioSinkAndroidAudioTrackImpl(
       state_(kStateUninitialized),
       weak_factory_(this) {
   LOG(INFO) << __func__ << "(" << this << "):"
+            << " num_channels_=" << num_channels_
             << " input_samples_per_second_=" << input_samples_per_second_
             << " primary_=" << primary_ << " device_id_=" << device_id_
-            << " content_type__=" << GetContentTypeName();
+            << " content_type_=" << content_type_;
   DCHECK(delegate_);
+  DCHECK_GT(num_channels_, 0);
 
   // Create Java part and initialize.
   DCHECK(j_audio_sink_audiotrack_impl_.is_null());
@@ -105,7 +111,7 @@ AudioSinkAndroidAudioTrackImpl::AudioSinkAndroidAudioTrackImpl(
           reinterpret_cast<intptr_t>(this)));
   Java_AudioSinkAudioTrackImpl_init(
       base::android::AttachCurrentThread(), j_audio_sink_audiotrack_impl_,
-      static_cast<int>(content_type_), input_samples_per_second_,
+      static_cast<int>(content_type_), num_channels_, input_samples_per_second_,
       kDirectBufferSize);
   // Should be set now.
   DCHECK(direct_pcm_buffer_address_);
@@ -113,7 +119,7 @@ AudioSinkAndroidAudioTrackImpl::AudioSinkAndroidAudioTrackImpl(
 
   base::Thread::Options options;
   options.priority = base::ThreadPriority::REALTIME_AUDIO;
-  feeder_thread_.StartWithOptions(options);
+  feeder_thread_.StartWithOptions(std::move(options));
   feeder_task_runner_ = feeder_thread_.task_runner();
   weak_this_ = weak_factory_.GetWeakPtr();
 }
@@ -140,10 +146,6 @@ std::string AudioSinkAndroidAudioTrackImpl::device_id() const {
 
 AudioContentType AudioSinkAndroidAudioTrackImpl::content_type() const {
   return content_type_;
-}
-
-const char* AudioSinkAndroidAudioTrackImpl::GetContentTypeName() const {
-  return GetAudioContentTypeName(content_type_);
 }
 
 void AudioSinkAndroidAudioTrackImpl::FinalizeOnFeederThread() {
@@ -250,7 +252,7 @@ void AudioSinkAndroidAudioTrackImpl::ScheduleWaitForEosTask() {
           base::android::AttachCurrentThread(), j_audio_sink_audiotrack_impl_);
   LOG(INFO) << __func__ << "(" << this << "): Hit EOS, playout time left is "
             << playout_time_left_us << "us";
-  wait_for_eos_task_.Reset(base::Bind(
+  wait_for_eos_task_.Reset(base::BindOnce(
       &AudioSinkAndroidAudioTrackImpl::OnPlayoutDone, base::Unretained(this)));
   base::TimeDelta delay =
       base::TimeDelta::FromMicroseconds(playout_time_left_us);
@@ -265,20 +267,24 @@ void AudioSinkAndroidAudioTrackImpl::OnPlayoutDone() {
 }
 
 void AudioSinkAndroidAudioTrackImpl::ReformatData() {
-  // Data is in planar float format, i.e. all left samples first, then all
-  // right -> "LLLLLLLLLLLLLLLLRRRRRRRRRRRRRRRR").
+  // Data is in planar float format, i.e., planar audio data for stereo is all
+  // left samples first, then all right -> "LLLLLLLLLLLLLLLLRRRRRRRRRRRRRRRR").
   // AudioTrack needs interleaved format -> "LRLRLRLRLRLRLRLRLRLRLRLRLRLRLRLR").
   DCHECK(direct_pcm_buffer_address_);
   DCHECK_EQ(0, static_cast<int>(pending_data_->data_size() % sizeof(float)));
-  CHECK(pending_data_->data_size() < kDirectBufferSize);
+  CHECK_LT(static_cast<int>(pending_data_->data_size()), kDirectBufferSize);
   int num_of_samples = pending_data_->data_size() / sizeof(float);
-  int num_of_frames = num_of_samples / 2;
-  const float* src_left = reinterpret_cast<const float*>(pending_data_->data());
-  const float* src_right = src_left + num_of_samples / 2;
+  int num_of_frames = num_of_samples / num_channels_;
+  std::vector<const float*> src(num_channels_);
+  for (int c = 0; c < num_channels_; c++) {
+    src[c] = reinterpret_cast<const float*>(pending_data_->data()) +
+             c * num_of_frames;
+  }
   float* dst = reinterpret_cast<float*>(direct_pcm_buffer_address_);
   for (int f = 0; f < num_of_frames; f++) {
-    *dst++ = *src_left++;
-    *dst++ = *src_right++;
+    for (int c = 0; c < num_channels_; c++) {
+      *dst++ = *src[c]++;
+    }
   }
 }
 
@@ -384,7 +390,7 @@ void AudioSinkAndroidAudioTrackImpl::SetStreamVolumeMultiplier(
     float multiplier) {
   RUN_ON_FEEDER_THREAD(SetStreamVolumeMultiplier, multiplier);
 
-  stream_volume_multiplier_ = std::max(0.0f, std::min(multiplier, 1.0f));
+  stream_volume_multiplier_ = std::max(0.0f, multiplier);
   LOG(INFO) << __func__ << "(" << this << "): device_id_=" << device_id_
             << " stream_multiplier=" << stream_volume_multiplier_
             << " effective=" << EffectiveVolume();
@@ -395,7 +401,7 @@ void AudioSinkAndroidAudioTrackImpl::SetLimiterVolumeMultiplier(
     float multiplier) {
   RUN_ON_FEEDER_THREAD(SetLimiterVolumeMultiplier, multiplier);
 
-  limiter_volume_multiplier_ = std::max(0.0f, std::min(multiplier, 1.0f));
+  limiter_volume_multiplier_ = base::ClampToRange(multiplier, 0.0f, 1.0f);
   LOG(INFO) << __func__ << "(" << this << "): device_id_=" << device_id_
             << " limiter_multiplier=" << limiter_volume_multiplier_
             << " effective=" << EffectiveVolume();

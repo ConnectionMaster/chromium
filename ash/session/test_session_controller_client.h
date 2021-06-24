@@ -7,38 +7,47 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
 
-#include "ash/public/interfaces/session_controller.mojom.h"
+#include "ash/public/cpp/session/session_controller_client.h"
+#include "ash/public/cpp/session/session_types.h"
 #include "base/macros.h"
-#include "base/optional.h"
+#include "base/memory/weak_ptr.h"
 #include "base/token.h"
 #include "components/user_manager/user_type.h"
-#include "mojo/public/cpp/bindings/binding.h"
+#include "third_party/abseil-cpp/absl/types/optional.h"
+
+namespace views {
+class Widget;
+}
 
 class AccountId;
+class PrefService;
 
 namespace ash {
 
 enum class AddUserSessionPolicy;
-class SessionController;
+class SessionControllerImpl;
+class TestPrefServiceProvider;
 
-// Implement SessionControllerClient mojo interface to simulate chrome behavior
+// Implement SessionControllerClient to simulate chrome behavior
 // in tests. This breaks the ash/chrome dependency to allow testing ash code in
 // isolation. Note that tests that have an instance of SessionControllerClient
 // should NOT use this, i.e. tests that run BrowserMain to have chrome's
 // SessionControllerClient created, e.g. InProcessBrowserTest based tests. On
 // the other hand, tests code in chrome can use this class as long as it does
 // not run BrowserMain, e.g. testing::Test based test.
-class TestSessionControllerClient : public ash::mojom::SessionControllerClient {
+class TestSessionControllerClient : public SessionControllerClient {
  public:
-  explicit TestSessionControllerClient(SessionController* controller);
+  TestSessionControllerClient(SessionControllerImpl* controller,
+                              TestPrefServiceProvider* prefs_provider);
   ~TestSessionControllerClient() override;
 
   static void DisableAutomaticallyProvideSigninPref();
 
-  // Initialize using existing info in |controller| and bind as its client.
-  void InitializeAndBind();
+  // Initialize using existing info in |controller| and set as its client.
+  void InitializeAndSetClient();
 
   // Sets up the default state of SessionController.
   void Reset();
@@ -47,6 +56,9 @@ class TestSessionControllerClient : public ash::mojom::SessionControllerClient {
     use_lower_case_user_id_ = value;
   }
 
+  int attempt_restart_chrome_count() const {
+    return attempt_restart_chrome_count_;
+  }
   int request_sign_out_count() const { return request_sign_out_count_; }
 
   // Helpers to set SessionController state.
@@ -71,39 +83,68 @@ class TestSessionControllerClient : public ash::mojom::SessionControllerClient {
   void AddUserSession(
       const std::string& display_email,
       user_manager::UserType user_type = user_manager::USER_TYPE_REGULAR,
-      bool enable_settings = true,
       bool provide_pref_service = true,
       bool is_new_profile = false,
-      const base::Optional<base::Token>& service_instance_group =
-          base::nullopt);
+      const std::string& given_name = std::string());
 
   // Creates a test PrefService and associates it with the user.
   void ProvidePrefServiceForUser(const AccountId& account_id);
+
+  // Synchronously lock screen by requesting screen lock and waiting for the
+  // request to complete.
+  void LockScreen();
 
   // Simulates screen unlocking. It is virtual so that test cases can override
   // it. The default implementation sets the session state of SessionController
   // to be ACTIVE.
   virtual void UnlockScreen();
 
-  // ash::mojom::SessionControllerClient:
+  // Spins message loop to finish pending lock screen request if any.
+  void FlushForTest();
+
+  // Use |pref_service| for sign-in profile pref service.
+  void SetSigninScreenPrefService(std::unique_ptr<PrefService> pref_service);
+
+  // Use |pref_service| for the user identified by |account_id|.
+  void SetUserPrefService(const AccountId& account_id,
+                          std::unique_ptr<PrefService> pref_service);
+
+  // ash::SessionControllerClient:
   void RequestLockScreen() override;
   void RequestSignOut() override;
+  void AttemptRestartChrome() override;
   void SwitchActiveUser(const AccountId& account_id) override;
   void CycleActiveUser(CycleUserDirection direction) override;
   void ShowMultiProfileLogin() override;
   void EmitAshInitialized() override;
+  PrefService* GetSigninScreenPrefService() override;
+  PrefService* GetUserPrefService(const AccountId& account_id) override;
+
+  // By default `LockScreen()` only changes the session state but no UI views
+  // will be created.  If your tests requires the lock screen to be created,
+  // please set this to true.
+  void set_show_lock_screen_views(bool should_show) {
+    should_show_lock_screen_ = should_show;
+  }
 
  private:
-  SessionController* const controller_;
+  void DoSwitchUser(const AccountId& account_id, bool switch_user);
 
-  // Binds to the client interface.
-  mojo::Binding<ash::mojom::SessionControllerClient> binding_;
+  SessionControllerImpl* const controller_;
+  TestPrefServiceProvider* const prefs_provider_;
 
   int fake_session_id_ = 0;
-  mojom::SessionInfoPtr session_info_;
+  SessionInfo session_info_;
 
   bool use_lower_case_user_id_ = true;
   int request_sign_out_count_ = 0;
+  int attempt_restart_chrome_count_ = 0;
+
+  bool should_show_lock_screen_ = false;
+
+  std::unique_ptr<views::Widget> multi_profile_login_widget_;
+
+  base::WeakPtrFactory<TestSessionControllerClient> weak_ptr_factory_{this};
 
   DISALLOW_COPY_AND_ASSIGN(TestSessionControllerClient);
 };
